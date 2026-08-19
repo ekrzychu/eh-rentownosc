@@ -33,6 +33,7 @@ P2_PERCENT = 58.0
 P3_PERCENT = 17.0
 HIGH_WPS_PERCENT = 80.0
 LOW_WPS_PERCENT = 100.0 - HIGH_WPS_PERCENT
+FIN_PERCENT = 50.0
 
 KATEGORIE_SPRAW = {
     "P1": "Koszty naprawy, uprzednie uzgodnienie kosztów",
@@ -54,6 +55,7 @@ def domyslne_parametry() -> dict:
         "dodatkowe_minuty": DODATKOWE_MINUTY.copy(),
         "udzialy_rodzajow": {"P1": P1_PERCENT, "P2": P2_PERCENT, "P3": P3_PERCENT},
         "wysoki_wps_procent": HIGH_WPS_PERCENT,
+        "fin_percent": FIN_PERCENT,
     }
 
 
@@ -90,9 +92,9 @@ def oblicz_podzial_spraw(
     return podzial
 
 
-def oblicz_wynagrodzenie(wps: float, prog_wps: float) -> float:
+def oblicz_wynagrodzenie(wps: float, prog_wps: float, fin_percent: float) -> float:
     """Oblicza wynagrodzenie kancelarii dla jednej sprawy."""
-    fin = wps / 2
+    fin = wps * (fin_percent / 100)
     if wps < prog_wps:
         return 250 + min(0.20 * (wps - fin), 2000)
     return 500 + min(0.08 * (wps - fin), 5000)
@@ -136,7 +138,7 @@ def oblicz_grupe(
         parametry["koszt_staly_na_godzine"]
         + parametry["wynagrodzenie_pracownika_na_godzine"]
     )
-    wynagrodzenie = oblicz_wynagrodzenie(wps, parametry["prog_wps"])
+    wynagrodzenie = oblicz_wynagrodzenie(wps, parametry["prog_wps"], parametry["fin_percent"])
     koszt = oblicz_koszt(
         rodzaj,
         parametry["podstawowe_czynnosci"],
@@ -184,6 +186,7 @@ def oblicz_model(parametry: dict | None = None) -> dict:
     }
     podstawowe_minuty = sum(parametry["podstawowe_czynnosci"].values())
     koszt_godziny = parametry["koszt_staly_na_godzine"] + parametry["wynagrodzenie_pracownika_na_godzine"]
+    laczne_godziny = sum(grupa["liczba"] * grupa["laczne_minuty"] / 60 for grupa in grupy)
     return {
         "ogolem": podsumuj_grupy(grupy),
         "wps_niski": wedlug_wps["niski_wps"],
@@ -193,8 +196,82 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         "podzial_spraw": podzial_spraw,
         "podstawowe_minuty": podstawowe_minuty,
         "koszt_godziny": koszt_godziny,
+        "laczne_godziny": laczne_godziny,
         "koszty_jednostkowe": {
             rodzaj: oblicz_koszt(rodzaj, parametry["podstawowe_czynnosci"], parametry["dodatkowe_minuty"], koszt_godziny)
             for rodzaj in parametry["dodatkowe_minuty"]
         },
     }
+
+
+def _parametry_z_zmiana(parametry: dict, **zmiany) -> dict:
+    """Tworzy bezpieczną kopię parametrów z podmienionymi wartościami."""
+    kopia = {
+        **parametry,
+        "podstawowe_czynnosci": parametry["podstawowe_czynnosci"].copy(),
+        "dodatkowe_minuty": parametry["dodatkowe_minuty"].copy(),
+        "udzialy_rodzajow": parametry["udzialy_rodzajow"].copy(),
+    }
+    kopia.update(zmiany)
+    return kopia
+
+
+def oblicz_prog_czasu(parametry: dict) -> dict:
+    """Wyznacza średnie skrócenie czasu na sprawę potrzebne do progu rentowności."""
+    wyniki = oblicz_model(parametry)
+    liczba_spraw = wyniki["ogolem"]["liczba_spraw"]
+    obecne_godziny = wyniki["laczne_godziny"]
+    koszt_godziny = wyniki["koszt_godziny"]
+    strata = max(0.0, -wyniki["ogolem"]["wynik"])
+    obecny_sredni_czas = obecne_godziny / liczba_spraw if liczba_spraw else 0.0
+    if strata == 0:
+        return {"mozliwe": True, "juz_rentowny": True, "obecny_sredni_czas": obecny_sredni_czas, "redukcja_minut_na_sprawe": 0.0, "docelowy_sredni_czas": obecny_sredni_czas}
+    if not liczba_spraw or koszt_godziny <= 0:
+        return {"mozliwe": False, "juz_rentowny": False, "obecny_sredni_czas": obecny_sredni_czas}
+    redukcja_godzin = strata / koszt_godziny
+    if redukcja_godzin > obecne_godziny + 1e-9:
+        return {"mozliwe": False, "juz_rentowny": False, "obecny_sredni_czas": obecny_sredni_czas}
+    redukcja_minut_na_sprawe = redukcja_godzin * 60 / liczba_spraw
+    return {"mozliwe": True, "juz_rentowny": False, "obecny_sredni_czas": obecny_sredni_czas, "redukcja_minut_na_sprawe": redukcja_minut_na_sprawe, "docelowy_sredni_czas": obecny_sredni_czas - redukcja_minut_na_sprawe / 60}
+
+
+def _oblicz_prog_kosztu(parametry: dict, zmieniany_koszt: str, drugi_koszt: str) -> dict:
+    wyniki = oblicz_model(parametry)
+    godziny = wyniki["laczne_godziny"]
+    obecny = parametry[zmieniany_koszt]
+    if godziny <= 0:
+        return {"mozliwe": False, "obecnie": obecny}
+    prog = wyniki["ogolem"]["przychod"] / godziny - parametry[drugi_koszt]
+    if prog < 0:
+        return {"mozliwe": False, "obecnie": obecny}
+    return {"mozliwe": True, "obecnie": obecny, "prog": prog, "wymagana_redukcja": max(0.0, obecny - prog)}
+
+
+def oblicz_prog_kosztu_stalego(parametry: dict) -> dict:
+    return _oblicz_prog_kosztu(parametry, "koszt_staly_na_godzine", "wynagrodzenie_pracownika_na_godzine")
+
+
+def oblicz_prog_wynagrodzenia_pracownika(parametry: dict) -> dict:
+    return _oblicz_prog_kosztu(parametry, "wynagrodzenie_pracownika_na_godzine", "koszt_staly_na_godzine")
+
+
+def oblicz_prog_fin(parametry: dict, tolerancja: float = 0.0001) -> dict:
+    """Wyznacza maksymalny FIN (% WPS) zapewniający wynik nie mniejszy od zera."""
+    def wynik_dla(fin_percent: float) -> float:
+        return oblicz_model(_parametry_z_zmiana(parametry, fin_percent=fin_percent))["ogolem"]["wynik"]
+
+    wynik_0 = wynik_dla(0.0)
+    wynik_100 = wynik_dla(100.0)
+    if wynik_0 < 0:
+        return {"mozliwe": False, "rentowny_w_calym_zakresie": False}
+    if wynik_100 >= 0:
+        return {"mozliwe": True, "rentowny_w_calym_zakresie": True, "prog": 100.0}
+
+    dol, gora = 0.0, 100.0
+    while gora - dol > tolerancja:
+        srodek = (dol + gora) / 2
+        if wynik_dla(srodek) >= 0:
+            dol = srodek
+        else:
+            gora = srodek
+    return {"mozliwe": True, "rentowny_w_calym_zakresie": False, "prog": dol}
