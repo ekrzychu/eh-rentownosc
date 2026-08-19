@@ -186,19 +186,59 @@ with st.expander("Wyliczony podział portfela"):
     st.dataframe(podzial_tabela, hide_index=True, width="stretch")
     st.caption(f"Łącznie: {ogolem['liczba_spraw']} spraw · WPS od progu wzwyż: {wyniki['wps_wysoki']['liczba_spraw']} · WPS poniżej progu: {wyniki['wps_niski']['liczba_spraw']}")
 
-rodzaje = pd.DataFrame([
-    {
-        "Rodzaj": rodzaj, "Opis": KATEGORIE_SPRAW[rodzaj], "Liczba spraw": dane["liczba_spraw"],
-        "Udział w portfelu": dane["liczba_spraw"] / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
+def wiersz_laczny(rodzaj: str, dane: dict) -> dict:
+    liczba = dane["liczba_spraw"]
+    return {
+        "Rodzaj": rodzaj,
+        "Zakres WPS": "Łącznie",
+        "Opis": KATEGORIE_SPRAW[rodzaj],
+        "Liczba spraw": liczba,
+        "Udział w portfelu": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
         "Czas jednej sprawy (h)": (wyniki["podstawowe_minuty"] + dodatkowe[rodzaj]) / 60,
-        "Koszt jednej sprawy": dane["sredni_koszt"], "Łączny przychód": dane["przychod"],
-        "Łączny koszt": dane["koszt"], "Łączny wynik": dane["wynik"],
+        "Koszt jednej sprawy": dane["sredni_koszt"],
+        "Łączny przychód": dane["przychod"],
+        "Łączny koszt": dane["koszt"],
+        "Łączny wynik": dane["wynik"],
         "Średni wynik na sprawie": dane["sredni_wynik"],
     }
+
+
+def wiersz_grupy(grupa: dict, zakres_wps: str) -> dict:
+    liczba = grupa["liczba"]
+    return {
+        "Rodzaj": grupa["rodzaj"],
+        "Zakres WPS": zakres_wps,
+        "Opis": "",
+        "Liczba spraw": liczba,
+        "Udział w portfelu": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
+        "Czas jednej sprawy (h)": grupa["laczne_minuty"] / 60,
+        "Koszt jednej sprawy": grupa["koszt"],
+        "Łączny przychód": grupa["laczny_przychod"],
+        "Łączny koszt": grupa["laczny_koszt"],
+        "Łączny wynik": grupa["laczny_wynik"],
+        "Średni wynik na sprawie": grupa["wynik_jednostkowy"],
+    }
+
+
+rodzaje_ogolem = pd.DataFrame([
+    wiersz_laczny(rodzaj, dane)
     for rodzaj, dane in wyniki["rodzaje"].items()
 ])
+pokaz_podzial_wps = st.toggle("Pokaż podział według WPS", value=False)
+
+if pokaz_podzial_wps:
+    grupy = {(grupa["rodzaj"], grupa["grupa_wps"]): grupa for grupa in wyniki["grupy"]}
+    wiersze = []
+    for rodzaj, dane in wyniki["rodzaje"].items():
+        wiersze.append(wiersz_laczny(rodzaj, dane))
+        wiersze.append(wiersz_grupy(grupy[(rodzaj, "niski_wps")], "Poniżej progu"))
+        wiersze.append(wiersz_grupy(grupy[(rodzaj, "wysoki_wps")], "Od progu wzwyż"))
+    tabela_rodzaje = pd.DataFrame(wiersze)
+else:
+    tabela_rodzaje = rodzaje_ogolem
+
 st.dataframe(
-    rodzaje, hide_index=True, width="stretch",
+    tabela_rodzaje, hide_index=True, width="stretch",
     column_config={
         "Udział w portfelu": st.column_config.NumberColumn(format="%.1f%%"),
         "Czas jednej sprawy (h)": st.column_config.NumberColumn(format="%.2f"),
@@ -218,7 +258,7 @@ with kolumna_1:
     st.bar_chart(pd.DataFrame({"Kwota": [ogolem["przychod"], ogolem["koszt"], ogolem["wynik"]]}, index=["Przychód", "Koszt", "Wynik"]), height=300)
 with kolumna_2:
     st.subheader("Wynik według rodzaju sprawy")
-    st.bar_chart(rodzaje.set_index("Rodzaj")[["Łączny wynik"]], height=300)
+    st.bar_chart(rodzaje_ogolem.set_index("Rodzaj")[["Łączny wynik"]], height=300)
 st.subheader("Średni wynik na sprawie według WPS")
 st.bar_chart(pd.DataFrame({"Średni wynik": [wyniki["wps_niski"]["sredni_wynik"], wyniki["wps_wysoki"]["sredni_wynik"]]}, index=["WPS poniżej progu", "WPS od progu wzwyż"]), height=260)
 
