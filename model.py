@@ -1,7 +1,6 @@
-"""Deterministyczny model rentowności portfela spraw.
+"""Deterministyczny model rentowności portfela spraw."""
 
-Moduł nie zależy od warstwy prezentacji i może być używany z konsoli lub UI.
-"""
+from math import floor
 
 LICZBA_SPRAW = 600
 PROG_WPS = 10_000
@@ -29,11 +28,16 @@ PODSTAWOWE_CZYNNOSCI = {
 PODSTAWOWE_MINUTY = sum(PODSTAWOWE_CZYNNOSCI.values())
 
 DODATKOWE_MINUTY = {"P1": 120, "P2": 180, "P3": 240}
+P1_PERCENT = 25.0
+P2_PERCENT = 58.0
+P3_PERCENT = 17.0
+HIGH_WPS_PERCENT = 80.0
+LOW_WPS_PERCENT = 100.0 - HIGH_WPS_PERCENT
 
-PODZIAL_SPRAW = {
-    "P1": {"wysoki_wps": 120, "niski_wps": 30},
-    "P2": {"wysoki_wps": 278, "niski_wps": 70},
-    "P3": {"wysoki_wps": 82, "niski_wps": 20},
+KATEGORIE_SPRAW = {
+    "P1": "Koszty naprawy, uprzednie uzgodnienie kosztów",
+    "P2": "Koszty najmu pojazdu zastępczego, zadośćuczynienie, nieruchomości",
+    "P3": "Pozostałe sprawy",
 }
 
 
@@ -48,8 +52,42 @@ def domyslne_parametry() -> dict:
         "wynagrodzenie_pracownika_na_godzine": WYNAGRODZENIE_PRACOWNIKA_NA_GODZINE,
         "podstawowe_czynnosci": PODSTAWOWE_CZYNNOSCI.copy(),
         "dodatkowe_minuty": DODATKOWE_MINUTY.copy(),
-        "podzial_spraw": {rodzaj: podzial.copy() for rodzaj, podzial in PODZIAL_SPRAW.items()},
+        "udzialy_rodzajow": {"P1": P1_PERCENT, "P2": P2_PERCENT, "P3": P3_PERCENT},
+        "wysoki_wps_procent": HIGH_WPS_PERCENT,
     }
+
+
+def alokuj_liczby_z_procentow(liczba_spraw: int, udzialy: dict[str, float]) -> dict[str, int]:
+    """Alokuje całkowitą liczbę spraw metodą największych reszt."""
+    if liczba_spraw < 0:
+        raise ValueError("Liczba spraw nie może być ujemna.")
+    if abs(sum(udzialy.values()) - 100) > 1e-9:
+        raise ValueError("Udziały rodzajów spraw muszą sumować się do 100%.")
+
+    wartosci_dokladne = {nazwa: liczba_spraw * udzial / 100 for nazwa, udzial in udzialy.items()}
+    alokacja = {nazwa: floor(wartosc) for nazwa, wartosc in wartosci_dokladne.items()}
+    pozostale = liczba_spraw - sum(alokacja.values())
+    kolejnosc = sorted(udzialy, key=lambda nazwa: -(wartosci_dokladne[nazwa] - alokacja[nazwa]))
+    for nazwa in kolejnosc[:pozostale]:
+        alokacja[nazwa] += 1
+    return alokacja
+
+
+def zaokraglij_polowki_w_gore(wartosc: float) -> int:
+    """Zaokrągla dodatnią wartość według zwyczajowej zasady .5 w górę."""
+    return floor(wartosc + 0.5)
+
+
+def oblicz_podzial_spraw(
+    liczba_spraw: int, udzialy_rodzajow: dict[str, float], wysoki_wps_procent: float
+) -> dict[str, dict[str, int]]:
+    """Dzieli portfel na P1/P2/P3, a następnie na niski i wysoki WPS."""
+    liczby_rodzajow = alokuj_liczby_z_procentow(liczba_spraw, udzialy_rodzajow)
+    podzial = {}
+    for rodzaj, liczba in liczby_rodzajow.items():
+        wysoki = zaokraglij_polowki_w_gore(liczba * wysoki_wps_procent / 100)
+        podzial[rodzaj] = {"wysoki_wps": wysoki, "niski_wps": liczba - wysoki}
+    return podzial
 
 
 def oblicz_wynagrodzenie(wps: float, prog_wps: float) -> float:
@@ -106,6 +144,7 @@ def oblicz_grupe(
         koszt_godziny,
     )
     laczne_minuty = sum(parametry["podstawowe_czynnosci"].values()) + parametry["dodatkowe_minuty"][rodzaj]
+    wynik_jednostkowy = wynagrodzenie - koszt
     return {
         "rodzaj": rodzaj,
         "grupa_wps": grupa_wps,
@@ -113,11 +152,11 @@ def oblicz_grupe(
         "liczba": liczba,
         "wynagrodzenie": wynagrodzenie,
         "koszt": koszt,
-        "wynik_jednostkowy": wynagrodzenie - koszt,
+        "wynik_jednostkowy": wynik_jednostkowy,
         "laczne_minuty": laczne_minuty,
         "laczny_przychod": liczba * wynagrodzenie,
         "laczny_koszt": liczba * koszt,
-        "laczny_wynik": liczba * (wynagrodzenie - koszt),
+        "laczny_wynik": liczba * wynik_jednostkowy,
     }
 
 
@@ -126,8 +165,11 @@ def oblicz_model(parametry: dict | None = None) -> dict:
     if parametry is None:
         parametry = domyslne_parametry()
 
+    podzial_spraw = oblicz_podzial_spraw(
+        parametry["liczba_spraw"], parametry["udzialy_rodzajow"], parametry["wysoki_wps_procent"]
+    )
     grupy = []
-    for rodzaj, podzial in parametry["podzial_spraw"].items():
+    for rodzaj, podzial in podzial_spraw.items():
         for grupa_wps, liczba in podzial.items():
             wps = parametry["wysoki_wps"] if grupa_wps == "wysoki_wps" else parametry["niski_wps"]
             grupy.append(oblicz_grupe(rodzaj, grupa_wps, liczba, wps, parametry))
@@ -138,7 +180,7 @@ def oblicz_model(parametry: dict | None = None) -> dict:
     }
     rodzaje = {
         rodzaj: podsumuj_grupy([g for g in grupy if g["rodzaj"] == rodzaj])
-        for rodzaj in parametry["podzial_spraw"]
+        for rodzaj in podzial_spraw
     }
     podstawowe_minuty = sum(parametry["podstawowe_czynnosci"].values())
     koszt_godziny = parametry["koszt_staly_na_godzine"] + parametry["wynagrodzenie_pracownika_na_godzine"]
@@ -148,6 +190,7 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         "wps_wysoki": wedlug_wps["wysoki_wps"],
         "rodzaje": rodzaje,
         "grupy": grupy,
+        "podzial_spraw": podzial_spraw,
         "podstawowe_minuty": podstawowe_minuty,
         "koszt_godziny": koszt_godziny,
         "koszty_jednostkowe": {
