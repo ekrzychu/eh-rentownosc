@@ -19,10 +19,29 @@ st.set_page_config(page_title="Analiza rentowności", layout="wide")
 st.markdown(
     """
     <style>
-        .block-container {max-width: 1440px; padding-top: 2.5rem; padding-bottom: 4rem;}
+        .block-container {
+            width: 100%;
+            max-width: 1600px;
+            padding: 2.5rem clamp(1.25rem, 2vw, 2.5rem) 4rem;
+        }
         [data-testid="stSidebar"] [data-testid="stExpander"] {margin-bottom: 0.65rem;}
         [data-testid="stSidebar"] [data-testid="stNumberInput"] {margin-bottom: 0.5rem;}
         [data-testid="stMetric"] {padding-top: 0.3rem;}
+        [data-testid="stMetricValue"] {white-space: nowrap;}
+
+        @media (max-width: 1600px) {
+            [data-testid="stMetricValue"] {
+                font-size: 1.6rem;
+                letter-spacing: -0.025em;
+            }
+            [data-testid="stAppViewContainer"] h1 {font-size: 2.25rem;}
+        }
+
+        @media (max-width: 1200px) {
+            .block-container {padding-left: 1rem; padding-right: 1rem;}
+            [data-testid="stMetricValue"] {font-size: 1.38rem;}
+            [data-testid="stAppViewContainer"] h1 {font-size: 2rem;}
+        }
         .summary-card {
             background: rgba(49, 51, 63, 0.06);
             border-left: 3px solid rgba(49, 51, 63, 1);
@@ -153,7 +172,7 @@ parametry = {
 wyniki = oblicz_model(parametry)
 ogolem = wyniki["ogolem"]
 
-kpi = st.columns(4, gap="large")
+kpi = st.columns(4, gap="medium")
 kpi[0].metric("Przychód", kwota(ogolem["przychod"]))
 kpi[1].metric("Koszt", kwota(ogolem["koszt"]))
 kpi[2].metric("Zysk / strata", kwota(ogolem["wynik"]))
