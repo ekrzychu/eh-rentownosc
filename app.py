@@ -4,13 +4,13 @@ import streamlit as st
 from model import (
     DODATKOWE_MINUTY,
     KATEGORIE_SPRAW,
-    PODSTAWOWE_CZYNNOSCI,
     domyslne_parametry,
     oblicz_model,
     oblicz_prog_czasu,
     oblicz_prog_fin,
     oblicz_prog_kosztu_stalego,
     oblicz_prog_wynagrodzenia_pracownika,
+    oblicz_udzialy_ugod,
 )
 
 
@@ -63,6 +63,10 @@ def kwota(wartosc: float) -> str:
 
 def procent(wartosc: float) -> str:
     return f"{wartosc:.2f}".replace(".", ",") + "%"
+
+
+def liczba(wartosc: float, miejsca: int = 1) -> str:
+    return f"{wartosc:,.{miejsca}f}".replace(",", " ").replace(".", ",")
 
 
 def karta_podsumowania(etykieta: str, wartosc: str) -> None:
@@ -119,26 +123,104 @@ with st.sidebar:
         niski_wps = st.number_input("Średni WPS poniżej progu", min_value=0.0, value=float(domyslne["niski_wps"]), step=100.0)
         wysoki_wps = st.number_input("Średni WPS od progu wzwyż", min_value=0.0, value=float(domyslne["wysoki_wps"]), step=100.0)
 
+    with st.expander("Ugody"):
+        kategoryczna_odmowa_percent = st.number_input(
+            "Kategoryczna odmowa (%)", min_value=0.0, max_value=100.0,
+            value=domyslne["kategoryczna_odmowa_percent"], step=0.1, format="%.1f",
+        )
+        automatyczne_ramy_percent = st.number_input(
+            "Automatyczne ramy (%)", min_value=0.0, max_value=100.0,
+            value=domyslne["automatyczne_ramy_percent"], step=0.1, format="%.1f",
+        )
+        if kategoryczna_odmowa_percent + automatyczne_ramy_percent > 100 + 1e-9:
+            st.error("Suma kategorycznej odmowy i automatycznych ram nie może przekraczać 100%.")
+            st.stop()
+
+        szansa_na_ugode_percent = st.number_input(
+            "Szansa na ugodę poza ramami (% pozostałych spraw)",
+            min_value=0.0, max_value=100.0,
+            value=domyslne["szansa_na_ugode_percent"], step=0.1, format="%.1f",
+        )
+        udzialy_ugod = oblicz_udzialy_ugod(
+            kategoryczna_odmowa_percent,
+            automatyczne_ramy_percent,
+            szansa_na_ugode_percent,
+        )
+        brak_szans_percent = 100.0 - szansa_na_ugode_percent
+        karta_podsumowania("Pozostałe sprawy", procent(udzialy_ugod["pozostale_sprawy"]))
+        karta_podsumowania(
+            "Brak szans na ugodę (% pozostałych spraw)", procent(brak_szans_percent)
+        )
+        st.caption("W tym:")
+        st.write(
+            "Szansa na ugodę poza ramami: "
+            f"**{procent(udzialy_ugod['szansa_poza_ramami'])} całego portfela**"
+        )
+        st.write(
+            "Brak szans na ugodę: "
+            f"**{procent(udzialy_ugod['brak_szans'])} całego portfela**"
+        )
+        karta_podsumowania(
+            "Łączny udział spraw zakończonych ugodą",
+            procent(udzialy_ugod["zakonczone_ugoda"]),
+        )
+        karta_podsumowania(
+            "Łączny udział spraw bez ugody", procent(udzialy_ugod["bez_ugody"])
+        )
+
     with st.expander("Koszt pracy"):
         koszt_staly = st.number_input("Koszt stały na godzinę", min_value=0.0, value=domyslne["koszt_staly_na_godzine"], step=1.0)
         wynagrodzenie_pracownika = st.number_input("Wynagrodzenie pracownika na godzinę", min_value=0.0, value=domyslne["wynagrodzenie_pracownika_na_godzine"], step=1.0)
+        liczba_pracownikow = st.number_input(
+            "Liczba pracowników", min_value=0,
+            value=int(domyslne["liczba_pracownikow"]), step=1,
+        )
+        liczba_dni_pracy_w_roku = st.number_input(
+            "Liczba dni pracy w roku", min_value=0,
+            value=int(domyslne["liczba_dni_pracy_w_roku"]), step=1,
+        )
         karta_podsumowania("Łączny koszt godziny", kwota(koszt_staly + wynagrodzenie_pracownika))
 
     with st.expander("Czas pracy"):
-        st.caption("Czynności podstawowe")
-        czynnosci = {
+        st.caption("Czynności wspólne")
+        wspolne_czynnosci = {
             nazwa: st.number_input(nazwa, min_value=0, value=minuty, step=5)
-            for nazwa, minuty in PODSTAWOWE_CZYNNOSCI.items()
+            for nazwa, minuty in domyslne["wspolne_czynnosci"].items()
         }
+        st.divider()
+        st.caption("Czynności procesowe")
+        procesowe_czynnosci = {
+            nazwa: st.number_input(nazwa, min_value=0, value=minuty, step=5)
+            for nazwa, minuty in domyslne["procesowe_czynnosci"].items()
+        }
+        karta_podsumowania("Czynności procesowe", f"{sum(procesowe_czynnosci.values())} min")
+        st.divider()
+        st.caption("Czynności ugodowe")
+        ugodowe_czynnosci = {
+            nazwa: st.number_input(nazwa, min_value=0, value=minuty, step=5)
+            for nazwa, minuty in domyslne["ugodowe_czynnosci"].items()
+        }
+        analiza_mozliwosci_ugody = st.number_input(
+            "Analiza możliwości ugody", min_value=0,
+            value=domyslne["analiza_mozliwosci_ugody"], step=5,
+        )
+        karta_podsumowania("Czynności ugodowe", f"{sum(ugodowe_czynnosci.values())} min")
         st.divider()
         st.caption("Dodatkowy czas według rodzaju sprawy")
         dodatkowe = {
             rodzaj: st.number_input(f"Dodatkowy czas {rodzaj} (min)", min_value=0, value=minuty, step=5)
             for rodzaj, minuty in DODATKOWE_MINUTY.items()
         }
-        minuty_podstawowe = sum(czynnosci.values())
-        karta_podsumowania("Podstawowy czas", f"{minuty_podstawowe} min / {minuty_podstawowe / 60:.2f} h")
-        karta_podsumowania("Podstawowy koszt obsługi sprawy", kwota((koszt_staly + wynagrodzenie_pracownika) * minuty_podstawowe / 60))
+        st.divider()
+        st.caption("Czynności dzienne na pracownika")
+        codzienne_czynnosci = {
+            nazwa: st.number_input(nazwa, min_value=0, value=minuty, step=5)
+            for nazwa, minuty in domyslne["codzienne_czynnosci"].items()
+        }
+        karta_podsumowania(
+            "Czynności dzienne",
+            f"{sum(codzienne_czynnosci.values())} min / pracownik / dzień",
+        )
 
     with st.expander("Specyfika spraw"):
         st.caption("Udział rodzajów spraw")
@@ -166,8 +248,14 @@ parametry = {
     "liczba_spraw": liczba_spraw, "prog_wps": prog_wps, "fin_percent": fin_percent,
     "niski_wps": niski_wps, "wysoki_wps": wysoki_wps,
     "koszt_staly_na_godzine": koszt_staly, "wynagrodzenie_pracownika_na_godzine": wynagrodzenie_pracownika,
-    "podstawowe_czynnosci": czynnosci, "dodatkowe_minuty": dodatkowe,
+    "liczba_pracownikow": liczba_pracownikow, "liczba_dni_pracy_w_roku": liczba_dni_pracy_w_roku,
+    "wspolne_czynnosci": wspolne_czynnosci, "procesowe_czynnosci": procesowe_czynnosci,
+    "ugodowe_czynnosci": ugodowe_czynnosci, "analiza_mozliwosci_ugody": analiza_mozliwosci_ugody,
+    "codzienne_czynnosci": codzienne_czynnosci, "dodatkowe_minuty": dodatkowe,
     "udzialy_rodzajow": udzialy, "wysoki_wps_procent": wysoki_wps_procent,
+    "kategoryczna_odmowa_percent": kategoryczna_odmowa_percent,
+    "automatyczne_ramy_percent": automatyczne_ramy_percent,
+    "szansa_na_ugode_percent": szansa_na_ugode_percent,
 }
 wyniki = oblicz_model(parametry)
 ogolem = wyniki["ogolem"]
@@ -177,6 +265,20 @@ kpi[0].metric("Przychód", kwota(ogolem["przychod"]))
 kpi[1].metric("Koszt", kwota(ogolem["koszt"]))
 kpi[2].metric("Zysk / strata", kwota(ogolem["wynik"]))
 kpi[3].metric("Marża", procent(ogolem["marza"]))
+
+pojemnosc = wyniki["pojemnosc"]
+if pojemnosc["brak_czasu_na_sprawy"]:
+    st.warning(
+        "Czynności dzienne zajmują cały standardowy dzień pracy lub więcej. "
+        "Nie pozostaje czas na bezpośrednią obsługę spraw."
+    )
+elif pojemnosc["przekroczona"]:
+    st.warning(
+        "Przy obecnej liczbie pracowników portfel wymaga więcej czasu pracy, "
+        "niż jest dostępne w ciągu roku.\n\n"
+        f"Wymagany czas obsługi spraw: **{liczba(pojemnosc['bezposrednie_minuty_spraw'] / 60)} h**  \n"
+        f"Dostępny czas obsługi spraw: **{liczba(max(0.0, pojemnosc['pojemnosc_spraw_minuty']) / 60)} h**"
+    )
 
 st.divider()
 st.header("Podział według WPS")
@@ -213,7 +315,7 @@ def wiersz_laczny(rodzaj: str, dane: dict) -> dict:
         "Opis": KATEGORIE_SPRAW[rodzaj],
         "Liczba spraw": liczba,
         "Udział w portfelu": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
-        "Czas jednej sprawy (h)": (wyniki["podstawowe_minuty"] + dodatkowe[rodzaj]) / 60,
+        "Bezpośredni czas jednej sprawy (h)": (wyniki["srednie_minuty_sciezki_ugody"] + dodatkowe[rodzaj]) / 60,
         "Koszt jednej sprawy": dane["sredni_koszt"],
         "Łączny przychód": dane["przychod"],
         "Łączny koszt": dane["koszt"],
@@ -230,7 +332,7 @@ def wiersz_grupy(grupa: dict, zakres_wps: str) -> dict:
         "Opis": "",
         "Liczba spraw": liczba,
         "Udział w portfelu": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
-        "Czas jednej sprawy (h)": grupa["laczne_minuty"] / 60,
+        "Bezpośredni czas jednej sprawy (h)": grupa["laczne_minuty"] / 60,
         "Koszt jednej sprawy": grupa["koszt"],
         "Łączny przychód": grupa["laczny_przychod"],
         "Łączny koszt": grupa["laczny_koszt"],
@@ -260,7 +362,7 @@ st.dataframe(
     tabela_rodzaje, hide_index=True, width="stretch",
     column_config={
         "Udział w portfelu": st.column_config.NumberColumn(format="%.1f%%"),
-        "Czas jednej sprawy (h)": st.column_config.NumberColumn(format="%.2f"),
+        "Bezpośredni czas jednej sprawy (h)": st.column_config.NumberColumn(format="%.2f"),
         "Koszt jednej sprawy": st.column_config.NumberColumn(format="%.2f zł"),
         "Łączny przychód": st.column_config.NumberColumn(format="%.2f zł"),
         "Łączny koszt": st.column_config.NumberColumn(format="%.2f zł"),
@@ -288,9 +390,9 @@ czas, koszt, efektywnosc = st.columns(3, gap="large")
 with czas:
     st.subheader("Czas")
     prog_czasu = oblicz_prog_czasu(parametry)
-    st.write(f"Obecny średni czas: **{prog_czasu['obecny_sredni_czas']:.2f} h / sprawa**")
+    st.write(f"Obecny średni bezpośredni czas: **{prog_czasu['obecny_sredni_czas']:.2f} h / sprawa**")
     if not prog_czasu["mozliwe"]:
-        st.write("Nie można osiągnąć rentowności wyłącznie poprzez skrócenie czasu w fizycznie możliwym zakresie.")
+        st.write("Nie można osiągnąć rentowności wyłącznie poprzez skrócenie bezpośredniego czasu obsługi spraw. Czynności dzienne pozostają bez zmian.")
     elif prog_czasu["juz_rentowny"]:
         st.write("Portfel jest już rentowny przy obecnych założeniach. Wymagana redukcja czasu: **0 min**.")
     else:
