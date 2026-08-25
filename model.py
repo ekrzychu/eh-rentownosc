@@ -7,7 +7,7 @@ LICZBA_SPRAW = 600
 PROG_WPS = 10_000
 NISKI_WPS = 2_500
 WYSOKI_WPS = 25_000
-KOSZT_STALY_NA_GODZINE = 81.17
+KOSZT_STALY_NA_GODZINE = 36.00
 WYNAGRODZENIE_PRACOWNIKA_NA_GODZINE = 59.88
 KOSZT_GODZINY = KOSZT_STALY_NA_GODZINE + WYNAGRODZENIE_PRACOWNIKA_NA_GODZINE
 
@@ -55,6 +55,8 @@ KATEGORYCZNA_ODMOWA_PERCENT = 15.0
 AUTOMATYCZNE_RAMY_PERCENT = 30.0
 SZANSA_NA_UGODE_PERCENT = 50.0
 ZAWARTE_UGODY_PERCENT = 50.0
+UDZIAL_II_INSTANCJI_PERCENT = 20.0
+OBSLUGA_II_INSTANCJI_MINUTY = 180
 LICZBA_PRACOWNIKOW = 2
 LICZBA_DNI_PRACY_W_ROKU = 251
 MINUTY_DNIA_PRACY = 480
@@ -88,6 +90,8 @@ def domyslne_parametry() -> dict:
         "automatyczne_ramy_percent": AUTOMATYCZNE_RAMY_PERCENT,
         "szansa_na_ugode_percent": SZANSA_NA_UGODE_PERCENT,
         "zawarte_ugody_percent": ZAWARTE_UGODY_PERCENT,
+        "udzial_ii_instancji_percent": UDZIAL_II_INSTANCJI_PERCENT,
+        "obsluga_ii_instancji_minuty": OBSLUGA_II_INSTANCJI_MINUTY,
         "liczba_pracownikow": LICZBA_PRACOWNIKOW,
         "liczba_dni_pracy_w_roku": LICZBA_DNI_PRACY_W_ROKU,
     }
@@ -153,6 +157,58 @@ def oblicz_czasy_sciezek_ugod(
         "brak_ugody_poza_ramami": (
             wspolne + analiza_mozliwosci_ugody + przygotowanie_ugody + procesowe
         ),
+    }
+
+
+def oblicz_czasy_sciezek_z_ii_instancja(
+    czasy_podstawowe: dict[str, float],
+    udzial_ii_instancji_percent: float,
+    obsluga_ii_instancji_minuty: float,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Dodaje oczekiwany czas II instancji wyłącznie do ścieżek bez ugody."""
+    if not 0 <= udzial_ii_instancji_percent <= 100:
+        raise ValueError("Udział spraw w II instancji musi mieścić się w zakresie od 0% do 100%.")
+    if obsluga_ii_instancji_minuty < 0:
+        raise ValueError("Czas obsługi sprawy w II instancji nie może być ujemny.")
+    sciezki_bez_ugody = {
+        "kategoryczna_odmowa",
+        "brak_szans",
+        "brak_ugody_poza_ramami",
+    }
+    oczekiwany_czas = udzial_ii_instancji_percent / 100 * obsluga_ii_instancji_minuty
+    czasy_ii_instancji = {
+        nazwa: oczekiwany_czas if nazwa in sciezki_bez_ugody else 0.0
+        for nazwa in czasy_podstawowe
+    }
+    czasy_laczne = {
+        nazwa: czas + czasy_ii_instancji[nazwa]
+        for nazwa, czas in czasy_podstawowe.items()
+    }
+    return czasy_laczne, czasy_ii_instancji
+
+
+def oblicz_wskazniki_ii_instancji(
+    liczba_spraw: int,
+    udzialy_ugod: dict[str, float],
+    udzial_ii_instancji_percent: float,
+    obsluga_ii_instancji_minuty: float,
+) -> dict[str, float]:
+    """Oblicza oczekiwany udział, liczbę i czas II instancji w całym portfelu."""
+    if not 0 <= udzial_ii_instancji_percent <= 100:
+        raise ValueError("Udział spraw w II instancji musi mieścić się w zakresie od 0% do 100%.")
+    if obsluga_ii_instancji_minuty < 0:
+        raise ValueError("Czas obsługi sprawy w II instancji nie może być ujemny.")
+    udzial_w_portfelu = udzialy_ugod["bez_ugody"] * udzial_ii_instancji_percent / 100
+    oczekiwana_liczba = liczba_spraw * udzial_w_portfelu / 100
+    minuty_na_sprawe = udzial_w_portfelu / 100 * obsluga_ii_instancji_minuty
+    minuty_lacznie = liczba_spraw * minuty_na_sprawe
+    return {
+        "udzial_ii_instancji_percent": udzial_ii_instancji_percent,
+        "udzial_ii_instancji_w_portfelu": udzial_w_portfelu,
+        "oczekiwana_liczba_spraw_ii_instancji": oczekiwana_liczba,
+        "ii_instancja_minuty_na_sprawe_portfela": minuty_na_sprawe,
+        "ii_instancja_minuty_lacznie": minuty_lacznie,
+        "ii_instancja_godziny_lacznie": minuty_lacznie / 60,
     }
 
 
@@ -319,7 +375,17 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         parametry["ugodowe_czynnosci"],
         parametry["analiza_mozliwosci_ugody"],
     )
-    srednie_minuty_sciezki = oblicz_sredni_czas_sciezki_ugody(udzialy_ugod, czasy_sciezek)
+    czasy_sciezek_z_ii_instancja, czasy_ii_instancji_sciezek = oblicz_czasy_sciezek_z_ii_instancja(
+        czasy_sciezek,
+        parametry["udzial_ii_instancji_percent"],
+        parametry["obsluga_ii_instancji_minuty"],
+    )
+    srednie_minuty_podstawowej_sciezki = oblicz_sredni_czas_sciezki_ugody(
+        udzialy_ugod, czasy_sciezek
+    )
+    srednie_minuty_sciezki = oblicz_sredni_czas_sciezki_ugody(
+        udzialy_ugod, czasy_sciezek_z_ii_instancja
+    )
     koszt_godziny = (
         parametry["koszt_staly_na_godzine"]
         + parametry["wynagrodzenie_pracownika_na_godzine"]
@@ -331,6 +397,12 @@ def oblicz_model(parametry: dict | None = None) -> dict:
     )
     czynnosci_dzienne_koszt = czynnosci_dzienne_minuty / 60 * koszt_godziny
     liczba_spraw = parametry["liczba_spraw"]
+    wskazniki_ii_instancji = oblicz_wskazniki_ii_instancji(
+        liczba_spraw,
+        udzialy_ugod,
+        parametry["udzial_ii_instancji_percent"],
+        parametry["obsluga_ii_instancji_minuty"],
+    )
     narzut_dzienny_na_sprawe = czynnosci_dzienne_koszt / liczba_spraw if liczba_spraw else 0.0
 
     podzial_spraw = oblicz_podzial_spraw(
@@ -379,7 +451,12 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         "podzial_spraw": podzial_spraw,
         "udzialy_ugod": udzialy_ugod,
         "czasy_sciezek_ugod": czasy_sciezek,
+        "czasy_ii_instancji_sciezek": czasy_ii_instancji_sciezek,
+        "czasy_sciezek_z_ii_instancja": czasy_sciezek_z_ii_instancja,
+        "srednie_minuty_podstawowej_sciezki_ugody": srednie_minuty_podstawowej_sciezki,
         "srednie_minuty_sciezki_ugody": srednie_minuty_sciezki,
+        **wskazniki_ii_instancji,
+        "obsluga_ii_instancji_minuty": parametry["obsluga_ii_instancji_minuty"],
         "koszt_godziny": koszt_godziny,
         "bezposrednie_minuty_spraw": bezposrednie_minuty_spraw,
         "czynnosci_dzienne_minuty": czynnosci_dzienne_minuty,

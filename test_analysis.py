@@ -42,8 +42,14 @@ class TestSilnikProgow(unittest.TestCase):
             with self.subTest(identyfikator=identyfikator):
                 self.sprawdz_granice(identyfikator)
 
-    def test_bufor_zawartych_ugod_dla_marzy_15_procent(self):
-        self.sprawdz_granice("zawarte_ugody", 15.0)
+    def test_bufor_zawartych_ugod_dla_marzy_40_procent(self):
+        self.sprawdz_granice("zawarte_ugody", 40.0)
+
+    def test_bufory_parametrow_ii_instancji(self):
+        for identyfikator in ("udzial_ii_instancji", "czas_ii_instancji"):
+            with self.subTest(identyfikator=identyfikator):
+                prog = self.sprawdz_granice(identyfikator, 40.0)
+                self.assertTrue(prog["wplywa_na_pojemnosc"])
 
     def test_scenariusz_nierentowny_i_zmiana_niewystarczajaca(self):
         parametry = {**self.parametry, "koszt_staly_na_godzine": 250.0}
@@ -92,7 +98,8 @@ class TestSilnikProgow(unittest.TestCase):
             self.assertGreater(podsumowania[0.0][identyfikator]["granica"], podsumowania[10.0][identyfikator]["granica"])
             self.assertGreater(podsumowania[10.0][identyfikator]["granica"], podsumowania[20.0][identyfikator]["granica"])
         self.assertIsNone(podsumowania[10.0]["zawarte_ugody"]["granica"])
-        self.assertIsNotNone(podsumowania[20.0]["zawarte_ugody"]["granica"])
+        prog_ugod_40 = kluczowe_progi(self.parametry, 40.0)["zawarte_ugody"]
+        self.assertIsNotNone(prog_ugod_40["granica"])
 
     def test_podsumowanie_i_tabela_maja_te_same_progi(self):
         for cel in (0.0, 10.0, 20.0):
@@ -110,6 +117,8 @@ class TestSilnikProgow(unittest.TestCase):
         po_zmianie = oblicz_model(zmienione)
         self.assertAlmostEqual(po_zmianie["bezposrednie_minuty_spraw"], bazowe["bezposrednie_minuty_spraw"] / 2)
         self.assertEqual(po_zmianie["czynnosci_dzienne_minuty"], bazowe["czynnosci_dzienne_minuty"])
+        self.assertEqual(zmienione["udzial_ii_instancji_percent"], self.parametry["udzial_ii_instancji_percent"])
+        self.assertEqual(zmienione["obsluga_ii_instancji_minuty"], self.parametry["obsluga_ii_instancji_minuty"] / 2)
 
     def test_granica_calkowita_zwraca_dokladna_bezpieczna_wartosc(self):
         analiza = analizuj_progi(self.parametry, 0.0)
@@ -136,7 +145,17 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
             for nazwa in parametry[klucz]
         }
         oczekiwane.add("analiza_ugody")
+        oczekiwane.add("czas_ii_instancji")
         self.assertTrue(oczekiwane.issubset(identyfikatory))
+
+    def test_analityka_zawiera_obie_dzwignie_ii_instancji(self):
+        parametry = domyslne_parametry()
+        definicje = {x["id"] for x in definicje_parametrow(parametry)}
+        self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(definicje))
+        wrazliwosc = {x["Id"] for x in analiza_wrazliwosci(parametry)}
+        self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(wrazliwosc))
+        progi = {x["id"] for x in analizuj_progi(parametry, 40.0)["pozycje"]}
+        self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(progi))
 
     def test_udzial_p1_zachowuje_sume_i_relacje(self):
         wynik = przelicz_udzial_rodzaju({"P1": 25.0, "P2": 58.0, "P3": 17.0}, "P1", 35.0)
@@ -157,13 +176,23 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
         zmieniony = oblicz_model(ustaw_parametr(parametry, "procesowe:Duplika", parametry["procesowe_czynnosci"]["Duplika"] - 1))["ogolem"]["wynik"]
         self.assertAlmostEqual(analiza["Duplika"]["Wpływ skrócenia o 1 min"], zmieniony - bazowy)
 
+    def test_wartosc_minuty_ii_instancji_jest_wazona_modelem(self):
+        parametry = domyslne_parametry()
+        analiza = {x["Czynność"]: x for x in wartosc_skrocenia_czynnosci(parametry)}
+        bazowy = oblicz_model(parametry)["ogolem"]["wynik"]
+        zmieniony = oblicz_model(ustaw_parametr(parametry, "czas_ii_instancji", 179))["ogolem"]["wynik"]
+        self.assertAlmostEqual(
+            analiza["Obsługa sprawy w II instancji"]["Wpływ skrócenia o 1 min"],
+            zmieniony - bazowy,
+        )
+
 
 class TestUgodyIPojemnosc(unittest.TestCase):
     def test_minimalna_skutecznosc_ugod(self):
         parametry = domyslne_parametry()
         analiza = ekonomika_ugod(parametry)
         prog = analiza["minimalna_skutecznosc"]
-        czasy = oblicz_model(parametry)["czasy_sciezek_ugod"]
+        czasy = oblicz_model(parametry)["czasy_sciezek_z_ii_instancja"]
         oczekiwany = prog / 100 * czasy["zawarte_poza_ramami"] + (1 - prog / 100) * czasy["brak_ugody_poza_ramami"]
         self.assertAlmostEqual(oczekiwany, czasy["brak_szans"], places=6)
         self.assertLess(
@@ -174,6 +203,13 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             (prog - 0.01) / 100 * czasy["zawarte_poza_ramami"] + (1 - (prog - 0.01) / 100) * czasy["brak_ugody_poza_ramami"],
             czasy["brak_szans"],
         )
+
+    def test_ii_instancja_zwieksza_ekonomiczna_wartosc_ugod(self):
+        parametry = domyslne_parametry()
+        bez_ii = ekonomika_ugod({**parametry, "udzial_ii_instancji_percent": 0.0})
+        z_ii = ekonomika_ugod(parametry)
+        self.assertLess(z_ii["minimalna_skutecznosc"], bez_ii["minimalna_skutecznosc"])
+        self.assertGreater(z_ii["strategia_wplyw_pln"], bez_ii["strategia_wplyw_pln"])
 
     def test_minimum_pracownikow_i_maksimum_spraw_sa_granicami(self):
         parametry = domyslne_parametry()
@@ -193,6 +229,12 @@ class TestUgodyIPojemnosc(unittest.TestCase):
 
     def test_analiza_pojemnosci_ma_szesc_segmentow(self):
         self.assertEqual(len(analiza_pojemnosci(domyslne_parametry())["segmenty"]), 6)
+
+    def test_ii_instancja_zmniejsza_maksymalna_pojemnosc(self):
+        parametry = domyslne_parametry()
+        bez_ii = analiza_pojemnosci({**parametry, "udzial_ii_instancji_percent": 0.0})
+        z_ii = analiza_pojemnosci(parametry)
+        self.assertLess(z_ii["maksymalne_sprawy"], bez_ii["maksymalne_sprawy"])
 
     def test_status_rozroznia_rentownosc_i_wykonalnosc(self):
         przeciazony = domyslne_parametry()
@@ -228,6 +270,23 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             for pozycja in wykonalne_rekomendacje["najwiekszy_wplyw"]
         ))
 
+    def test_udzial_ii_instancji_moze_trafic_do_rekomendacji(self):
+        parametry = {
+            **domyslne_parametry(),
+            "liczba_pracownikow": 3,
+            "obsluga_ii_instancji_minuty": 1000,
+        }
+        rekomendacje = rekomendacje_deterministyczne(
+            analiza_wrazliwosci(parametry),
+            analizuj_progi(parametry, 0.0),
+            ekonomika_ugod(parametry),
+            analiza_pojemnosci(parametry),
+        )
+        self.assertIn(
+            "udzial_ii_instancji",
+            {pozycja["Id"] for pozycja in rekomendacje["najwiekszy_wplyw"]},
+        )
+
 
 class TestSymulator(unittest.TestCase):
     def test_wynik_symulatora_jest_wynikiem_modelu(self):
@@ -240,6 +299,15 @@ class TestSymulator(unittest.TestCase):
         parametry = domyslne_parametry()
         self.assertFalse(symuluj_pojedyncza_zmiane(parametry, "fin", 50.0)["status_operacyjny"]["wykonalne"])
         self.assertTrue(symuluj_pojedyncza_zmiane(parametry, "liczba_pracownikow", 3)["status_operacyjny"]["wykonalne"])
+
+    def test_symulator_ii_instancji_jest_zgodny_z_modelem_i_nie_zmienia_przychodu(self):
+        parametry = domyslne_parametry()
+        for identyfikator, wartosc in (("udzial_ii_instancji", 75.0), ("czas_ii_instancji", 300.0)):
+            with self.subTest(identyfikator=identyfikator):
+                symulacja = symuluj_pojedyncza_zmiane(parametry, identyfikator, wartosc)
+                bezposrednio = oblicz_model(ustaw_parametr(parametry, identyfikator, wartosc))
+                self.assertEqual(symulacja["wyniki"]["ogolem"], bezposrednio["ogolem"])
+                self.assertEqual(symulacja["scenariusz"]["Przychód"], symulacja["obecnie"]["Przychód"])
 
 
 if __name__ == "__main__":

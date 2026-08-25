@@ -41,6 +41,7 @@ def ustaw_sredni_bezposredni_czas(parametry: dict, minuty_na_sprawe: float) -> d
     for klucz in ("wspolne_czynnosci", "procesowe_czynnosci", "ugodowe_czynnosci", "dodatkowe_minuty"):
         wynik[klucz] = {nazwa: wartosc * skala for nazwa, wartosc in parametry[klucz].items()}
     wynik["analiza_mozliwosci_ugody"] = parametry["analiza_mozliwosci_ugody"] * skala
+    wynik["obsluga_ii_instancji_minuty"] = parametry["obsluga_ii_instancji_minuty"] * skala
     return wynik
 
 
@@ -86,6 +87,8 @@ def definicje_parametrow(parametry: dict) -> list[dict]:
         {"id": "automatyczne_ramy", "nazwa": "Automatyczne ramy", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0 - parametry["kategoryczna_odmowa_percent"], "krok": 5.0},
         {"id": "szansa_na_ugode", "nazwa": "Szansa na ugodę poza ramami", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "zawarte_ugody", "nazwa": "Zawarte ugody", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
+        {"id": "udzial_ii_instancji", "nazwa": "Udział spraw w II instancji", "kategoria": "Operacyjne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
+        {"id": "czas_ii_instancji", "nazwa": "Obsługa sprawy w II instancji", "kategoria": "Operacyjne", "podkategoria": "II instancja", "jednostka": "min", "typ": "czas", "min": 0.0, "max": max(1440.0, parametry["obsluga_ii_instancji_minuty"] + 1440), "krok": 10.0},
         {"id": "wysoki_wps_procent", "nazwa": "Udział wysokiego WPS", "kategoria": "Struktura portfela", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "liczba_spraw", "nazwa": "Liczba spraw", "kategoria": "Struktura portfela", "jednostka": "spraw", "typ": "calkowita", "min": 0, "max": max(1000, parametry["liczba_spraw"] * 3 + 500), "krok": 50},
         {"id": "liczba_pracownikow", "nazwa": "Liczba pracowników", "kategoria": "Operacyjne", "jednostka": "osób", "typ": "calkowita", "min": 0, "max": max(50, parametry["liczba_pracownikow"] * 4 + 10), "krok": 1},
@@ -114,6 +117,7 @@ def wartosc_parametru(parametry: dict, identyfikator: str) -> float:
         "fin": "fin_percent", "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
         "kategoryczna_odmowa": "kategoryczna_odmowa_percent", "automatyczne_ramy": "automatyczne_ramy_percent",
         "szansa_na_ugode": "szansa_na_ugode_percent", "zawarte_ugody": "zawarte_ugody_percent",
+        "udzial_ii_instancji": "udzial_ii_instancji_percent", "czas_ii_instancji": "obsluga_ii_instancji_minuty",
         "wysoki_wps_procent": "wysoki_wps_procent", "liczba_spraw": "liczba_spraw",
         "liczba_pracownikow": "liczba_pracownikow", "analiza_ugody": "analiza_mozliwosci_ugody",
     }
@@ -136,6 +140,7 @@ def ustaw_parametr(parametry: dict, identyfikator: str, wartosc: float) -> dict:
         "fin": "fin_percent", "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
         "kategoryczna_odmowa": "kategoryczna_odmowa_percent", "automatyczne_ramy": "automatyczne_ramy_percent",
         "szansa_na_ugode": "szansa_na_ugode_percent", "zawarte_ugody": "zawarte_ugody_percent",
+        "udzial_ii_instancji": "udzial_ii_instancji_percent", "czas_ii_instancji": "obsluga_ii_instancji_minuty",
         "wysoki_wps_procent": "wysoki_wps_procent", "liczba_spraw": "liczba_spraw",
         "liczba_pracownikow": "liczba_pracownikow", "analiza_ugody": "analiza_mozliwosci_ugody",
     }
@@ -179,7 +184,7 @@ def parametr_wplywa_na_pojemnosc(identyfikator: str) -> bool:
         identyfikator in {
             "sredni_czas_bezposredni", "kategoryczna_odmowa", "automatyczne_ramy",
             "szansa_na_ugode", "zawarte_ugody", "liczba_spraw", "liczba_pracownikow",
-            "analiza_ugody",
+            "analiza_ugody", "udzial_ii_instancji", "czas_ii_instancji",
         }
         or identyfikator.startswith(("udzial:", "wspolne:", "procesowe:", "ugodowe:", "codzienne:", "dodatkowe:"))
     )
@@ -329,7 +334,9 @@ def wartosc_skrocenia_czynnosci(parametry: dict) -> list[dict]:
 def ekonomika_ugod(parametry: dict) -> dict:
     wyniki = oblicz_model(parametry)
     udzialy = wyniki["udzialy_ugod"]
-    czasy = wyniki["czasy_sciezek_ugod"]
+    czasy_podstawowe = wyniki["czasy_sciezek_ugod"]
+    czasy_ii_instancji = wyniki["czasy_ii_instancji_sciezek"]
+    czasy = wyniki["czasy_sciezek_z_ii_instancja"]
     liczba_spraw = parametry["liczba_spraw"]
     koszt_godziny = wyniki["koszt_godziny"]
     nazwy = {
@@ -337,7 +344,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
         "brak_szans": "Brak szans na ugodę", "zawarte_poza_ramami": "Szansa poza ramami → zawarte ugody",
         "brak_ugody_poza_ramami": "Szansa poza ramami → brak ugody",
     }
-    sciezki = [{"Ścieżka": etykieta, "Efektywny udział portfela": udzialy[klucz], "Czas ścieżki": czasy[klucz], "Oczekiwana liczba spraw": liczba_spraw * udzialy[klucz] / 100} for klucz, etykieta in nazwy.items()]
+    sciezki = [{"Ścieżka": etykieta, "Efektywny udział portfela": udzialy[klucz], "Czas podstawowy ścieżki": czasy_podstawowe[klucz], "Oczekiwany czas II instancji": czasy_ii_instancji[klucz], "Łączny oczekiwany czas ścieżki": czasy[klucz], "Oczekiwana liczba spraw": liczba_spraw * udzialy[klucz] / 100} for klucz, etykieta in nazwy.items()]
     porownania_def = (
         ("Automatyczne ramy w porównaniu z brakiem szans na ugodę", "automatyczne_ramy", "brak_szans", "automatyczne_ramy"),
         ("Zawarta ugoda poza ramami w porównaniu z brakiem ugody poza ramami", "zawarte_poza_ramami", "brak_ugody_poza_ramami", "zawarte_poza_ramami"),

@@ -20,6 +20,7 @@ from model import (
     domyslne_parametry,
     oblicz_model,
     oblicz_udzialy_ugod,
+    oblicz_wskazniki_ii_instancji,
 )
 
 
@@ -178,15 +179,43 @@ with st.sidebar:
         )
         niski_wps = st.number_input("Średni WPS poniżej progu", min_value=0.0, value=float(domyslne["niski_wps"]), step=100.0)
         wysoki_wps = st.number_input("Średni WPS od progu wzwyż", min_value=0.0, value=float(domyslne["wysoki_wps"]), step=100.0)
+        udzial_ii_instancji_percent = st.number_input(
+            "Liczba spraw II Instancji (%)",
+            min_value=0.0, max_value=100.0,
+            value=domyslne["udzial_ii_instancji_percent"], step=0.1, format="%.1f",
+            help="Procent spraw niezakończonych ugodą, które wymagają obsługi w II instancji.",
+        )
+        odmowa_do_podsumowania = st.session_state.get(
+            "kategoryczna_odmowa_percent", domyslne["kategoryczna_odmowa_percent"]
+        )
+        ramy_do_podsumowania = st.session_state.get(
+            "automatyczne_ramy_percent", domyslne["automatyczne_ramy_percent"]
+        )
+        if odmowa_do_podsumowania + ramy_do_podsumowania <= 100 + 1e-9:
+            udzialy_do_podsumowania = oblicz_udzialy_ugod(
+                odmowa_do_podsumowania,
+                ramy_do_podsumowania,
+                st.session_state.get("szansa_na_ugode_percent", domyslne["szansa_na_ugode_percent"]),
+                st.session_state.get("zawarte_ugody_percent", domyslne["zawarte_ugody_percent"]),
+            )
+            wskazniki_ii_sidebar = oblicz_wskazniki_ii_instancji(
+                liczba_spraw, udzialy_do_podsumowania, udzial_ii_instancji_percent,
+                domyslne["obsluga_ii_instancji_minuty"],
+            )
+            karta_podsumowania("Sprawy bez ugody", f"{procent(udzialy_do_podsumowania['bez_ugody'])} całego portfela")
+            karta_podsumowania("Sprawy w II instancji", f"{procent(wskazniki_ii_sidebar['udzial_ii_instancji_w_portfelu'])} całego portfela")
+            karta_podsumowania("Oczekiwana liczba spraw w II instancji", liczba(wskazniki_ii_sidebar["oczekiwana_liczba_spraw_ii_instancji"], 1))
 
     with st.expander("Ugody"):
         kategoryczna_odmowa_percent = st.number_input(
             "Kategoryczna odmowa (%)", min_value=0.0, max_value=100.0,
             value=domyslne["kategoryczna_odmowa_percent"], step=0.1, format="%.1f",
+            key="kategoryczna_odmowa_percent",
         )
         automatyczne_ramy_percent = st.number_input(
             "Automatyczne ramy (%)", min_value=0.0, max_value=100.0,
             value=domyslne["automatyczne_ramy_percent"], step=0.1, format="%.1f",
+            key="automatyczne_ramy_percent",
         )
         if kategoryczna_odmowa_percent + automatyczne_ramy_percent > 100 + 1e-9:
             st.error("Suma kategorycznej odmowy i automatycznych ram nie może przekraczać 100%.")
@@ -196,12 +225,14 @@ with st.sidebar:
             "Szansa na ugodę poza ramami (% pozostałych spraw)",
             min_value=0.0, max_value=100.0,
             value=domyslne["szansa_na_ugode_percent"], step=0.1, format="%.1f",
+            key="szansa_na_ugode_percent",
         )
         st.caption("Podział spraw z szansą na ugodę poza ramami")
         zawarte_ugody_percent = st.number_input(
             "Zawarte ugody (% spraw z szansą na ugodę poza ramami)",
             min_value=0.0, max_value=100.0,
             value=domyslne["zawarte_ugody_percent"], step=0.1, format="%.1f",
+            key="zawarte_ugody_percent",
         )
         karta_podsumowania("Brak ugody", procent(100.0 - zawarte_ugody_percent))
         udzialy_ugod = oblicz_udzialy_ugod(
@@ -278,6 +309,22 @@ with st.sidebar:
         )
         karta_podsumowania("Czynności ugodowe", f"{sum(ugodowe_czynnosci.values())} min")
         st.divider()
+        st.caption("II instancja")
+        obsluga_ii_instancji_minuty = st.number_input(
+            "Obsługa sprawy w II instancji",
+            min_value=0,
+            value=int(domyslne["obsluga_ii_instancji_minuty"]),
+            step=5,
+            help="Dodatkowy czas pracy dla spraw bez ugody, które wymagają obsługi w II instancji.",
+        )
+        wskazniki_ii_czas = oblicz_wskazniki_ii_instancji(
+            liczba_spraw, udzialy_ugod, udzial_ii_instancji_percent, obsluga_ii_instancji_minuty
+        )
+        karta_podsumowania(
+            "Oczekiwany dodatkowy czas II instancji",
+            f"{liczba(wskazniki_ii_czas['ii_instancja_minuty_na_sprawe_portfela'], 2)} min na sprawę portfela",
+        )
+        st.divider()
         st.caption("Dodatkowy czas według rodzaju sprawy")
         dodatkowe = {
             rodzaj: st.number_input(f"Dodatkowy czas {rodzaj} (min)", min_value=0, value=minuty, step=5)
@@ -329,6 +376,8 @@ parametry = {
     "automatyczne_ramy_percent": automatyczne_ramy_percent,
     "szansa_na_ugode_percent": szansa_na_ugode_percent,
     "zawarte_ugody_percent": zawarte_ugody_percent,
+    "udzial_ii_instancji_percent": udzial_ii_instancji_percent,
+    "obsluga_ii_instancji_minuty": obsluga_ii_instancji_minuty,
 }
 wyniki = oblicz_model(parametry)
 ogolem = wyniki["ogolem"]
@@ -624,10 +673,12 @@ with tab_wrazliwosc:
 with tab_ugody:
     st.subheader("Ekonomika ugód")
     ekonomika = ekonomika_ugod(parametry)
-    st.caption("Czas ścieżki nie obejmuje dodatkowego czasu P1/P2/P3 ani czynności dziennych pracowników.")
+    st.caption("Czasy ścieżek nie obejmują dodatkowego czasu P1/P2/P3 ani czynności dziennych pracowników.")
     st.dataframe(pd.DataFrame(ekonomika["sciezki"]), hide_index=True, width="stretch", column_config={
         "Efektywny udział portfela": st.column_config.NumberColumn(format="%.2f%%"),
-        "Czas ścieżki": st.column_config.NumberColumn(format="%.1f min"),
+        "Czas podstawowy ścieżki": st.column_config.NumberColumn(format="%.1f min"),
+        "Oczekiwany czas II instancji": st.column_config.NumberColumn(format="%.1f min"),
+        "Łączny oczekiwany czas ścieżki": st.column_config.NumberColumn(format="%.1f min"),
         "Oczekiwana liczba spraw": st.column_config.NumberColumn(format="%.1f"),
     })
     st.subheader("Wartość ekonomiczna ścieżek")

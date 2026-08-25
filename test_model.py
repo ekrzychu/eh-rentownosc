@@ -6,6 +6,7 @@ from model import (
     domyslne_parametry,
     oblicz_czas_czynnosci_dziennych,
     oblicz_czasy_sciezek_ugod,
+    oblicz_czasy_sciezek_z_ii_instancja,
     oblicz_model,
     oblicz_podzial_spraw,
     oblicz_prog_czasu,
@@ -15,6 +16,7 @@ from model import (
     oblicz_sredni_czas_sciezki_ugody,
     oblicz_udzialy_ugod,
     oblicz_wynagrodzenie,
+    oblicz_wskazniki_ii_instancji,
 )
 
 
@@ -112,6 +114,107 @@ class TestUgody(unittest.TestCase):
         self.assertEqual(z_dodatkowym_procesem, 355)
 
 
+class TestDrugaInstancja(unittest.TestCase):
+    def setUp(self):
+        self.parametry = domyslne_parametry()
+        self.wyniki = oblicz_model(self.parametry)
+
+    def test_domyslne_udzialy_liczba_i_czas_portfela(self):
+        self.assertAlmostEqual(self.wyniki["udzialy_ugod"]["bez_ugody"], 56.25)
+        self.assertAlmostEqual(self.wyniki["udzial_ii_instancji_w_portfelu"], 11.25)
+        self.assertAlmostEqual(self.wyniki["oczekiwana_liczba_spraw_ii_instancji"], 67.5)
+        self.assertAlmostEqual(self.wyniki["ii_instancja_minuty_na_sprawe_portfela"], 20.25)
+        self.assertAlmostEqual(self.wyniki["ii_instancja_minuty_lacznie"], 12_150)
+        self.assertAlmostEqual(self.wyniki["ii_instancja_godziny_lacznie"], 202.5)
+
+    def test_ii_instancja_dotyczy_tylko_sciezek_bez_ugody(self):
+        podstawowe = self.wyniki["czasy_sciezek_ugod"]
+        laczne = self.wyniki["czasy_sciezek_z_ii_instancja"]
+        dodatkowe = self.wyniki["czasy_ii_instancji_sciezek"]
+        for sciezka in ("kategoryczna_odmowa", "brak_szans", "brak_ugody_poza_ramami"):
+            self.assertEqual(dodatkowe[sciezka], 36.0)
+            self.assertEqual(laczne[sciezka], podstawowe[sciezka] + 36.0)
+        for sciezka in ("automatyczne_ramy", "zawarte_poza_ramami"):
+            self.assertEqual(dodatkowe[sciezka], 0.0)
+            self.assertEqual(laczne[sciezka], podstawowe[sciezka])
+        self.assertEqual(laczne, {
+            "kategoryczna_odmowa": 316.0,
+            "automatyczne_ramy": 85.0,
+            "brak_szans": 346.0,
+            "zawarte_poza_ramami": 115.0,
+            "brak_ugody_poza_ramami": 381.0,
+        })
+
+    def test_ii_instancja_jest_dodatkowa_do_p_i_niezalezna_od_wps(self):
+        for grupa in self.wyniki["grupy"]:
+            oczekiwane = (
+                self.wyniki["srednie_minuty_sciezki_ugody"]
+                + self.parametry["dodatkowe_minuty"][grupa["rodzaj"]]
+            )
+            self.assertAlmostEqual(grupa["laczne_minuty"], oczekiwane)
+        for rodzaj in ("P1", "P2", "P3"):
+            czasy = {
+                grupa["laczne_minuty"]
+                for grupa in self.wyniki["grupy"]
+                if grupa["rodzaj"] == rodzaj
+            }
+            self.assertEqual(len(czasy), 1)
+
+    def test_przychod_nie_zalezy_od_ii_instancji(self):
+        warianty = []
+        for udzial in (0.0, 20.0, 100.0):
+            parametry = {**self.parametry, "udzial_ii_instancji_percent": udzial}
+            warianty.append(oblicz_model(parametry))
+        self.assertEqual({wynik["ogolem"]["przychod"] for wynik in warianty}, {780_000.0})
+        self.assertLess(warianty[0]["ogolem"]["koszt"], warianty[1]["ogolem"]["koszt"])
+        self.assertLess(warianty[1]["ogolem"]["koszt"], warianty[2]["ogolem"]["koszt"])
+        self.assertLess(warianty[0]["bezposrednie_minuty_spraw"], warianty[2]["bezposrednie_minuty_spraw"])
+        self.assertLess(
+            warianty[0]["pojemnosc"]["bezposrednie_minuty_spraw"],
+            warianty[2]["pojemnosc"]["bezposrednie_minuty_spraw"],
+        )
+
+    def test_czas_ii_instancji_zmienia_koszt_i_pojemnosc_bez_zmiany_przychodu(self):
+        bez_czasu = oblicz_model({**self.parametry, "obsluga_ii_instancji_minuty": 0})
+        dlugi_czas = oblicz_model({**self.parametry, "obsluga_ii_instancji_minuty": 360})
+        self.assertEqual(bez_czasu["ogolem"]["przychod"], dlugi_czas["ogolem"]["przychod"])
+        self.assertGreater(dlugi_czas["ogolem"]["koszt"], bez_czasu["ogolem"]["koszt"])
+        self.assertLess(dlugi_czas["ogolem"]["wynik"], bez_czasu["ogolem"]["wynik"])
+        self.assertLess(dlugi_czas["ogolem"]["marza"], bez_czasu["ogolem"]["marza"])
+        self.assertGreater(dlugi_czas["bezposrednie_minuty_spraw"], bez_czasu["bezposrednie_minuty_spraw"])
+
+    def test_koszt_ii_instancji_uzgadnia_sie_z_grupami_i_portfelem(self):
+        bez_ii = oblicz_model({**self.parametry, "udzial_ii_instancji_percent": 0.0})
+        roznica_minut = self.wyniki["bezposrednie_minuty_spraw"] - bez_ii["bezposrednie_minuty_spraw"]
+        roznica_kosztu = self.wyniki["ogolem"]["koszt"] - bez_ii["ogolem"]["koszt"]
+        self.assertAlmostEqual(roznica_minut, self.wyniki["ii_instancja_minuty_lacznie"])
+        self.assertAlmostEqual(roznica_kosztu, roznica_minut / 60 * self.wyniki["koszt_godziny"])
+        self.assertAlmostEqual(
+            sum(grupa["laczny_koszt"] for grupa in self.wyniki["grupy"]),
+            self.wyniki["ogolem"]["koszt"],
+        )
+
+    def test_przypadki_brzezne(self):
+        zero_udzialu = oblicz_model({**self.parametry, "udzial_ii_instancji_percent": 0.0})
+        zero_czasu = oblicz_model({**self.parametry, "obsluga_ii_instancji_minuty": 0})
+        zero_spraw = oblicz_model({**self.parametry, "liczba_spraw": 0})
+        wszystkie_ugodzone = oblicz_model({
+            **self.parametry,
+            "kategoryczna_odmowa_percent": 0.0,
+            "automatyczne_ramy_percent": 100.0,
+        })
+        for wynik in (zero_udzialu, zero_czasu, zero_spraw, wszystkie_ugodzone):
+            self.assertEqual(wynik["ii_instancja_minuty_lacznie"], 0.0)
+        self.assertEqual(wszystkie_ugodzone["oczekiwana_liczba_spraw_ii_instancji"], 0.0)
+
+    def test_walidacja_parametrow_ii_instancji(self):
+        podstawowe = self.wyniki["czasy_sciezek_ugod"]
+        with self.assertRaises(ValueError):
+            oblicz_czasy_sciezek_z_ii_instancja(podstawowe, 101, 180)
+        with self.assertRaises(ValueError):
+            oblicz_wskazniki_ii_instancji(600, self.wyniki["udzialy_ugod"], 20, -1)
+
+
 class TestCzasDziennyIPojemnosc(unittest.TestCase):
     def test_domyslna_pojemnosc_wynika_z_aktualnych_parametrow(self):
         parametry = domyslne_parametry()
@@ -168,10 +271,11 @@ class TestModelFinansowy(unittest.TestCase):
     def test_domyslny_model_korzysta_z_nowego_czasu(self):
         wynik = oblicz_model()
         self.assertAlmostEqual(wynik["ogolem"]["przychod"], 780_000)
-        self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 216.0)
-        self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 219_780)
+        self.assertAlmostEqual(wynik["srednie_minuty_podstawowej_sciezki_ugody"], 216.0)
+        self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 236.25)
+        self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 231_930)
         self.assertAlmostEqual(wynik["czynnosci_dzienne_minuty"], 45_180)
-        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 622_876.8)
+        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 442_821.78)
 
     def test_koszty_grup_uzgadniaja_sie_z_portfelem(self):
         wynik = oblicz_model()
@@ -208,6 +312,7 @@ class TestProgiRentownosci(unittest.TestCase):
             "procesowe_czynnosci": {k: v * skala for k, v in parametry["procesowe_czynnosci"].items()},
             "ugodowe_czynnosci": {k: v * skala for k, v in parametry["ugodowe_czynnosci"].items()},
             "analiza_mozliwosci_ugody": parametry["analiza_mozliwosci_ugody"] * skala,
+            "obsluga_ii_instancji_minuty": parametry["obsluga_ii_instancji_minuty"] * skala,
             "dodatkowe_minuty": {k: v * skala for k, v in parametry["dodatkowe_minuty"].items()},
         }
         wynik_przed = oblicz_model(parametry)
