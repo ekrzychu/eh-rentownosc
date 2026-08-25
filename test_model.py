@@ -39,27 +39,39 @@ class TestUgody(unittest.TestCase):
         self.parametry = domyslne_parametry()
 
     def test_domyslne_udzialy_ugod(self):
-        udzialy = oblicz_udzialy_ugod(15, 30, 50)
+        udzialy = oblicz_udzialy_ugod(15, 30, 50, 50)
         self.assertEqual(udzialy["kategoryczna_odmowa"], 15.0)
         self.assertEqual(udzialy["automatyczne_ramy"], 30.0)
         self.assertEqual(udzialy["pozostale_sprawy"], 55.0)
         self.assertEqual(udzialy["szansa_poza_ramami"], 27.5)
+        self.assertEqual(udzialy["zawarte_poza_ramami"], 13.75)
+        self.assertEqual(udzialy["brak_ugody_poza_ramami"], 13.75)
         self.assertEqual(udzialy["brak_szans"], 27.5)
-        self.assertEqual(udzialy["zakonczone_ugoda"], 57.5)
-        self.assertEqual(udzialy["bez_ugody"], 42.5)
+        self.assertEqual(udzialy["zakonczone_ugoda"], 43.75)
+        self.assertEqual(udzialy["bez_ugody"], 56.25)
         self.assertAlmostEqual(
             sum(udzialy[nazwa] for nazwa in (
                 "kategoryczna_odmowa", "automatyczne_ramy",
-                "szansa_poza_ramami", "brak_szans",
+                "brak_szans", "zawarte_poza_ramami",
+                "brak_ugody_poza_ramami",
             )),
             100.0,
         )
+
+    def test_przyklad_podzialu_i_wskaznik_ugod(self):
+        udzialy = oblicz_udzialy_ugod(15, 30, 50, 60)
+        self.assertEqual(udzialy["zawarte_poza_ramami"], 16.5)
+        self.assertEqual(udzialy["brak_ugody_poza_ramami"], 11.0)
+        self.assertEqual(udzialy["zakonczone_ugoda"], 46.5)
+        self.assertEqual(udzialy["bez_ugody"], 53.5)
 
     def test_nieprawidlowe_udzialy_sa_odrzucane(self):
         with self.assertRaises(ValueError):
             oblicz_udzialy_ugod(60, 50, 50)
         with self.assertRaises(ValueError):
             oblicz_udzialy_ugod(15, 30, 101)
+        with self.assertRaises(ValueError):
+            oblicz_udzialy_ugod(15, 30, 50, 101)
 
     def test_czasy_sciezek_i_srednia_wazona(self):
         czasy = oblicz_czasy_sciezek_ugod(
@@ -71,11 +83,33 @@ class TestUgody(unittest.TestCase):
         self.assertEqual(czasy, {
             "kategoryczna_odmowa": 280,
             "automatyczne_ramy": 85,
-            "szansa_poza_ramami": 115,
             "brak_szans": 310,
+            "zawarte_poza_ramami": 115,
+            "brak_ugody_poza_ramami": 345,
         })
-        udzialy = oblicz_udzialy_ugod(15, 30, 50)
-        self.assertAlmostEqual(oblicz_sredni_czas_sciezki_ugody(udzialy, czasy), 184.375)
+        udzialy = oblicz_udzialy_ugod(15, 30, 50, 50)
+        self.assertAlmostEqual(oblicz_sredni_czas_sciezki_ugody(udzialy, czasy), 216.0)
+
+    def test_brak_ugody_pomija_podpis_i_obejmuje_proces(self):
+        ugodowe = self.parametry["ugodowe_czynnosci"].copy()
+        ugodowe["Podpisanie ugody"] = 999
+        bez_podpisu = oblicz_czasy_sciezek_ugod(
+            self.parametry["wspolne_czynnosci"],
+            self.parametry["procesowe_czynnosci"],
+            ugodowe,
+            self.parametry["analiza_mozliwosci_ugody"],
+        )["brak_ugody_poza_ramami"]
+        self.assertEqual(bez_podpisu, 345)
+
+        procesowe = self.parametry["procesowe_czynnosci"].copy()
+        procesowe["Duplika"] += 10
+        z_dodatkowym_procesem = oblicz_czasy_sciezek_ugod(
+            self.parametry["wspolne_czynnosci"],
+            procesowe,
+            self.parametry["ugodowe_czynnosci"],
+            self.parametry["analiza_mozliwosci_ugody"],
+        )["brak_ugody_poza_ramami"]
+        self.assertEqual(z_dodatkowym_procesem, 355)
 
 
 class TestCzasDziennyIPojemnosc(unittest.TestCase):
@@ -89,18 +123,18 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
         parametry_1000 = {**domyslne_parametry(), "liczba_spraw": 1000}
         wynik_600 = oblicz_model(parametry_600)
         wynik_1000 = oblicz_model(parametry_1000)
-        self.assertEqual(wynik_600["czynnosci_dzienne_minuty"], 22_500)
-        self.assertEqual(wynik_1000["czynnosci_dzienne_minuty"], 22_500)
+        self.assertEqual(wynik_600["czynnosci_dzienne_minuty"], 45_180)
+        self.assertEqual(wynik_1000["czynnosci_dzienne_minuty"], 45_180)
 
     def test_pracownicy_nie_mnoza_czasu_spraw(self):
-        jeden = oblicz_model(domyslne_parametry())
+        domyslny = oblicz_model(domyslne_parametry())
         pieciu = oblicz_model({**domyslne_parametry(), "liczba_pracownikow": 5})
-        self.assertEqual(jeden["bezposrednie_minuty_spraw"], pieciu["bezposrednie_minuty_spraw"])
-        self.assertEqual(jeden["czynnosci_dzienne_minuty"], 22_500)
-        self.assertEqual(pieciu["czynnosci_dzienne_minuty"], 112_500)
+        self.assertEqual(domyslny["bezposrednie_minuty_spraw"], pieciu["bezposrednie_minuty_spraw"])
+        self.assertEqual(domyslny["czynnosci_dzienne_minuty"], 45_180)
+        self.assertEqual(pieciu["czynnosci_dzienne_minuty"], 112_950)
         self.assertGreater(
             pieciu["pojemnosc"]["pojemnosc_spraw_minuty"],
-            jeden["pojemnosc"]["pojemnosc_spraw_minuty"],
+            domyslny["pojemnosc"]["pojemnosc_spraw_minuty"],
         )
 
     def test_brak_czasu_na_sprawy_jest_wykrywany(self):
@@ -119,10 +153,10 @@ class TestModelFinansowy(unittest.TestCase):
     def test_domyslny_model_korzysta_z_nowego_czasu(self):
         wynik = oblicz_model()
         self.assertAlmostEqual(wynik["ogolem"]["przychod"], 780_000)
-        self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 184.375)
-        self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 215_745)
-        self.assertAlmostEqual(wynik["czynnosci_dzienne_minuty"], 22_500)
-        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 560_074.2875)
+        self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 216.0)
+        self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 219_780)
+        self.assertAlmostEqual(wynik["czynnosci_dzienne_minuty"], 45_180)
+        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 622_876.8)
 
     def test_koszty_grup_uzgadniaja_sie_z_portfelem(self):
         wynik = oblicz_model()

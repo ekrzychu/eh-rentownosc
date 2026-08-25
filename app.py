@@ -141,10 +141,18 @@ with st.sidebar:
             min_value=0.0, max_value=100.0,
             value=domyslne["szansa_na_ugode_percent"], step=0.1, format="%.1f",
         )
+        st.caption("Podział spraw z szansą na ugodę poza ramami")
+        zawarte_ugody_percent = st.number_input(
+            "Zawarte ugody (% spraw z szansą na ugodę poza ramami)",
+            min_value=0.0, max_value=100.0,
+            value=domyslne["zawarte_ugody_percent"], step=0.1, format="%.1f",
+        )
+        karta_podsumowania("Brak ugody", procent(100.0 - zawarte_ugody_percent))
         udzialy_ugod = oblicz_udzialy_ugod(
             kategoryczna_odmowa_percent,
             automatyczne_ramy_percent,
             szansa_na_ugode_percent,
+            zawarte_ugody_percent,
         )
         brak_szans_percent = 100.0 - szansa_na_ugode_percent
         karta_podsumowania("Pozostałe sprawy", procent(udzialy_ugod["pozostale_sprawy"]))
@@ -159,6 +167,14 @@ with st.sidebar:
         st.write(
             "Brak szans na ugodę: "
             f"**{procent(udzialy_ugod['brak_szans'])} całego portfela**"
+        )
+        st.write(
+            "Szansa poza ramami → zawarte ugody: "
+            f"**{procent(udzialy_ugod['zawarte_poza_ramami'])} całego portfela**"
+        )
+        st.write(
+            "Szansa poza ramami → brak ugody: "
+            f"**{procent(udzialy_ugod['brak_ugody_poza_ramami'])} całego portfela**"
         )
         karta_podsumowania(
             "Łączny udział spraw zakończonych ugodą",
@@ -256,6 +272,7 @@ parametry = {
     "kategoryczna_odmowa_percent": kategoryczna_odmowa_percent,
     "automatyczne_ramy_percent": automatyczne_ramy_percent,
     "szansa_na_ugode_percent": szansa_na_ugode_percent,
+    "zawarte_ugody_percent": zawarte_ugody_percent,
 }
 wyniki = oblicz_model(parametry)
 ogolem = wyniki["ogolem"]
