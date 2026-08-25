@@ -163,3 +163,19 @@ To stop the application, return to the terminal and press:
 ```text
 Ctrl+C
 ```
+
+---
+
+## Running tests
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest
+```
+
+Linux and macOS:
+
+```bash
+./.venv/bin/python -m unittest
+```

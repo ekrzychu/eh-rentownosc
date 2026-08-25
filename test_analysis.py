@@ -2,12 +2,17 @@ import unittest
 
 from analysis import (
     analiza_pojemnosci,
+    analiza_wrazliwosci,
+    analizuj_progi,
     definicje_parametrow,
     ekonomika_ugod,
+    kluczowe_progi,
     maksymalna_liczba_spraw,
     minimalna_liczba_pracownikow,
     przelicz_udzial_rodzaju,
+    rekomendacje_deterministyczne,
     spelnia_cel,
+    status_operacyjny,
     symuluj_pojedyncza_zmiane,
     ustaw_parametr,
     wartosc_skrocenia_czynnosci,
@@ -52,6 +57,66 @@ class TestSilnikProgow(unittest.TestCase):
         definicje = {d["id"]: d for d in definicje_parametrow(bardzo_drogo)}
         prog_czynnosci = znajdz_granice(bardzo_drogo, definicje["procesowe:Duplika"], 0.0)
         self.assertFalse(prog_czynnosci["osiagalne"])
+
+    def test_kluczowe_progi_respektuja_marze_0_10_i_20_procent(self):
+        identyfikatory = (
+            "sredni_czas_bezposredni",
+            "koszt_staly",
+            "wynagrodzenie",
+            "fin",
+            "zawarte_ugody",
+        )
+        podsumowania = {}
+        for cel in (0.0, 10.0, 20.0):
+            analiza = analizuj_progi(self.parametry, cel)
+            kluczowe = kluczowe_progi(self.parametry, cel, analiza)
+            podsumowania[cel] = kluczowe
+            for identyfikator in identyfikatory:
+                with self.subTest(cel=cel, identyfikator=identyfikator):
+                    prog = kluczowe[identyfikator]
+                    if not prog["osiagalne"]:
+                        continue
+                    na_granicy = oblicz_model(
+                        ustaw_parametr(self.parametry, identyfikator, prog["granica"])
+                    )
+                    if cel == 0:
+                        self.assertAlmostEqual(na_granicy["ogolem"]["wynik"], 0.0, places=5)
+                    else:
+                        self.assertAlmostEqual(na_granicy["ogolem"]["marza"], cel, places=6)
+                    krok = 0.01 if prog["zmiana"] > 0 else -0.01
+                    poza = oblicz_model(
+                        ustaw_parametr(self.parametry, identyfikator, prog["granica"] + krok)
+                    )
+                    self.assertFalse(spelnia_cel(poza, cel))
+        for identyfikator in ("sredni_czas_bezposredni", "koszt_staly", "wynagrodzenie", "fin"):
+            self.assertGreater(podsumowania[0.0][identyfikator]["granica"], podsumowania[10.0][identyfikator]["granica"])
+            self.assertGreater(podsumowania[10.0][identyfikator]["granica"], podsumowania[20.0][identyfikator]["granica"])
+        self.assertIsNone(podsumowania[10.0]["zawarte_ugody"]["granica"])
+        self.assertIsNotNone(podsumowania[20.0]["zawarte_ugody"]["granica"])
+
+    def test_podsumowanie_i_tabela_maja_te_same_progi(self):
+        for cel in (0.0, 10.0, 20.0):
+            analiza = analizuj_progi(self.parametry, cel)
+            tabela = {pozycja["id"]: pozycja for pozycja in analiza["pozycje"]}
+            podsumowanie = kluczowe_progi(self.parametry, cel, analiza)
+            for identyfikator in ("fin", "koszt_staly", "wynagrodzenie", "zawarte_ugody"):
+                with self.subTest(cel=cel, identyfikator=identyfikator):
+                    self.assertEqual(podsumowanie[identyfikator]["granica"], tabela[identyfikator]["granica"])
+
+    def test_skalowanie_sredniego_czasu_nie_zmienia_czynnosci_dziennych(self):
+        bazowe = oblicz_model(self.parametry)
+        obecny_czas = bazowe["bezposrednie_minuty_spraw"] / self.parametry["liczba_spraw"]
+        zmienione = ustaw_parametr(self.parametry, "sredni_czas_bezposredni", obecny_czas / 2)
+        po_zmianie = oblicz_model(zmienione)
+        self.assertAlmostEqual(po_zmianie["bezposrednie_minuty_spraw"], bazowe["bezposrednie_minuty_spraw"] / 2)
+        self.assertEqual(po_zmianie["czynnosci_dzienne_minuty"], bazowe["czynnosci_dzienne_minuty"])
+
+    def test_granica_calkowita_zwraca_dokladna_bezpieczna_wartosc(self):
+        analiza = analizuj_progi(self.parametry, 0.0)
+        prog = next(pozycja for pozycja in analiza["pozycje"] if pozycja["id"] == "liczba_spraw")
+        self.assertIsInstance(prog["granica"], int)
+        self.assertTrue(spelnia_cel(oblicz_model(ustaw_parametr(self.parametry, "liczba_spraw", prog["granica"])), 0.0))
+        self.assertFalse(spelnia_cel(oblicz_model(ustaw_parametr(self.parametry, "liczba_spraw", prog["granica"] - 1)), 0.0))
 
 
 class TestMutacjeIWrazliwosc(unittest.TestCase):
@@ -120,8 +185,48 @@ class TestUgodyIPojemnosc(unittest.TestCase):
         self.assertFalse(oblicz_model(ustaw_parametr(parametry, "liczba_spraw", maksimum))["pojemnosc"]["przekroczona"])
         self.assertTrue(oblicz_model(ustaw_parametr(parametry, "liczba_spraw", maksimum + 1))["pojemnosc"]["przekroczona"])
 
+    def test_brak_pojemnosci_nie_jest_raportowany_jako_zero_spraw(self):
+        parametry = domyslne_parametry()
+        parametry["codzienne_czynnosci"] = {"Czynności dzienne": 600}
+        self.assertIsNone(maksymalna_liczba_spraw(parametry))
+        self.assertEqual(analiza_pojemnosci(parametry)["powod_braku_maksimum"], "brak_pojemnosci")
+
     def test_analiza_pojemnosci_ma_szesc_segmentow(self):
         self.assertEqual(len(analiza_pojemnosci(domyslne_parametry())["segmenty"]), 6)
+
+    def test_status_rozroznia_rentownosc_i_wykonalnosc(self):
+        przeciazony = domyslne_parametry()
+        wynik_przeciazony = oblicz_model(przeciazony)
+        self.assertTrue(spelnia_cel(wynik_przeciazony, 0.0))
+        self.assertFalse(status_operacyjny(wynik_przeciazony)["wykonalne"])
+
+        wykonalny = {**domyslne_parametry(), "liczba_pracownikow": 3}
+        wynik_wykonalny = oblicz_model(wykonalny)
+        self.assertTrue(spelnia_cel(wynik_wykonalny, 0.0))
+        self.assertTrue(status_operacyjny(wynik_wykonalny)["wykonalne"])
+
+    def test_rekomendacje_odrzucaja_niewykonalne_scenariusze(self):
+        parametry = domyslne_parametry()
+        wrazliwosc = analiza_wrazliwosci(parametry)
+        progi = analizuj_progi(parametry, 0.0)
+        ugody = ekonomika_ugod(parametry)
+        pojemnosc = analiza_pojemnosci(parametry)
+        rekomendacje = rekomendacje_deterministyczne(wrazliwosc, progi, ugody, pojemnosc)
+        wszystkie = rekomendacje["najwiekszy_wplyw"] + rekomendacje["czynniki_zewnetrzne"]
+        self.assertTrue(all(pozycja["Wykonalne operacyjnie"] for pozycja in wszystkie))
+
+        wykonalne_parametry = {**domyslne_parametry(), "liczba_pracownikow": 3}
+        wykonalne_rekomendacje = rekomendacje_deterministyczne(
+            analiza_wrazliwosci(wykonalne_parametry),
+            analizuj_progi(wykonalne_parametry, 0.0),
+            ekonomika_ugod(wykonalne_parametry),
+            analiza_pojemnosci(wykonalne_parametry),
+        )
+        self.assertTrue(wykonalne_rekomendacje["najwiekszy_wplyw"])
+        self.assertTrue(all(
+            pozycja["Wykonalne operacyjnie"]
+            for pozycja in wykonalne_rekomendacje["najwiekszy_wplyw"]
+        ))
 
 
 class TestSymulator(unittest.TestCase):
@@ -130,6 +235,11 @@ class TestSymulator(unittest.TestCase):
         symulacja = symuluj_pojedyncza_zmiane(parametry, "fin", 60.0)
         bezposrednio = oblicz_model(ustaw_parametr(parametry, "fin", 60.0))
         self.assertEqual(symulacja["wyniki"]["ogolem"], bezposrednio["ogolem"])
+
+    def test_symulator_zwraca_status_operacyjny(self):
+        parametry = domyslne_parametry()
+        self.assertFalse(symuluj_pojedyncza_zmiane(parametry, "fin", 50.0)["status_operacyjny"]["wykonalne"])
+        self.assertTrue(symuluj_pojedyncza_zmiane(parametry, "liczba_pracownikow", 3)["status_operacyjny"]["wykonalne"])
 
 
 if __name__ == "__main__":

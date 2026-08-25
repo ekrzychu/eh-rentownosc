@@ -113,6 +113,21 @@ class TestUgody(unittest.TestCase):
 
 
 class TestCzasDziennyIPojemnosc(unittest.TestCase):
+    def test_domyslna_pojemnosc_wynika_z_aktualnych_parametrow(self):
+        parametry = domyslne_parametry()
+        wynik = oblicz_model(parametry)
+        dzienne_na_pracownika = sum(parametry["codzienne_czynnosci"].values())
+        oczekiwana_pojemnosc = (
+            parametry["liczba_pracownikow"]
+            * parametry["liczba_dni_pracy_w_roku"]
+            * (MINUTY_DNIA_PRACY - dzienne_na_pracownika)
+        )
+        self.assertEqual(wynik["pojemnosc"]["pojemnosc_spraw_minuty"], oczekiwana_pojemnosc)
+        self.assertEqual(
+            wynik["pojemnosc"]["przekroczona"],
+            wynik["bezposrednie_minuty_spraw"] > oczekiwana_pojemnosc,
+        )
+
     def test_domyslny_i_piecioosobowy_narzut(self):
         czynnosci = domyslne_parametry()["codzienne_czynnosci"]
         self.assertEqual(oblicz_czas_czynnosci_dziennych(1, 250, czynnosci), 22_500)
