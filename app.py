@@ -771,6 +771,9 @@ with tab_symulator:
     definicje = definicje_parametrow(parametry)
     definicje_po_id = {x["id"]: x for x in definicje}
     wybrany_id = st.selectbox("Parametr", options=list(definicje_po_id), format_func=lambda x: definicje_po_id[x]["nazwa"])
+    if wybrany_id is None:
+        st.error("Brak dostępnych parametrów do symulacji.")
+        st.stop()
     definicja = definicje_po_id[wybrany_id]
     obecna_wartosc = wartosc_parametru(parametry, wybrany_id)
     if definicja["typ"] == "calkowita":

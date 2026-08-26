@@ -214,10 +214,14 @@ class TestUgodyIPojemnosc(unittest.TestCase):
     def test_minimum_pracownikow_i_maksimum_spraw_sa_granicami(self):
         parametry = domyslne_parametry()
         minimum = minimalna_liczba_pracownikow(parametry)
+        self.assertIsNotNone(minimum)
+        assert minimum is not None
         self.assertFalse(oblicz_model(ustaw_parametr(parametry, "liczba_pracownikow", minimum))["pojemnosc"]["przekroczona"])
         self.assertTrue(oblicz_model(ustaw_parametr(parametry, "liczba_pracownikow", minimum - 1))["pojemnosc"]["przekroczona"])
 
         maksimum = maksymalna_liczba_spraw(parametry)
+        self.assertIsNotNone(maksimum)
+        assert maksimum is not None
         self.assertFalse(oblicz_model(ustaw_parametr(parametry, "liczba_spraw", maksimum))["pojemnosc"]["przekroczona"])
         self.assertTrue(oblicz_model(ustaw_parametr(parametry, "liczba_spraw", maksimum + 1))["pojemnosc"]["przekroczona"])
 
