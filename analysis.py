@@ -179,17 +179,6 @@ def status_operacyjny(wyniki: dict) -> dict:
     }
 
 
-def parametr_wplywa_na_pojemnosc(identyfikator: str) -> bool:
-    return (
-        identyfikator in {
-            "sredni_czas_bezposredni", "kategoryczna_odmowa", "automatyczne_ramy",
-            "szansa_na_ugode", "zawarte_ugody", "liczba_spraw", "liczba_pracownikow",
-            "analiza_ugody", "udzial_ii_instancji", "czas_ii_instancji",
-        }
-        or identyfikator.startswith(("udzial:", "wspolne:", "procesowe:", "ugodowe:", "codzienne:", "dodatkowe:"))
-    )
-
-
 def _wynik_dla(parametry: dict, identyfikator: str, wartosc: float) -> dict | None:
     try:
         return oblicz_model(ustaw_parametr(parametry, identyfikator, wartosc))
@@ -263,11 +252,9 @@ def znajdz_granice(parametry: dict, definicja: dict, docelowa_marza: float) -> d
                 break
             poprzednia_wartosc, poprzedni_stan = punkt, stan
     if not kandydaci:
-        return {"parametr": definicja["nazwa"], "id": identyfikator, "kategoria": definicja["kategoria"], "jednostka": definicja["jednostka"], "obecnie": obecnie, "typ": "bufor" if obecnie_spelnia else "wymagana_zmiana", "osiagalne": False, "granica": None, "zmiana": None, "wplywa_na_pojemnosc": parametr_wplywa_na_pojemnosc(identyfikator), "wykonalne_operacyjnie": None, "wykorzystanie_pojemnosci": None}
+        return {"parametr": definicja["nazwa"], "id": identyfikator, "kategoria": definicja["kategoria"], "jednostka": definicja["jednostka"], "obecnie": obecnie, "typ": "bufor" if obecnie_spelnia else "wymagana_zmiana", "osiagalne": False, "granica": None, "zmiana": None}
     granica = min(kandydaci, key=lambda x: abs(x - obecnie))
-    wyniki_granicy = _wynik_dla(parametry, identyfikator, granica)
-    operacyjny = status_operacyjny(wyniki_granicy) if wyniki_granicy is not None else {"wykonalne": False, "wykorzystanie": None}
-    return {"parametr": definicja["nazwa"], "id": identyfikator, "kategoria": definicja["kategoria"], "jednostka": definicja["jednostka"], "obecnie": obecnie, "typ": "bufor" if obecnie_spelnia else "wymagana_zmiana", "osiagalne": True, "granica": granica, "zmiana": granica - obecnie, "wplywa_na_pojemnosc": parametr_wplywa_na_pojemnosc(identyfikator), "wykonalne_operacyjnie": operacyjny["wykonalne"], "wykorzystanie_pojemnosci": operacyjny["wykorzystanie"]}
+    return {"parametr": definicja["nazwa"], "id": identyfikator, "kategoria": definicja["kategoria"], "jednostka": definicja["jednostka"], "obecnie": obecnie, "typ": "bufor" if obecnie_spelnia else "wymagana_zmiana", "osiagalne": True, "granica": granica, "zmiana": granica - obecnie}
 
 
 def analizuj_progi(parametry: dict, docelowa_marza: float) -> dict:
@@ -295,8 +282,10 @@ def kluczowe_progi(parametry: dict, docelowa_marza: float, analiza_progow: dict 
 
 
 def analiza_wrazliwosci(parametry: dict) -> list[dict]:
+    """Bada praktyczne, standardowe zmiany bez kryterium rocznej pojemności."""
     bazowe_wyniki = oblicz_model(parametry)
     bazowy = bazowe_wyniki["ogolem"]["wynik"]
+    bazowa_marza = bazowe_wyniki["ogolem"]["marza"]
     wiersze = []
     for definicja in definicje_parametrow(parametry):
         obecnie = float(wartosc_parametru(parametry, definicja["id"]))
@@ -305,15 +294,118 @@ def analiza_wrazliwosci(parametry: dict) -> list[dict]:
             nowa = min(float(definicja["max"]), max(float(definicja["min"]), obecnie + znak * definicja["krok"]))
             if nowa == obecnie:
                 continue
-            wyniki_scenariusza = oblicz_model(ustaw_parametr(parametry, definicja["id"], nowa))
+            zmienione = ustaw_parametr(parametry, definicja["id"], nowa)
+            rzeczywista = float(wartosc_parametru(zmienione, definicja["id"]))
+            if rzeczywista == obecnie:
+                continue
+            wyniki_scenariusza = oblicz_model(zmienione)
             wynik = wyniki_scenariusza["ogolem"]["wynik"]
-            scenariusze.append((wynik - bazowy, nowa, status_operacyjny(wyniki_scenariusza)))
+            marza = wyniki_scenariusza["ogolem"]["marza"]
+            scenariusze.append({
+                "wartosc": rzeczywista,
+                "zmiana": rzeczywista - obecnie,
+                "wynik": wynik,
+                "wplyw": wynik - bazowy,
+                "marza": marza,
+                "wplyw_marza": marza - bazowa_marza,
+            })
         if not scenariusze:
             continue
-        korzystny = max(scenariusze)
-        niekorzystny = min(scenariusze)
-        wiersze.append({"Parametr": definicja["nazwa"], "Id": definicja["id"], "Kategoria": definicja["kategoria"], "Wynik obecny": bazowy, "Zmiana testowa": korzystny[1] - obecnie, "Wpływ na wynik roczny": korzystny[0], "Wynik po poprawie": bazowy + korzystny[0], "Wykonalne operacyjnie": korzystny[2]["wykonalne"], "Wykorzystanie po poprawie": korzystny[2]["wykorzystanie"], "Zmiana niekorzystna": niekorzystny[1] - obecnie, "Wpływ niekorzystny": niekorzystny[0], "Wynik po pogorszeniu": bazowy + niekorzystny[0], "Kierunek poprawy": "wzrost" if korzystny[1] > obecnie else "spadek", "Jednostka": definicja["jednostka"]})
+        korzystny = max(scenariusze, key=lambda x: x["wplyw"])
+        niekorzystny = min(scenariusze, key=lambda x: x["wplyw"])
+        wiersze.append({
+            "Parametr": definicja["nazwa"], "Id": definicja["id"],
+            "Kategoria": definicja["kategoria"], "Obecnie": obecnie,
+            "Wynik obecny": bazowy, "Marża obecna": bazowa_marza,
+            "Zmiana testowa": korzystny["zmiana"],
+            "Wartość po poprawie": korzystny["wartosc"],
+            "Wpływ na wynik roczny": korzystny["wplyw"],
+            "Wynik po poprawie": korzystny["wynik"],
+            "Marża po poprawie": korzystny["marza"],
+            "Wpływ na marżę": korzystny["wplyw_marza"],
+            "Zmiana niekorzystna": niekorzystny["zmiana"],
+            "Wartość po pogorszeniu": niekorzystny["wartosc"],
+            "Wpływ niekorzystny": niekorzystny["wplyw"],
+            "Wynik po pogorszeniu": niekorzystny["wynik"],
+            "Marża po pogorszeniu": niekorzystny["marza"],
+            "Wpływ niekorzystny na marżę": niekorzystny["wplyw_marza"],
+            "Kierunek poprawy": "wzrost" if korzystny["zmiana"] > 0 else "spadek",
+            "Jednostka": definicja["jednostka"],
+        })
     return sorted(wiersze, key=lambda x: abs(x["Wpływ na wynik roczny"]), reverse=True)
+
+
+def analiza_wplywu_wzglednego(parametry: dict, zmiana_wzgledna: float = 0.10) -> list[dict]:
+    """Porównuje wpływ zmian ±10% bieżącej wartości, po jednej zmiennej naraz."""
+    bazowe = oblicz_model(parametry)
+    bazowy_wynik = bazowe["ogolem"]["wynik"]
+    bazowa_marza = bazowe["ogolem"]["marza"]
+    wiersze = []
+    for definicja in definicje_parametrow(parametry):
+        identyfikator = definicja["id"]
+        obecnie = float(wartosc_parametru(parametry, identyfikator))
+        test_zastepczy = abs(obecnie) <= 1e-12
+        odchylenie = definicja["krok"] if test_zastepczy else abs(obecnie) * zmiana_wzgledna
+        scenariusze = []
+        for znak in (-1, 1):
+            nowa = min(
+                float(definicja["max"]),
+                max(float(definicja["min"]), obecnie + znak * odchylenie),
+            )
+            zmienione = ustaw_parametr(parametry, identyfikator, nowa)
+            rzeczywista = float(wartosc_parametru(zmienione, identyfikator))
+            if rzeczywista == obecnie:
+                # Dla małych wartości całkowitych ±10% może zaokrąglić się do zera.
+                alternatywa = obecnie + znak * definicja["krok"]
+                alternatywa = min(float(definicja["max"]), max(float(definicja["min"]), alternatywa))
+                zmienione = ustaw_parametr(parametry, identyfikator, alternatywa)
+                rzeczywista = float(wartosc_parametru(zmienione, identyfikator))
+                test_zastepczy = True
+            if rzeczywista == obecnie:
+                continue
+            wyniki = oblicz_model(zmienione)
+            wynik = wyniki["ogolem"]["wynik"]
+            marza = wyniki["ogolem"]["marza"]
+            scenariusze.append({
+                "wartosc": rzeczywista,
+                "zmiana": rzeczywista - obecnie,
+                "wynik": wynik,
+                "wplyw": wynik - bazowy_wynik,
+                "marza": marza,
+                "wplyw_marza": marza - bazowa_marza,
+            })
+        if not scenariusze:
+            continue
+        korzystny = max(scenariusze, key=lambda x: x["wplyw"])
+        niekorzystny = min(scenariusze, key=lambda x: x["wplyw"])
+        wiersze.append({
+            "Parametr": definicja["nazwa"], "Id": identyfikator,
+            "Kategoria": definicja["kategoria"], "Obecnie": obecnie,
+            "Jednostka": definicja["jednostka"],
+            "Zmiana porównawcza": korzystny["zmiana"],
+            "Wartość po zmianie": korzystny["wartosc"],
+            "Wynik bazowy": bazowy_wynik, "Wynik po zmianie": korzystny["wynik"],
+            "Wpływ na wynik": korzystny["wplyw"],
+            "Marża bazowa": bazowa_marza, "Marża po zmianie": korzystny["marza"],
+            "Wpływ na marżę": korzystny["wplyw_marza"],
+            "Kierunek poprawy": "wzrost" if korzystny["zmiana"] > 0 else "spadek",
+            "Korzystna zmiana": korzystny["zmiana"],
+            "Wpływ korzystny": korzystny["wplyw"],
+            "Marża po korzystnej zmianie": korzystny["marza"],
+            "Wpływ korzystny na marżę": korzystny["wplyw_marza"],
+            "Niekorzystna zmiana": niekorzystny["zmiana"],
+            "Wartość po niekorzystnej zmianie": niekorzystny["wartosc"],
+            "Wpływ niekorzystny": niekorzystny["wplyw"],
+            "Wynik po niekorzystnej zmianie": niekorzystny["wynik"],
+            "Marża po niekorzystnej zmianie": niekorzystny["marza"],
+            "Wpływ niekorzystny na marżę": niekorzystny["wplyw_marza"],
+            "Test zastępczy": test_zastepczy,
+        })
+    return sorted(
+        wiersze,
+        key=lambda x: max(abs(x["Wpływ korzystny"]), abs(x["Wpływ niekorzystny"])),
+        reverse=True,
+    )
 
 
 def wartosc_skrocenia_czynnosci(parametry: dict) -> list[dict]:
@@ -372,11 +464,10 @@ def ekonomika_ugod(parametry: dict) -> dict:
     for punkty in (1, 5, 10):
         nowa = min(100.0, parametry["zawarte_ugody_percent"] + punkty)
         wyniki_poprawy = oblicz_model(ustaw_parametr(parametry, "zawarte_ugody", nowa))
-        operacyjny = status_operacyjny(wyniki_poprawy)
-        wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik roczny": wyniki_poprawy["ogolem"]["wynik"] - bazowy_wynik, "Wykonalne operacyjnie": operacyjny["wykonalne"], "Wykorzystanie pojemności": operacyjny["wykorzystanie"]})
+        wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik roczny": wyniki_poprawy["ogolem"]["wynik"] - bazowy_wynik})
 
     bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))
-    return {"sciezki": sciezki, "porownania": porownania, "minimalna_skutecznosc": minimalna_skutecznosc, "obecna_skutecznosc": parametry["zawarte_ugody_percent"], "bufor_skutecznosci": None if minimalna_skutecznosc is None else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc, "wartosc_poprawy": wartosc_poprawy, "strategia_wplyw_pln": bazowy_wynik - bez_prob["ogolem"]["wynik"], "strategia_wplyw_godzin": bez_prob["laczne_godziny"] - wyniki["laczne_godziny"], "strategia_bez_prob_status": status_operacyjny(bez_prob)}
+    return {"sciezki": sciezki, "porownania": porownania, "minimalna_skutecznosc": minimalna_skutecznosc, "obecna_skutecznosc": parametry["zawarte_ugody_percent"], "bufor_skutecznosci": None if minimalna_skutecznosc is None else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc, "wartosc_poprawy": wartosc_poprawy, "strategia_wplyw_pln": bazowy_wynik - bez_prob["ogolem"]["wynik"], "strategia_wplyw_godzin": bez_prob["laczne_godziny"] - wyniki["laczne_godziny"]}
 
 
 def minimalna_liczba_pracownikow(parametry: dict, limit: int = 1000) -> int | None:
@@ -457,20 +548,19 @@ def symuluj_pojedyncza_zmiane(parametry: dict, identyfikator: str, nowa_wartosc:
     zmienione_parametry = ustaw_parametr(parametry, identyfikator, nowa_wartosc)
     scenariusz = oblicz_model(zmienione_parametry)
     def metryki(wynik: dict) -> dict:
-        return {"Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt"], "Wynik": wynik["ogolem"]["wynik"], "Marża": wynik["ogolem"]["marza"], "Godziny pracy": wynik["laczne_godziny"], "Wykorzystanie pojemności": wykorzystanie_pojemnosci(wynik)}
+        return {"Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt"], "Wynik": wynik["ogolem"]["wynik"], "Marża": wynik["ogolem"]["marza"], "Godziny pracy": wynik["laczne_godziny"]}
     obecnie, po_zmianie = metryki(bazowe), metryki(scenariusz)
-    roznica = {nazwa: (po_zmianie[nazwa] - obecnie[nazwa]) if po_zmianie[nazwa] is not None and obecnie[nazwa] is not None else None for nazwa in obecnie}
-    return {"parametry": zmienione_parametry, "obecnie": obecnie, "scenariusz": po_zmianie, "roznica": roznica, "wyniki": scenariusz, "status_operacyjny": status_operacyjny(scenariusz)}
+    roznica = {nazwa: po_zmianie[nazwa] - obecnie[nazwa] for nazwa in obecnie}
+    return {"parametry": zmienione_parametry, "obecnie": obecnie, "scenariusz": po_zmianie, "roznica": roznica, "wyniki": scenariusz}
 
 
 def ranking_progow(progi: dict, typ: str, limit: int = 5) -> list[dict]:
-    """Porównuje granice według względnej zmiany i odrzuca niewykonalne scenariusze."""
+    """Porównuje finansowe granice według najmniejszej względnej zmiany."""
     pozycje = []
     for pozycja in progi["pozycje"]:
         if (
             pozycja["typ"] != typ
             or not pozycja["osiagalne"]
-            or not pozycja["wykonalne_operacyjnie"]
             or not pozycja["obecnie"]
         ):
             continue
@@ -481,21 +571,22 @@ def ranking_progow(progi: dict, typ: str, limit: int = 5) -> list[dict]:
     return sorted(pozycje, key=lambda x: x["zmiana_wzgledna"])[:limit]
 
 
-def rekomendacje_deterministyczne(wrazliwosc: list[dict], progi: dict, ugody: dict, pojemnosc: dict) -> dict:
+def rekomendacje_deterministyczne(wrazliwosc: list[dict], progi: dict, ugody: dict, pojemnosc: dict | None = None) -> dict:
+    """Buduje rekomendacje ekonomiczne bez filtrowania przez roczną pojemność."""
     kategorie_kontrolowalne = {"Operacyjne", "Kosztowe", "Ugody"}
-    korzystne_i_wykonalne = [
+    korzystne = [
         wiersz for wiersz in wrazliwosc
-        if wiersz["Wpływ na wynik roczny"] > 0 and wiersz["Wykonalne operacyjnie"]
+        if wiersz["Wpływ na wynik roczny"] > 0
     ]
     top = [
-        wiersz for wiersz in korzystne_i_wykonalne
-        if wiersz["Kategoria"] in kategorie_kontrolowalne
+        wiersz for wiersz in korzystne
+        if wiersz["Kategoria"] in kategorie_kontrolowalne and wiersz["Id"] != "liczba_spraw"
     ][:3]
     czynniki_zewnetrzne = [
-        wiersz for wiersz in korzystne_i_wykonalne
+        wiersz for wiersz in korzystne
         if wiersz["Kategoria"] not in kategorie_kontrolowalne
     ][:3]
-    segmenty = pojemnosc["segmenty"]
+    segmenty = pojemnosc.get("segmenty", []) if pojemnosc else []
     bufory = ranking_progow(progi, "bufor")
     drogi_do_celu = ranking_progow(progi, "wymagana_zmiana")
     return {
@@ -504,7 +595,6 @@ def rekomendacje_deterministyczne(wrazliwosc: list[dict], progi: dict, ugody: di
         "najsilniejszy_segment": segmenty[0] if segmenty else None,
         "najslabszy_segment": segmenty[-1] if segmenty else None,
         "ugody": ugody,
-        "pojemnosc": pojemnosc,
         "najmniejsze_bufory": bufory,
         "najkrotsze_drogi": drogi_do_celu,
     }

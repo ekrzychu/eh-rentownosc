@@ -3,6 +3,7 @@ import streamlit as st
 
 from analysis import (
     analiza_pojemnosci,
+    analiza_wplywu_wzglednego,
     analiza_wrazliwosci,
     analizuj_progi,
     definicje_parametrow,
@@ -10,7 +11,6 @@ from analysis import (
     kluczowe_progi,
     ranking_progow,
     rekomendacje_deterministyczne,
-    status_operacyjny,
     symuluj_pojedyncza_zmiane,
     wartosc_parametru,
     wartosc_skrocenia_czynnosci,
@@ -128,6 +128,8 @@ def formatuj_zmiane(wartosc: float | None, jednostka: str) -> str:
         return f"{znak}{wartosc:.0f} os."
     if jednostka == "min":
         return f"{znak}{wartosc:.1f} min".replace(".", ",")
+    if jednostka == "p.p.":
+        return f"{znak}{wartosc:.2f}".replace(".", ",") + " p.p."
     return f"{znak}{wartosc:.2f} {jednostka}".replace(".", ",")
 
 
@@ -152,13 +154,6 @@ def pokaz_kluczowa_granice(
         f"{'Bufor' if cel_spelniony else 'Wymagana zmiana'}: "
         f"**{formatuj_zmiane(pozycja['zmiana'], pozycja['jednostka'])}**"
     )
-    if pozycja["wykonalne_operacyjnie"] is False:
-        komunikat = (
-            "Granica finansowa przekracza pojemność zespołu."
-            if pozycja["wplywa_na_pojemnosc"]
-            else "Zmiana nie wpływa na obciążenie; obecny portfel nadal przekracza pojemność zespołu."
-        )
-        st.caption(f"⚠ {komunikat}")
 
 
 domyslne = domyslne_parametry()
@@ -170,7 +165,7 @@ with st.sidebar:
     st.header("Założenia")
 
     with st.expander("Portfel", expanded=True):
-        liczba_spraw = st.number_input("Liczba spraw rocznie", min_value=0, value=domyslne["liczba_spraw"], step=1)
+        liczba_spraw = st.number_input("Liczba spraw w portfelu", min_value=0, value=domyslne["liczba_spraw"], step=1)
         prog_wps = st.number_input("Próg WPS", min_value=0.0, value=float(domyslne["prog_wps"]), step=500.0)
         fin_percent = st.number_input(
             "Średnia kwota wyroku / ugody (% WPS)", min_value=0.0, max_value=100.0,
@@ -388,20 +383,6 @@ kpi[1].metric("Koszt", kwota(ogolem["koszt"]))
 kpi[2].metric("Zysk / strata", kwota(ogolem["wynik"]))
 kpi[3].metric("Marża", procent(ogolem["marza"]))
 
-pojemnosc = wyniki["pojemnosc"]
-if pojemnosc["brak_czasu_na_sprawy"]:
-    st.warning(
-        "Czynności dzienne zajmują cały standardowy dzień pracy lub więcej. "
-        "Nie pozostaje czas na bezpośrednią obsługę spraw."
-    )
-elif pojemnosc["przekroczona"]:
-    st.warning(
-        "Przy obecnej liczbie pracowników portfel wymaga więcej czasu pracy, "
-        "niż jest dostępne w ciągu roku.\n\n"
-        f"Wymagany czas obsługi spraw: **{liczba(pojemnosc['bezposrednie_minuty_spraw'] / 60)} h**  \n"
-        f"Dostępny czas obsługi spraw: **{liczba(max(0.0, pojemnosc['pojemnosc_spraw_minuty']) / 60)} h**"
-    )
-
 st.divider()
 st.header("Podział według WPS")
 st.caption("Porównanie wyników dla spraw poniżej progu oraz od progu wzwyż.")
@@ -508,18 +489,6 @@ st.bar_chart(pd.DataFrame({"Średni wynik": [wyniki["wps_niski"]["sredni_wynik"]
 st.divider()
 st.header("Centrum rentowności i decyzji")
 st.caption("Analiza wpływu parametrów, granic rentowności i możliwości poprawy wyniku.")
-status_biezacy = status_operacyjny(wyniki)
-if not status_biezacy["wykonalne"]:
-    wykorzystanie_tekst = (
-        procent(status_biezacy["wykorzystanie"])
-        if status_biezacy["wykorzystanie"] is not None
-        else "brak dostępnej pojemności"
-    )
-    st.warning(
-        "Obecny portfel przekracza pojemność zespołu. "
-        f"Wykorzystanie pojemności: **{wykorzystanie_tekst}**. "
-        "Ocena finansowa i wykonalność operacyjna są prezentowane oddzielnie."
-    )
 tab_prog, tab_wrazliwosc, tab_ugody, tab_portfel, tab_symulator, tab_rekomendacje = st.tabs([
     "Próg i bufor", "Wrażliwość", "Ugody", "Portfel i pojemność", "Symulator", "Rekomendacje",
 ])
@@ -559,8 +528,6 @@ with tab_prog:
                 f"{'Bufor' if kluczowe['cel_spelniony'] else 'Wymagana zmiana'}: "
                 f"**{formatuj_zmiane(prog_czasu['zmiana'], 'min')} na sprawę**"
             )
-            if prog_czasu["wykonalne_operacyjnie"] is False:
-                st.caption("⚠ Granica finansowa przekracza pojemność zespołu.")
     with gorna_prawa:
         st.markdown("#### Koszt")
         st.markdown("##### Koszt stały / h")
@@ -611,19 +578,13 @@ with tab_prog:
         else:
             granica = "Brak granicy w zakresie" if analiza_progow["cel_spelniony"] else "Niewystarczające jako pojedyncza zmiana"
             zmiana = "—"
-        if pozycja["wykonalne_operacyjnie"] is None:
-            wykonalnosc = "—"
-        elif not pozycja["wplywa_na_pojemnosc"]:
-            wykonalnosc = "Bez wpływu — stan wykonalny" if pozycja["wykonalne_operacyjnie"] else "Bez wpływu — pojemność przekroczona"
-        else:
-            wykonalnosc = "Wykonalne" if pozycja["wykonalne_operacyjnie"] else "Przekroczona pojemność"
-        tabela_progow.append({"Parametr": pozycja["parametr"], "Grupa": pozycja["kategoria"], "Obecnie": formatuj_parametr(pozycja["obecnie"], pozycja["jednostka"]), "Granica finansowa": granica, kolumna_zmiany: zmiana, "Wykonalność przy granicy": wykonalnosc})
+        tabela_progow.append({"Parametr": pozycja["parametr"], "Grupa": pozycja["kategoria"], "Obecnie": formatuj_parametr(pozycja["obecnie"], pozycja["jednostka"]), "Granica finansowa": granica, kolumna_zmiany: zmiana})
     st.dataframe(pd.DataFrame(tabela_progow), hide_index=True, width="stretch", height=520)
     if analiza_progow["cel_spelniony"]:
-        st.subheader("Najmniejsze wykonalne bufory")
+        st.subheader("Najmniejsze bufory rentowności")
         wybrane_progi = ranking_progow(analiza_progow, "bufor")
     else:
-        st.subheader("Najkrótsze wykonalne drogi do celu")
+        st.subheader("Najkrótsze drogi do celu")
         wybrane_progi = ranking_progow(analiza_progow, "wymagana_zmiana")
     if wybrane_progi:
         for pozycja in wybrane_progi:
@@ -633,23 +594,27 @@ with tab_prog:
                 f"({formatuj_zmiane(pozycja['zmiana'], pozycja['jednostka'])})"
             )
     else:
-        st.write("Brak pojedynczych zmian, które jednocześnie spełniają cel finansowy i mieszczą się w pojemności zespołu.")
+        st.write("Brak pojedynczych zmian spełniających cel finansowy w badanym zakresie.")
 
 with tab_wrazliwosc:
     st.subheader("Analiza wrażliwości")
-    st.caption("Ranking pokazuje wpływ jednej standardowej, korzystnej zmiany przy pozostałych założeniach bez zmian.")
+    st.caption("Każdy wpływ pokazuje zmianę wyniku przy zmianie jednego parametru i pozostawieniu pozostałych założeń bez zmian.")
     wrazliwosc = analiza_wrazliwosci(parametry)
     tabela_wrazliwosci = pd.DataFrame([{
         "Parametr": x["Parametr"], "Kategoria": x["Kategoria"],
+        "Obecnie": formatuj_parametr(x["Obecnie"], x["Jednostka"]),
         "Wynik obecny": x["Wynik obecny"],
         "Korzystna zmiana": formatuj_zmiane(x["Zmiana testowa"], x["Jednostka"]),
         "Wynik po poprawie": x["Wynik po poprawie"],
         "Wpływ korzystny": x["Wpływ na wynik roczny"],
-        "Wykonalne operacyjnie": "Tak" if x["Wykonalne operacyjnie"] else "Nie",
-        "Wykorzystanie po poprawie": x["Wykorzystanie po poprawie"],
+        "Marża obecna": x["Marża obecna"],
+        "Marża po poprawie": x["Marża po poprawie"],
+        "Zmiana marży": x["Wpływ na marżę"],
         "Niekorzystna zmiana": formatuj_zmiane(x["Zmiana niekorzystna"], x["Jednostka"]),
         "Wynik po pogorszeniu": x["Wynik po pogorszeniu"],
         "Wpływ niekorzystny": x["Wpływ niekorzystny"],
+        "Marża po pogorszeniu": x["Marża po pogorszeniu"],
+        "Niekorzystna zmiana marży": x["Wpływ niekorzystny na marżę"],
         "Kierunek poprawy": x["Kierunek poprawy"],
     } for x in wrazliwosc])
     st.dataframe(tabela_wrazliwosci, hide_index=True, width="stretch", height=460, column_config={
@@ -658,7 +623,11 @@ with tab_wrazliwosc:
         "Wpływ korzystny": st.column_config.NumberColumn(format="%.2f zł"),
         "Wynik po pogorszeniu": st.column_config.NumberColumn(format="%.2f zł"),
         "Wpływ niekorzystny": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wykorzystanie po poprawie": st.column_config.NumberColumn(format="%.1f%%"),
+        "Marża obecna": st.column_config.NumberColumn(format="%.2f%%"),
+        "Marża po poprawie": st.column_config.NumberColumn(format="%.2f%%"),
+        "Zmiana marży": st.column_config.NumberColumn(format="%+.2f p.p."),
+        "Marża po pogorszeniu": st.column_config.NumberColumn(format="%.2f%%"),
+        "Niekorzystna zmiana marży": st.column_config.NumberColumn(format="%+.2f p.p."),
     })
     top_wplyw = tabela_wrazliwosci.head(10).set_index("Parametr")[["Wpływ korzystny"]]
     st.bar_chart(top_wplyw, height=320)
@@ -682,10 +651,13 @@ with tab_ugody:
         "Oczekiwana liczba spraw": st.column_config.NumberColumn(format="%.1f"),
     })
     st.subheader("Wartość ekonomiczna ścieżek")
-    st.dataframe(pd.DataFrame(ekonomika["porownania"]), hide_index=True, width="stretch", column_config={
+    tabela_porownan_ugod = pd.DataFrame(ekonomika["porownania"]).rename(columns={
+        "Wpływ roczny przy obecnym udziale": "Wpływ dla portfela przy obecnym udziale",
+    })
+    st.dataframe(tabela_porownan_ugod, hide_index=True, width="stretch", column_config={
         "Różnica minut na sprawę": st.column_config.NumberColumn(format="%.1f min"),
         "Różnica PLN na sprawę": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wpływ roczny przy obecnym udziale": st.column_config.NumberColumn(format="%.2f zł"),
+        "Wpływ dla portfela przy obecnym udziale": st.column_config.NumberColumn(format="%.2f zł"),
     })
     st.subheader("Opłacalność prób ugodowych poza ramami")
     u1, u2, u3 = st.columns(3)
@@ -695,25 +667,20 @@ with tab_ugody:
     st.subheader("Wartość poprawy skuteczności")
     st.dataframe(pd.DataFrame([{
         "Zmiana": f"+{x['Zmiana']:.1f} p.p.".replace(".", ","),
-        "Wpływ na wynik roczny": x["Wpływ na wynik roczny"],
-        "Wykonalne operacyjnie": "Tak" if x["Wykonalne operacyjnie"] else "Nie",
-        "Wykorzystanie pojemności": x["Wykorzystanie pojemności"],
+        "Wpływ na wynik portfela": x["Wpływ na wynik roczny"],
     } for x in ekonomika["wartosc_poprawy"]]), hide_index=True, width="stretch", column_config={
-        "Wpływ na wynik roczny": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wykorzystanie pojemności": st.column_config.NumberColumn(format="%.1f%%"),
+        "Wpływ na wynik portfela": st.column_config.NumberColumn(format="%.2f zł"),
     })
     s1, s2 = st.columns(2)
     s1.metric("Wpływ obecnej strategii prób ugodowych", kwota(ekonomika["strategia_wplyw_pln"]))
     s2.metric("Wpływ strategii na czas", f"{ekonomika['strategia_wplyw_godzin']:+.1f} h".replace(".", ","))
-    status_bez_prob = ekonomika["strategia_bez_prob_status"]
-    st.caption(
-        "Scenariusz bez prób ugodowych poza ramami: "
-        f"{'wykonalny operacyjnie' if status_bez_prob['wykonalne'] else 'przekracza pojemność zespołu'}; "
-        f"wykorzystanie {procent(status_bez_prob['wykorzystanie']) if status_bez_prob['wykorzystanie'] is not None else 'niedostępne'}."
-    )
 
 with tab_portfel:
     st.subheader("Portfel i pojemność zespołu")
+    st.caption(
+        "Pojemność jest analizą operacyjną i nie ogranicza obliczeń rentowności portfela. "
+        "Sprawy mogą być obsługiwane w okresie dłuższym niż jeden rok."
+    )
     pojemnosc_analiza = analiza_pojemnosci(parametry)
     p1, p2, p3, p4 = st.columns(4)
     p1.metric("Liczba pracowników", str(pojemnosc_analiza["liczba_pracownikow"]))
@@ -786,7 +753,7 @@ with tab_symulator:
         obecna = symulacja["obecnie"][nazwa]
         scenariuszowa = symulacja["scenariusz"][nazwa]
         roznica = symulacja["roznica"][nazwa]
-        if nazwa in ("Marża", "Wykorzystanie pojemności"):
+        if nazwa == "Marża":
             formatuj = lambda x: procent(x) if x is not None else "—"
         elif nazwa == "Godziny pracy":
             formatuj = lambda x: f"{liczba(x, 2)} h" if x is not None else "—"
@@ -794,55 +761,123 @@ with tab_symulator:
             formatuj = lambda x: kwota(x) if x is not None else "—"
         tabela_symulacji.append({"Wskaźnik": nazwa, "Obecnie": formatuj(obecna), "Scenariusz": formatuj(scenariuszowa), "Różnica": formatuj(roznica)})
     st.dataframe(pd.DataFrame(tabela_symulacji), hide_index=True, width="stretch")
-    if symulacja["status_operacyjny"]["wykonalne"]:
-        st.success("Scenariusz mieści się w dostępnej pojemności zespołu.")
-    else:
-        st.warning("Scenariusz przekracza dostępną pojemność zespołu.")
-    wykorzystanie_symulacji = symulacja["status_operacyjny"]["wykorzystanie"]
-    st.write(
-        "Wykorzystanie pojemności w scenariuszu: "
-        f"**{procent(wykorzystanie_symulacji) if wykorzystanie_symulacji is not None else 'brak dostępnej pojemności'}**"
-    )
 
 with tab_rekomendacje:
     st.subheader("Rekomendacje wynikające z modelu")
-    rekomendacje = rekomendacje_deterministyczne(wrazliwosc, analiza_progow, ekonomika, pojemnosc_analiza)
+    wplyw_wzgledny = analiza_wplywu_wzglednego(parametry)
+    rekomendacje = rekomendacje_deterministyczne(wrazliwosc, analiza_progow, ekonomika)
+
+    st.markdown("#### Największy wpływ na wynik")
+    st.caption(
+        "Każdy wpływ pokazuje zmianę wyniku przy zmianie jednego parametru "
+        "i pozostawieniu pozostałych założeń bez zmian."
+    )
+    najwieksze_korzysci = sorted(
+        (
+            pozycja for pozycja in wplyw_wzgledny
+            if pozycja["Wpływ korzystny"] > 0
+        ),
+        key=lambda x: x["Wpływ korzystny"],
+        reverse=True,
+    )[:5]
+    for numer, pozycja in enumerate(najwieksze_korzysci, 1):
+        opis_testu = "krok standardowy" if pozycja["Test zastępczy"] else "10% wartości parametru"
+        st.write(
+            f"{numer}. **{pozycja['Parametr']}** · {pozycja['Kategoria']}  \n"
+            f"{formatuj_zmiane(pozycja['Korzystna zmiana'], pozycja['Jednostka'])} "
+            f"({opis_testu}) → **{kwota(pozycja['Wpływ korzystny'])}**, "
+            f"marża **{formatuj_zmiane(pozycja['Wpływ korzystny na marżę'], 'p.p.')}**"
+        )
+
+    st.markdown("#### Największe ryzyka dla wyniku")
+    najwieksze_ryzyka = sorted(
+        (pozycja for pozycja in wplyw_wzgledny if pozycja["Wpływ niekorzystny"] < 0),
+        key=lambda x: x["Wpływ niekorzystny"],
+    )[:5]
+    for numer, pozycja in enumerate(najwieksze_ryzyka, 1):
+        st.write(
+            f"{numer}. **{pozycja['Parametr']}** · {pozycja['Kategoria']}: "
+            f"{formatuj_zmiane(pozycja['Niekorzystna zmiana'], pozycja['Jednostka'])} → "
+            f"**{kwota(pozycja['Wpływ niekorzystny'])}**, "
+            f"marża **{formatuj_zmiane(pozycja['Wpływ niekorzystny na marżę'], 'p.p.')}**"
+        )
+    ryzyka_ii_instancji = [
+        pozycja for pozycja in wplyw_wzgledny
+        if pozycja["Id"] in {"udzial_ii_instancji", "czas_ii_instancji"}
+    ]
+    if ryzyka_ii_instancji:
+        st.markdown("##### Ryzyka związane z II instancją")
+        for pozycja in ryzyka_ii_instancji:
+            st.write(
+                f"**{pozycja['Parametr']}**: "
+                f"{formatuj_zmiane(pozycja['Niekorzystna zmiana'], pozycja['Jednostka'])} → "
+                f"**{kwota(pozycja['Wpływ niekorzystny'])}**"
+            )
+
+    st.markdown("#### Wpływ parametrów na wynik")
+    st.caption(
+        "Porównanie wykorzystuje zmianę ±10% bieżącej wartości. Dla wartości zerowych "
+        "lub zmian całkowitych, których nie da się w ten sposób przesunąć, używany jest "
+        "standardowy krok testowy. Wpływów nie należy sumować."
+    )
+    tabela_wplywu = pd.DataFrame([{
+        "Parametr": x["Parametr"],
+        "Grupa": x["Kategoria"],
+        "Obecnie": formatuj_parametr(x["Obecnie"], x["Jednostka"]),
+        "Zmiana porównawcza": formatuj_zmiane(x["Zmiana porównawcza"], x["Jednostka"]),
+        "Wpływ na wynik": x["Wpływ na wynik"],
+        "Zmiana marży": x["Wpływ na marżę"],
+        "Kierunek poprawy": x["Kierunek poprawy"],
+        "Niekorzystna zmiana": formatuj_zmiane(x["Niekorzystna zmiana"], x["Jednostka"]),
+        "Wpływ niekorzystny": x["Wpływ niekorzystny"],
+        "Niekorzystna zmiana marży": x["Wpływ niekorzystny na marżę"],
+        "Sposób testu": "krok standardowy" if x["Test zastępczy"] else "±10% wartości",
+    } for x in wplyw_wzgledny])
+    st.dataframe(
+        tabela_wplywu,
+        hide_index=True,
+        width="stretch",
+        height=560,
+        column_config={
+            "Wpływ na wynik": st.column_config.NumberColumn(format="%.2f zł"),
+            "Zmiana marży": st.column_config.NumberColumn(format="%+.2f p.p."),
+            "Wpływ niekorzystny": st.column_config.NumberColumn(format="%.2f zł"),
+            "Niekorzystna zmiana marży": st.column_config.NumberColumn(format="%+.2f p.p."),
+        },
+    )
+    st.markdown("##### Najsilniejsze czynniki wyniku")
+    wykres_wplywu = pd.DataFrame([{
+        "Parametr": x["Parametr"],
+        "Korzystna zmiana": x["Wpływ korzystny"],
+        "Niekorzystna zmiana": x["Wpływ niekorzystny"],
+    } for x in wplyw_wzgledny[:12]]).set_index("Parametr")
+    st.bar_chart(wykres_wplywu, height=420)
+
     st.markdown("#### Dźwignie operacyjne i zarządcze")
     if rekomendacje["najwiekszy_wplyw"]:
         for numer, dzwignia in enumerate(rekomendacje["najwiekszy_wplyw"], 1):
-            st.write(f"{numer}. **{dzwignia['Parametr']}** ({formatuj_zmiane(dzwignia['Zmiana testowa'], dzwignia['Jednostka'])}): {kwota(dzwignia['Wpływ na wynik roczny'])} rocznie")
+            st.write(f"{numer}. **{dzwignia['Parametr']}** ({formatuj_zmiane(dzwignia['Zmiana testowa'], dzwignia['Jednostka'])}): {kwota(dzwignia['Wpływ na wynik roczny'])} dla portfela")
     else:
-        st.write("Brak dodatnich standardowych zmian, które mieszczą się w obecnej pojemności zespołu.")
-    st.markdown("#### Czynniki zewnętrzne i strukturalne")
+        st.write("Brak dodatnich zmian w badanym zakresie.")
+    st.markdown("#### Czynniki strukturalne i ekonomiczne")
     if rekomendacje["czynniki_zewnetrzne"]:
         for czynnik in rekomendacje["czynniki_zewnetrzne"]:
-            st.write(f"**{czynnik['Parametr']}** ({formatuj_zmiane(czynnik['Zmiana testowa'], czynnik['Jednostka'])}): {kwota(czynnik['Wpływ na wynik roczny'])} rocznie")
+            st.write(f"**{czynnik['Parametr']}** ({formatuj_zmiane(czynnik['Zmiana testowa'], czynnik['Jednostka'])}): {kwota(czynnik['Wpływ na wynik roczny'])} dla portfela")
     else:
-        st.write("Brak dodatnich, wykonalnych operacyjnie zmian w tej grupie.")
-    if rekomendacje["najslabszy_segment"]:
-        st.markdown("#### Najsłabszy i najsilniejszy segment")
-        st.write(f"Najsłabszy: **{rekomendacje['najslabszy_segment']['Segment']}** — {kwota(rekomendacje['najslabszy_segment']['Wynik na sprawę'])} na sprawę")
-        st.write(f"Najsilniejszy: **{rekomendacje['najsilniejszy_segment']['Segment']}** — {kwota(rekomendacje['najsilniejszy_segment']['Wynik na sprawę'])} na sprawę")
+        st.write("Brak dodatnich zmian w badanym zakresie dla tej grupy.")
     st.markdown("#### Ugody")
     if ekonomika["minimalna_skutecznosc"] is None:
         st.write("Próby ugodowe poza ramami nie osiągają przewagi czasowej w badanym zakresie skuteczności.")
     else:
-        st.write(f"Obecna skuteczność: **{procent(ekonomika['obecna_skutecznosc'])}**; minimalna opłacalna: **{procent(ekonomika['minimalna_skutecznosc'])}**; wpływ strategii: **{kwota(ekonomika['strategia_wplyw_pln'])} rocznie**.")
-    st.markdown("#### Pojemność")
-    if pojemnosc_analiza["wykorzystanie"] is None:
-        st.write("Brak dostępnej pojemności na bezpośrednią obsługę spraw.")
-    elif pojemnosc_analiza["wykorzystanie"] > 100:
-        st.write(f"Wykorzystanie wynosi **{procent(pojemnosc_analiza['wykorzystanie'])}**. Minimalna wymagana obsada: **{pojemnosc_analiza['minimalni_pracownicy']} pracowników**.")
-    else:
-        st.write(f"Wykorzystanie wynosi **{procent(pojemnosc_analiza['wykorzystanie'])}**; wolna pojemność to około **{pojemnosc_analiza['dodatkowe_sprawy']} spraw**.")
+        st.write(f"Obecna skuteczność: **{procent(ekonomika['obecna_skutecznosc'])}**; minimalna opłacalna: **{procent(ekonomika['minimalna_skutecznosc'])}**; wpływ strategii: **{kwota(ekonomika['strategia_wplyw_pln'])} dla portfela**.")
     if analiza_progow["cel_spelniony"]:
-        st.markdown("#### Najmniejsze wykonalne bufory rentowności")
+        st.markdown("#### Najmniejsze bufory rentowności")
         progi_rekomendacji = rekomendacje["najmniejsze_bufory"]
     else:
-        st.markdown("#### Najkrótsze wykonalne drogi do celu")
+        st.markdown("#### Najkrótsze drogi do celu")
         progi_rekomendacji = rekomendacje["najkrotsze_drogi"]
     if progi_rekomendacji:
         for pozycja in progi_rekomendacji:
             st.write(f"**{pozycja['parametr']}**: granica {formatuj_parametr(pozycja['granica'], pozycja['jednostka'])}, zmiana {formatuj_zmiane(pozycja['zmiana'], pozycja['jednostka'])}")
     else:
-        st.write("Brak pojedynczych, wykonalnych operacyjnie zmian dla wybranego celu marży.")
+        st.write("Brak pojedynczych zmian dla wybranego celu marży w badanym zakresie.")
