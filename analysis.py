@@ -23,7 +23,6 @@ PARAMETRY_STEROWALNE = frozenset({
     "szansa_na_ugode",
     "zawarte_ugody",
     "czas_ii_instancji",
-    "liczba_pracownikow",
     "analiza_ugody",
 })
 STEROWALNE_PREFIKSY = (
@@ -120,7 +119,6 @@ def definicje_parametrow(parametry: dict) -> list[dict]:
         {"id": "czas_ii_instancji", "nazwa": "Obsługa sprawy w II instancji", "kategoria": "Operacyjne", "podkategoria": "II instancja", "jednostka": "min", "typ": "czas", "min": 0.0, "max": max(1440.0, parametry["obsluga_ii_instancji_minuty"] + 1440), "krok": 10.0},
         {"id": "wysoki_wps_procent", "nazwa": "Udział wysokiego WPS", "kategoria": "Struktura portfela", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "liczba_spraw", "nazwa": "Liczba spraw", "kategoria": "Struktura portfela", "jednostka": "spraw", "typ": "calkowita", "min": 0, "max": max(1000, parametry["liczba_spraw"] * 3 + 500), "krok": 50},
-        {"id": "liczba_pracownikow", "nazwa": "Liczba pracowników", "kategoria": "Operacyjne", "jednostka": "osób", "typ": "calkowita", "min": 0, "max": max(50, parametry["liczba_pracownikow"] * 4 + 10), "krok": 1},
     ]
     for rodzaj in parametry["udzialy_rodzajow"]:
         definicje.append({"id": f"udzial:{rodzaj}", "nazwa": f"Udział {rodzaj}", "kategoria": "Struktura portfela", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0})
@@ -432,6 +430,10 @@ def ekonomika_ugod(parametry: dict) -> dict:
     pelne_czasy_sciezek = wyniki["czasy_sciezek_z_ii_instancja"]
     liczba_spraw = parametry["liczba_spraw"]
     koszt_godziny = wyniki["koszt_godziny"]
+    mnoznik_kosztu_lifecycle = (
+        1
+        + sum(parametry["codzienne_czynnosci"].values()) / 480
+    )
     nazwy = {
         "kategoryczna_odmowa": "Kategoryczna odmowa", "automatyczne_ramy": "Automatyczne ramy",
         "brak_szans": "Brak szans na ugodę", "zawarte_poza_ramami": "Szansa poza ramami → zawarte ugody",
@@ -449,7 +451,9 @@ def ekonomika_ugod(parametry: dict) -> dict:
             pelne_czasy_sciezek[odniesienie]
             - pelne_czasy_sciezek[wariant]
         )
-        oszczednosc_pln = oszczednosc_minut / 60 * koszt_godziny
+        oszczednosc_pln = (
+            oszczednosc_minut / 60 * koszt_godziny * mnoznik_kosztu_lifecycle
+        )
         porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ roczny przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
 
     czas_sukces = pelne_czasy_sciezek["zawarte_poza_ramami"]

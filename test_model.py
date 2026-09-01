@@ -5,6 +5,7 @@ from model import (
     alokuj_liczby_z_procentow,
     domyslne_parametry,
     oblicz_czas_czynnosci_dziennych,
+    oblicz_czynnosci_dzienne_lifecycle,
     oblicz_czasy_sciezek_ugod,
     oblicz_czasy_sciezek_z_ii_instancja,
     oblicz_model,
@@ -188,7 +189,7 @@ class TestDrugaInstancja(unittest.TestCase):
         roznica_minut = self.wyniki["bezposrednie_minuty_spraw"] - bez_ii["bezposrednie_minuty_spraw"]
         roznica_kosztu = self.wyniki["ogolem"]["koszt"] - bez_ii["ogolem"]["koszt"]
         self.assertAlmostEqual(roznica_minut, self.wyniki["ii_instancja_minuty_lacznie"])
-        self.assertAlmostEqual(roznica_kosztu, roznica_minut / 60 * self.wyniki["koszt_godziny"])
+        self.assertGreater(roznica_kosztu, roznica_minut / 60 * self.wyniki["koszt_godziny"])
         self.assertAlmostEqual(
             sum(grupa["laczny_koszt"] for grupa in self.wyniki["grupy"]),
             self.wyniki["ogolem"]["koszt"],
@@ -216,6 +217,91 @@ class TestDrugaInstancja(unittest.TestCase):
 
 
 class TestCzasDziennyIPojemnosc(unittest.TestCase):
+    def test_wzor_lifecycle_dla_1600_godzin(self):
+        metryki = oblicz_czynnosci_dzienne_lifecycle(1_600 * 60, {"Dzienna": 90})
+        self.assertEqual(metryki["ekwiwalent_osobodni_kohorty"], 200.0)
+        self.assertEqual(metryki["czynnosci_dzienne_lifecycle_minuty"], 18_000.0)
+        self.assertEqual(metryki["czynnosci_dzienne_lifecycle_godziny"], 300.0)
+        self.assertEqual(1_600 + metryki["czynnosci_dzienne_lifecycle_godziny"], 1_900.0)
+
+    def test_lifecycle_nie_ma_rocznego_limitu_i_zachowuje_ulamki(self):
+        ponad_rok = oblicz_czynnosci_dzienne_lifecycle(3_200 * 60, {"Dzienna": 90})
+        ulamkowe = oblicz_czynnosci_dzienne_lifecycle(1_604 * 60, {"Dzienna": 90})
+        self.assertEqual(ponad_rok["ekwiwalent_osobodni_kohorty"], 400.0)
+        self.assertEqual(ponad_rok["czynnosci_dzienne_lifecycle_godziny"], 600.0)
+        self.assertEqual(ulamkowe["ekwiwalent_osobodni_kohorty"], 200.5)
+
+    def test_ekonomia_kohorty_nie_zalezy_od_obsady_ani_dni_pracy(self):
+        porownywane = [
+            oblicz_model({
+                **domyslne_parametry(),
+                "liczba_pracownikow": pracownicy,
+                "liczba_dni_pracy_w_roku": dni,
+            })
+            for pracownicy, dni in ((1, 150), (2, 251), (4, 350))
+        ]
+        for klucz in (
+            "przychod", "koszt", "wynik", "marza",
+        ):
+            self.assertTrue(all(
+                wynik["ogolem"][klucz] == porownywane[0]["ogolem"][klucz]
+                for wynik in porownywane
+            ))
+        for klucz in (
+            "bezposrednie_minuty_spraw",
+            "ekwiwalent_osobodni_kohorty",
+            "czynnosci_dzienne_lifecycle_minuty",
+        ):
+            self.assertTrue(all(wynik[klucz] == porownywane[0][klucz] for wynik in porownywane))
+        self.assertNotEqual(
+            porownywane[0]["pojemnosc"]["pojemnosc_brutto_minuty"],
+            porownywane[-1]["pojemnosc"]["pojemnosc_brutto_minuty"],
+        )
+
+    def test_zmiana_czynnosci_dziennej_ma_dokladny_koszt_lifecycle(self):
+        parametry = domyslne_parametry()
+        bazowy = oblicz_model(parametry)
+        zmienione = {
+            **parametry,
+            "codzienne_czynnosci": {
+                **parametry["codzienne_czynnosci"],
+                "Obsługa skrzynki ugody EH": 40,
+            },
+        }
+        po_zmianie = oblicz_model(zmienione)
+        oczekiwane_minuty = bazowy["ekwiwalent_osobodni_kohorty"] * 10
+        self.assertAlmostEqual(
+            po_zmianie["czynnosci_dzienne_lifecycle_minuty"]
+            - bazowy["czynnosci_dzienne_lifecycle_minuty"],
+            oczekiwane_minuty,
+        )
+        self.assertAlmostEqual(
+            po_zmianie["ogolem"]["koszt"] - bazowy["ogolem"]["koszt"],
+            oczekiwane_minuty / 60 * bazowy["koszt_godziny"],
+        )
+
+    def test_skrocenie_czasu_bezposredniego_oszczedza_tez_narzut_lifecycle(self):
+        parametry = domyslne_parametry()
+        bazowy = oblicz_model(parametry)
+        zmienione = {
+            **parametry,
+            "procesowe_czynnosci": {
+                **parametry["procesowe_czynnosci"], "Duplika": 80,
+            },
+        }
+        po_zmianie = oblicz_model(zmienione)
+        self.assertLess(po_zmianie["bezposrednie_minuty_spraw"], bazowy["bezposrednie_minuty_spraw"])
+        self.assertLess(po_zmianie["ekwiwalent_osobodni_kohorty"], bazowy["ekwiwalent_osobodni_kohorty"])
+        self.assertLess(
+            po_zmianie["czynnosci_dzienne_lifecycle_minuty"],
+            bazowy["czynnosci_dzienne_lifecycle_minuty"],
+        )
+        self.assertGreater(
+            bazowy["ogolem"]["koszt"] - po_zmianie["ogolem"]["koszt"],
+            (bazowy["bezposrednie_minuty_spraw"] - po_zmianie["bezposrednie_minuty_spraw"])
+            / 60 * bazowy["koszt_godziny"],
+        )
+
     def test_domyslna_pojemnosc_wynika_z_aktualnych_parametrow(self):
         parametry = domyslne_parametry()
         wynik = oblicz_model(parametry)
@@ -231,25 +317,54 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
             wynik["bezposrednie_minuty_spraw"] > oczekiwana_pojemnosc,
         )
 
+    def test_pojemnosc_roczna_reaguje_na_obsade_dni_i_czynnosci_dzienne(self):
+        parametry = domyslne_parametry()
+        bazowy = oblicz_model(parametry)["pojemnosc"]
+        wiecej_pracownikow = oblicz_model({
+            **parametry, "liczba_pracownikow": 3,
+        })["pojemnosc"]
+        mniej_dni = oblicz_model({
+            **parametry, "liczba_dni_pracy_w_roku": 200,
+        })["pojemnosc"]
+        dluzsze_czynnosci = oblicz_model({
+            **parametry,
+            "codzienne_czynnosci": {
+                **parametry["codzienne_czynnosci"], "Obsługa skrzynki ugody EH": 40,
+            },
+        })["pojemnosc"]
+        self.assertGreater(
+            wiecej_pracownikow["pojemnosc_spraw_minuty"], bazowy["pojemnosc_spraw_minuty"]
+        )
+        self.assertLess(
+            mniej_dni["pojemnosc_spraw_minuty"], bazowy["pojemnosc_spraw_minuty"]
+        )
+        self.assertLess(
+            dluzsze_czynnosci["pojemnosc_spraw_minuty"], bazowy["pojemnosc_spraw_minuty"]
+        )
+
     def test_domyslny_i_piecioosobowy_narzut(self):
         czynnosci = domyslne_parametry()["codzienne_czynnosci"]
         self.assertEqual(oblicz_czas_czynnosci_dziennych(1, 250, czynnosci), 22_500)
         self.assertEqual(oblicz_czas_czynnosci_dziennych(5, 250, czynnosci), 112_500)
 
-    def test_narzut_dzienny_nie_zalezy_od_liczby_spraw(self):
+    def test_narzut_lifecycle_skaluje_sie_z_liczba_spraw(self):
         parametry_600 = domyslne_parametry()
         parametry_1000 = {**domyslne_parametry(), "liczba_spraw": 1000}
         wynik_600 = oblicz_model(parametry_600)
         wynik_1000 = oblicz_model(parametry_1000)
-        self.assertEqual(wynik_600["czynnosci_dzienne_minuty"], 45_180)
-        self.assertEqual(wynik_1000["czynnosci_dzienne_minuty"], 45_180)
+        self.assertLess(
+            wynik_600["czynnosci_dzienne_lifecycle_minuty"],
+            wynik_1000["czynnosci_dzienne_lifecycle_minuty"],
+        )
 
     def test_pracownicy_nie_mnoza_czasu_spraw(self):
         domyslny = oblicz_model(domyslne_parametry())
         pieciu = oblicz_model({**domyslne_parametry(), "liczba_pracownikow": 5})
         self.assertEqual(domyslny["bezposrednie_minuty_spraw"], pieciu["bezposrednie_minuty_spraw"])
-        self.assertEqual(domyslny["czynnosci_dzienne_minuty"], 45_180)
-        self.assertEqual(pieciu["czynnosci_dzienne_minuty"], 112_950)
+        self.assertEqual(
+            domyslny["czynnosci_dzienne_lifecycle_minuty"],
+            pieciu["czynnosci_dzienne_lifecycle_minuty"],
+        )
         self.assertGreater(
             pieciu["pojemnosc"]["pojemnosc_spraw_minuty"],
             domyslny["pojemnosc"]["pojemnosc_spraw_minuty"],
@@ -274,8 +389,8 @@ class TestModelFinansowy(unittest.TestCase):
         self.assertAlmostEqual(wynik["srednie_minuty_podstawowej_sciezki_ugody"], 216.0)
         self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 236.25)
         self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 231_930)
-        self.assertAlmostEqual(wynik["czynnosci_dzienne_minuty"], 45_180)
-        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 442_821.78)
+        self.assertAlmostEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 43_486.875)
+        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 440_116.16625)
 
     def test_koszty_grup_uzgadniaja_sie_z_portfelem(self):
         wynik = oblicz_model()
@@ -291,11 +406,12 @@ class TestModelFinansowy(unittest.TestCase):
     def test_zero_spraw_nie_powoduje_dzielenia_przez_zero(self):
         wynik = oblicz_model({**domyslne_parametry(), "liczba_spraw": 0})
         self.assertEqual(wynik["narzut_dzienny_na_sprawe"], 0.0)
-        self.assertAlmostEqual(wynik["ogolem"]["koszt"], wynik["czynnosci_dzienne_koszt"])
+        self.assertEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 0.0)
+        self.assertEqual(wynik["ogolem"]["koszt"], 0.0)
 
 
 class TestProgiRentownosci(unittest.TestCase):
-    def test_prog_czasu_zostawia_czynnosci_dzienne_bez_zmian(self):
+    def test_prog_czasu_przelicza_czynnosci_dzienne_lifecycle(self):
         parametry = {
             **domyslne_parametry(),
             "koszt_staly_na_godzine": 150.0,
@@ -317,9 +433,9 @@ class TestProgiRentownosci(unittest.TestCase):
         }
         wynik_przed = oblicz_model(parametry)
         wynik_po = oblicz_model(zmienione)
-        self.assertEqual(
-            wynik_przed["czynnosci_dzienne_minuty"],
-            wynik_po["czynnosci_dzienne_minuty"],
+        self.assertLess(
+            wynik_po["czynnosci_dzienne_lifecycle_minuty"],
+            wynik_przed["czynnosci_dzienne_lifecycle_minuty"],
         )
         self.assertAlmostEqual(wynik_po["ogolem"]["wynik"], 0, places=6)
 
@@ -351,9 +467,12 @@ class TestProgiRentownosci(unittest.TestCase):
             delta=1.0,
         )
 
-    def test_narzut_dzienny_moze_uniemozliwic_prog_czasu(self):
+    def test_obsada_nie_wplywa_na_prog_czasu(self):
         parametry = {**domyslne_parametry(), "liczba_pracownikow": 100}
-        self.assertFalse(oblicz_prog_czasu(parametry)["mozliwe"])
+        self.assertEqual(
+            oblicz_prog_czasu(parametry)["mozliwe"],
+            oblicz_prog_czasu(domyslne_parametry())["mozliwe"],
+        )
 
     def test_niemozliwe_progi_sa_oznaczone(self):
         parametry = {

@@ -286,6 +286,7 @@ with st.sidebar:
     with st.expander("Koszt pracy"):
         koszt_staly = st.number_input("Koszt stały na godzinę", min_value=0.0, value=domyslne["koszt_staly_na_godzine"], step=1.0)
         wynagrodzenie_pracownika = st.number_input("Wynagrodzenie pracownika na godzinę", min_value=0.0, value=domyslne["wynagrodzenie_pracownika_na_godzine"], step=1.0)
+        st.caption("Poniższe parametry dotyczą wyłącznie rocznej pojemności operacyjnej, a nie kosztu pełnego cyklu kohorty.")
         liczba_pracownikow = st.number_input(
             "Liczba pracowników", min_value=0,
             value=int(domyslne["liczba_pracownikow"]), step=1,
@@ -399,6 +400,20 @@ kpi[0].metric("Przychód", kwota(ogolem["przychod"]))
 kpi[1].metric("Koszt", kwota(ogolem["koszt"]))
 kpi[2].metric("Zysk / strata", kwota(ogolem["wynik"]))
 kpi[3].metric("Marża", procent(ogolem["marza"]))
+
+st.caption(
+    "Czynności dzienne są naliczane proporcjonalnie do liczby osobodni potrzebnych "
+    "do obsługi całej kohorty. Nie są ograniczane liczbą dni pracy w jednym roku."
+)
+cykl_1, cykl_2 = st.columns(2)
+cykl_1.metric(
+    "Ekwiwalent osobodni obsługi kohorty",
+    liczba(wyniki["ekwiwalent_osobodni_kohorty"], 1),
+)
+cykl_2.metric(
+    "Czynności dzienne dla całego cyklu kohorty",
+    f"{liczba(wyniki['czynnosci_dzienne_lifecycle_godziny'], 1)} h",
+)
 
 st.divider()
 st.header("Podział według WPS")
@@ -718,7 +733,8 @@ with tab_portfel:
     st.subheader("Portfel i pojemność zespołu")
     st.caption(
         "Pojemność jest analizą operacyjną i nie ogranicza obliczeń rentowności portfela. "
-        "Sprawy mogą być obsługiwane w okresie dłuższym niż jeden rok."
+        "Parametry liczby pracowników i dni pracy dotyczą wyłącznie pojemności operacyjnej "
+        "w roku i nie ograniczają rentowności całego cyklu kohorty."
     )
     pojemnosc_analiza = analiza_pojemnosci(parametry)
     p1, p2, p3, p4 = st.columns(4)

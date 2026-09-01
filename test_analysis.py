@@ -150,22 +150,24 @@ class TestSilnikProgow(unittest.TestCase):
                 with self.subTest(cel=cel, identyfikator=identyfikator):
                     self.assertEqual(podsumowanie[identyfikator]["granica"], tabela[identyfikator]["granica"])
 
-    def test_skalowanie_sredniego_czasu_nie_zmienia_czynnosci_dziennych(self):
+    def test_skalowanie_sredniego_czasu_przelicza_czynnosci_dzienne_lifecycle(self):
         bazowe = oblicz_model(self.parametry)
         obecny_czas = bazowe["bezposrednie_minuty_spraw"] / self.parametry["liczba_spraw"]
         zmienione = ustaw_parametr(self.parametry, "sredni_czas_bezposredni", obecny_czas / 2)
         po_zmianie = oblicz_model(zmienione)
         self.assertAlmostEqual(po_zmianie["bezposrednie_minuty_spraw"], bazowe["bezposrednie_minuty_spraw"] / 2)
-        self.assertEqual(po_zmianie["czynnosci_dzienne_minuty"], bazowe["czynnosci_dzienne_minuty"])
+        self.assertAlmostEqual(
+            po_zmianie["czynnosci_dzienne_lifecycle_minuty"],
+            bazowe["czynnosci_dzienne_lifecycle_minuty"] / 2,
+        )
         self.assertEqual(zmienione["udzial_ii_instancji_percent"], self.parametry["udzial_ii_instancji_percent"])
         self.assertEqual(zmienione["obsluga_ii_instancji_minuty"], self.parametry["obsluga_ii_instancji_minuty"] / 2)
 
-    def test_granica_calkowita_zwraca_dokladna_bezpieczna_wartosc(self):
-        analiza = analizuj_progi(self.parametry, 0.0)
-        prog = next(pozycja for pozycja in analiza["pozycje"] if pozycja["id"] == "liczba_spraw")
-        self.assertIsInstance(prog["granica"], int)
-        self.assertTrue(spelnia_cel(oblicz_model(ustaw_parametr(self.parametry, "liczba_spraw", prog["granica"])), 0.0))
-        self.assertFalse(spelnia_cel(oblicz_model(ustaw_parametr(self.parametry, "liczba_spraw", prog["granica"] - 1)), 0.0))
+    def test_obsada_nie_jest_progiem_finansowym(self):
+        identyfikatory = {
+            pozycja["id"] for pozycja in analizuj_progi(self.parametry, 0.0)["pozycje"]
+        }
+        self.assertNotIn("liczba_pracownikow", identyfikatory)
 
 
 class TestMutacjeIWrazliwosc(unittest.TestCase):
@@ -205,7 +207,7 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
         wykluczone = {
             "wysoki_wps_procent", "automatyczne_ramy", "udzial_ii_instancji",
             "niski_wps", "wysoki_wps", "udzial:P1", "udzial:P2", "udzial:P3",
-            "kategoryczna_odmowa", "liczba_spraw",
+            "kategoryczna_odmowa", "liczba_spraw", "liczba_pracownikow",
         }
         identyfikatory = {x["Id"] for x in analiza_wrazliwosci(domyslne_parametry())}
         self.assertTrue(wykluczone.isdisjoint(identyfikatory))
@@ -347,7 +349,10 @@ class TestUgodyIPojemnosc(unittest.TestCase):
                 - model["czasy_sciezek_z_ii_instancja"]["automatyczne_ramy"]
             )
             oczekiwana_roznica_pln = (
-                oczekiwana_roznica_minut / 60 * model["koszt_godziny"]
+                oczekiwana_roznica_minut
+                / 60
+                * model["koszt_godziny"]
+                * (1 + sum(parametry["codzienne_czynnosci"].values()) / 480)
             )
             oczekiwany_wplyw_portfela = (
                 oczekiwana_roznica_pln

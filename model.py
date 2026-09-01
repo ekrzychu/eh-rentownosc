@@ -240,6 +240,23 @@ def oblicz_czas_czynnosci_dziennych(
     return liczba_pracownikow * liczba_dni_pracy_w_roku * sum(codzienne_czynnosci.values())
 
 
+def oblicz_czynnosci_dzienne_lifecycle(
+    bezposrednie_minuty_spraw: float,
+    codzienne_czynnosci: dict[str, float],
+) -> dict[str, float]:
+    """Wycenia czynności dzienne dla pełnego cyklu życia kohorty."""
+    if bezposrednie_minuty_spraw < 0:
+        raise ValueError("Bezpośredni czas spraw nie może być ujemny.")
+    ekwiwalent_osobodni = bezposrednie_minuty_spraw / MINUTY_DNIA_PRACY
+    minuty_na_osobodzien = sum(codzienne_czynnosci.values())
+    minuty_lifecycle = ekwiwalent_osobodni * minuty_na_osobodzien
+    return {
+        "ekwiwalent_osobodni_kohorty": ekwiwalent_osobodni,
+        "czynnosci_dzienne_lifecycle_minuty": minuty_lifecycle,
+        "czynnosci_dzienne_lifecycle_godziny": minuty_lifecycle / 60,
+    }
+
+
 def oblicz_pojemnosc_zespolu(
     liczba_pracownikow: int,
     liczba_dni_pracy_w_roku: int,
@@ -390,12 +407,6 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         parametry["koszt_staly_na_godzine"]
         + parametry["wynagrodzenie_pracownika_na_godzine"]
     )
-    czynnosci_dzienne_minuty = oblicz_czas_czynnosci_dziennych(
-        parametry["liczba_pracownikow"],
-        parametry["liczba_dni_pracy_w_roku"],
-        parametry["codzienne_czynnosci"],
-    )
-    czynnosci_dzienne_koszt = czynnosci_dzienne_minuty / 60 * koszt_godziny
     liczba_spraw = parametry["liczba_spraw"]
     wskazniki_ii_instancji = oblicz_wskazniki_ii_instancji(
         liczba_spraw,
@@ -403,10 +414,25 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         parametry["udzial_ii_instancji_percent"],
         parametry["obsluga_ii_instancji_minuty"],
     )
-    narzut_dzienny_na_sprawe = czynnosci_dzienne_koszt / liczba_spraw if liczba_spraw else 0.0
-
     podzial_spraw = oblicz_podzial_spraw(
         liczba_spraw, parametry["udzialy_rodzajow"], parametry["wysoki_wps_procent"]
+    )
+    bezposrednie_minuty_spraw = sum(
+        sum(podzial.values())
+        * (srednie_minuty_sciezki + parametry["dodatkowe_minuty"][rodzaj])
+        for rodzaj, podzial in podzial_spraw.items()
+    )
+    metryki_lifecycle = oblicz_czynnosci_dzienne_lifecycle(
+        bezposrednie_minuty_spraw, parametry["codzienne_czynnosci"]
+    )
+    czynnosci_dzienne_lifecycle_minuty = metryki_lifecycle[
+        "czynnosci_dzienne_lifecycle_minuty"
+    ]
+    czynnosci_dzienne_lifecycle_koszt = (
+        czynnosci_dzienne_lifecycle_minuty / 60 * koszt_godziny
+    )
+    narzut_dzienny_na_sprawe = (
+        czynnosci_dzienne_lifecycle_koszt / liczba_spraw if liczba_spraw else 0.0
     )
     grupy = []
     for rodzaj, podzial in podzial_spraw.items():
@@ -432,15 +458,8 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         rodzaj: podsumuj_grupy([g for g in grupy if g["rodzaj"] == rodzaj])
         for rodzaj in podzial_spraw
     }
-    bezposrednie_minuty_spraw = sum(
-        grupa["liczba"] * grupa["laczne_minuty"] for grupa in grupy
-    )
-    laczne_minuty = bezposrednie_minuty_spraw + czynnosci_dzienne_minuty
+    laczne_minuty = bezposrednie_minuty_spraw + czynnosci_dzienne_lifecycle_minuty
     ogolem = podsumuj_grupy(grupy)
-    if not liczba_spraw and czynnosci_dzienne_koszt:
-        ogolem["koszt"] = czynnosci_dzienne_koszt
-        ogolem["wynik"] = -czynnosci_dzienne_koszt
-        ogolem["marza"] = 0.0
 
     return {
         "ogolem": ogolem,
@@ -459,8 +478,11 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         "obsluga_ii_instancji_minuty": parametry["obsluga_ii_instancji_minuty"],
         "koszt_godziny": koszt_godziny,
         "bezposrednie_minuty_spraw": bezposrednie_minuty_spraw,
-        "czynnosci_dzienne_minuty": czynnosci_dzienne_minuty,
-        "czynnosci_dzienne_koszt": czynnosci_dzienne_koszt,
+        **metryki_lifecycle,
+        # Zachowane klucze oznaczają wyłącznie narzut lifecycle, nigdy roczny.
+        "czynnosci_dzienne_minuty": czynnosci_dzienne_lifecycle_minuty,
+        "czynnosci_dzienne_koszt": czynnosci_dzienne_lifecycle_koszt,
+        "czynnosci_dzienne_lifecycle_koszt": czynnosci_dzienne_lifecycle_koszt,
         "narzut_dzienny_na_sprawe": narzut_dzienny_na_sprawe,
         "laczne_minuty": laczne_minuty,
         "laczne_godziny": laczne_minuty / 60,
@@ -495,20 +517,34 @@ def _parametry_z_zmiana(parametry: dict, **zmiany) -> dict:
     return kopia
 
 
+def _skaluj_bezposrednie_czasy(parametry: dict, skala: float) -> dict:
+    """Skaluje wszystkie czasy pracy nad sprawami, bez czynności dziennych."""
+    wynik = _parametry_z_zmiana(parametry)
+    for klucz in (
+        "wspolne_czynnosci",
+        "procesowe_czynnosci",
+        "ugodowe_czynnosci",
+        "dodatkowe_minuty",
+    ):
+        wynik[klucz] = {
+            nazwa: minuty * skala for nazwa, minuty in parametry[klucz].items()
+        }
+    wynik["analiza_mozliwosci_ugody"] = parametry["analiza_mozliwosci_ugody"] * skala
+    wynik["obsluga_ii_instancji_minuty"] = parametry["obsluga_ii_instancji_minuty"] * skala
+    return wynik
+
+
 def oblicz_prog_czasu(parametry: dict) -> dict:
-    """Wyznacza wymagane skrócenie wyłącznie bezpośredniego czasu spraw."""
+    """Wyznacza numerycznie skrócenie czasu z narzutem lifecycle."""
     wyniki = oblicz_model(parametry)
     liczba_spraw = wyniki["ogolem"]["liczba_spraw"]
     bezposrednie_minuty = wyniki["bezposrednie_minuty_spraw"]
-    dzienne_minuty = wyniki["czynnosci_dzienne_minuty"]
-    koszt_godziny = wyniki["koszt_godziny"]
-    strata = max(0.0, -wyniki["ogolem"]["wynik"])
     obecny_sredni_czas = bezposrednie_minuty / 60 / liczba_spraw if liczba_spraw else 0.0
     wynik_podstawowy = {
         "obecny_sredni_czas": obecny_sredni_czas,
-        "czynnosci_dzienne_minuty": dzienne_minuty,
+        "czynnosci_dzienne_minuty": wyniki["czynnosci_dzienne_lifecycle_minuty"],
     }
-    if strata == 0:
+    if wyniki["ogolem"]["wynik"] >= 0:
         return {
             **wynik_podstawowy,
             "mozliwe": True,
@@ -517,25 +553,28 @@ def oblicz_prog_czasu(parametry: dict) -> dict:
             "docelowy_sredni_czas": obecny_sredni_czas,
             "docelowy_udzial_czasu": 1.0,
         }
-    if not liczba_spraw or koszt_godziny <= 0:
+    if not liczba_spraw or wyniki["koszt_godziny"] <= 0:
+        return {**wynik_podstawowy, "mozliwe": False, "juz_rentowny": False}
+    if oblicz_model(_skaluj_bezposrednie_czasy(parametry, 0.0))["ogolem"]["wynik"] < 0:
         return {**wynik_podstawowy, "mozliwe": False, "juz_rentowny": False}
 
-    koszt_czynnosci_dziennych = dzienne_minuty / 60 * koszt_godziny
-    if koszt_czynnosci_dziennych > wyniki["ogolem"]["przychod"] + 1e-9:
-        return {**wynik_podstawowy, "mozliwe": False, "juz_rentowny": False}
-
-    redukcja_minut = strata / koszt_godziny * 60
-    if redukcja_minut > bezposrednie_minuty + 1e-9:
-        return {**wynik_podstawowy, "mozliwe": False, "juz_rentowny": False}
-    docelowe_minuty = max(0.0, bezposrednie_minuty - redukcja_minut)
-    redukcja_na_sprawe = redukcja_minut / liczba_spraw
+    dol, gora = 0.0, 1.0
+    for _ in range(48):
+        srodek = (dol + gora) / 2
+        if oblicz_model(_skaluj_bezposrednie_czasy(parametry, srodek))["ogolem"]["wynik"] >= 0:
+            dol = srodek
+        else:
+            gora = srodek
+    docelowy_udzial_czasu = dol
+    docelowe_minuty = bezposrednie_minuty * docelowy_udzial_czasu
+    redukcja_na_sprawe = (bezposrednie_minuty - docelowe_minuty) / liczba_spraw
     return {
         **wynik_podstawowy,
         "mozliwe": True,
         "juz_rentowny": False,
         "redukcja_minut_na_sprawe": redukcja_na_sprawe,
         "docelowy_sredni_czas": docelowe_minuty / 60 / liczba_spraw,
-        "docelowy_udzial_czasu": docelowe_minuty / bezposrednie_minuty if bezposrednie_minuty else 0.0,
+        "docelowy_udzial_czasu": docelowy_udzial_czasu,
     }
 
 
