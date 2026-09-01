@@ -3,7 +3,6 @@ import streamlit as st
 
 from analysis import (
     analiza_pojemnosci,
-    analiza_wplywu_wzglednego,
     analiza_wrazliwosci,
     analizuj_progi,
     definicje_parametrow,
@@ -131,6 +130,24 @@ def formatuj_zmiane(wartosc: float | None, jednostka: str) -> str:
     if jednostka == "p.p.":
         return f"{znak}{wartosc:.2f}".replace(".", ",") + " p.p."
     return f"{znak}{wartosc:.2f} {jednostka}".replace(".", ",")
+
+
+def formatuj_zmiane_procentowa(wartosc: float) -> str:
+    znak = "+" if wartosc > 0 else ""
+    return f"{znak}{wartosc:.1f}%".replace(".", ",")
+
+
+def formatuj_testowana_zmiane(pozycja: dict, korzystna: bool) -> str:
+    if korzystna:
+        zmiana = pozycja["Korzystna zmiana"]
+        zmiana_percent = pozycja["Korzystna zmiana (%)"]
+    else:
+        zmiana = pozycja["Niekorzystna zmiana"]
+        zmiana_percent = pozycja["Niekorzystna zmiana (%)"]
+    return (
+        f"{formatuj_zmiane(zmiana, pozycja['Jednostka'])} "
+        f"({formatuj_zmiane_procentowa(zmiana_percent)})"
+    )
 
 
 def pokaz_kluczowa_granice(
@@ -585,7 +602,9 @@ with tab_prog:
         wybrane_progi = ranking_progow(analiza_progow, "bufor")
     else:
         st.subheader("Najkrótsze drogi do celu")
-        wybrane_progi = ranking_progow(analiza_progow, "wymagana_zmiana")
+        wybrane_progi = ranking_progow(
+            analiza_progow, "wymagana_zmiana", tylko_sterowalne=True
+        )
     if wybrane_progi:
         for pozycja in wybrane_progi:
             st.write(
@@ -598,21 +617,40 @@ with tab_prog:
 
 with tab_wrazliwosc:
     st.subheader("Analiza wrażliwości")
-    st.caption("Każdy wpływ pokazuje zmianę wyniku przy zmianie jednego parametru i pozostawieniu pozostałych założeń bez zmian.")
-    wrazliwosc = analiza_wrazliwosci(parametry)
+    zmiana_wrazliwosci = st.number_input(
+        "Zmiana analizowanego parametru (%)",
+        min_value=1,
+        max_value=50,
+        value=10,
+        step=1,
+        help=(
+            "Zmiana 10% oznacza zmianę wartości parametru o 10% jego obecnej "
+            "wartości. Przykładowo 50% zmienia się na 45% lub 55%."
+        ),
+    )
+    st.caption(
+        "Każdy parametr jest zmieniany osobno o wskazany procent jego obecnej "
+        "wartości. Pozostałe założenia pozostają bez zmian."
+    )
+    st.caption(
+        "Analiza obejmuje wyłącznie parametry, na które kancelaria może realnie wpływać."
+    )
+    wrazliwosc = analiza_wrazliwosci(
+        parametry, zmiana_percent=float(zmiana_wrazliwosci)
+    )
     tabela_wrazliwosci = pd.DataFrame([{
         "Parametr": x["Parametr"], "Kategoria": x["Kategoria"],
         "Obecnie": formatuj_parametr(x["Obecnie"], x["Jednostka"]),
         "Wynik obecny": x["Wynik obecny"],
-        "Korzystna zmiana": formatuj_zmiane(x["Zmiana testowa"], x["Jednostka"]),
+        "Korzystna zmiana": formatuj_testowana_zmiane(x, True),
         "Wynik po poprawie": x["Wynik po poprawie"],
-        "Wpływ korzystny": x["Wpływ na wynik roczny"],
+        "Wpływ korzystny na wynik": x["Wpływ na wynik roczny"],
         "Marża obecna": x["Marża obecna"],
         "Marża po poprawie": x["Marża po poprawie"],
         "Zmiana marży": x["Wpływ na marżę"],
-        "Niekorzystna zmiana": formatuj_zmiane(x["Zmiana niekorzystna"], x["Jednostka"]),
+        "Niekorzystna zmiana": formatuj_testowana_zmiane(x, False),
         "Wynik po pogorszeniu": x["Wynik po pogorszeniu"],
-        "Wpływ niekorzystny": x["Wpływ niekorzystny"],
+        "Wpływ niekorzystny na wynik": x["Wpływ niekorzystny"],
         "Marża po pogorszeniu": x["Marża po pogorszeniu"],
         "Niekorzystna zmiana marży": x["Wpływ niekorzystny na marżę"],
         "Kierunek poprawy": x["Kierunek poprawy"],
@@ -620,16 +658,17 @@ with tab_wrazliwosc:
     st.dataframe(tabela_wrazliwosci, hide_index=True, width="stretch", height=460, column_config={
         "Wynik obecny": st.column_config.NumberColumn(format="%.2f zł"),
         "Wynik po poprawie": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wpływ korzystny": st.column_config.NumberColumn(format="%.2f zł"),
+        "Wpływ korzystny na wynik": st.column_config.NumberColumn(format="%.2f zł"),
         "Wynik po pogorszeniu": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wpływ niekorzystny": st.column_config.NumberColumn(format="%.2f zł"),
+        "Wpływ niekorzystny na wynik": st.column_config.NumberColumn(format="%.2f zł"),
         "Marża obecna": st.column_config.NumberColumn(format="%.2f%%"),
         "Marża po poprawie": st.column_config.NumberColumn(format="%.2f%%"),
         "Zmiana marży": st.column_config.NumberColumn(format="%+.2f p.p."),
         "Marża po pogorszeniu": st.column_config.NumberColumn(format="%.2f%%"),
         "Niekorzystna zmiana marży": st.column_config.NumberColumn(format="%+.2f p.p."),
     })
-    top_wplyw = tabela_wrazliwosci.head(10).set_index("Parametr")[["Wpływ korzystny"]]
+    st.subheader("Wpływ zmiany parametrów na wynik")
+    top_wplyw = tabela_wrazliwosci.head(10).set_index("Parametr")[["Wpływ korzystny na wynik"]]
     st.bar_chart(top_wplyw, height=320)
 
     st.subheader("Wartość skrócenia czynności")
@@ -764,28 +803,22 @@ with tab_symulator:
 
 with tab_rekomendacje:
     st.subheader("Rekomendacje wynikające z modelu")
-    wplyw_wzgledny = analiza_wplywu_wzglednego(parametry)
+    wplyw_wzgledny = wrazliwosc
     rekomendacje = rekomendacje_deterministyczne(wrazliwosc, analiza_progow, ekonomika)
 
     st.markdown("#### Największy wpływ na wynik")
     st.caption(
-        "Każdy wpływ pokazuje zmianę wyniku przy zmianie jednego parametru "
-        "i pozostawieniu pozostałych założeń bez zmian."
+        "Wpływy są liczone niezależnie — każdorazowo zmieniany jest tylko jeden "
+        "parametr. Nie należy sumować ich bezpośrednio."
     )
-    najwieksze_korzysci = sorted(
-        (
-            pozycja for pozycja in wplyw_wzgledny
-            if pozycja["Wpływ korzystny"] > 0
-        ),
-        key=lambda x: x["Wpływ korzystny"],
-        reverse=True,
-    )[:5]
+    najwieksze_korzysci = rekomendacje["najwiekszy_wplyw"]
     for numer, pozycja in enumerate(najwieksze_korzysci, 1):
-        opis_testu = "krok standardowy" if pozycja["Test zastępczy"] else "10% wartości parametru"
         st.write(
             f"{numer}. **{pozycja['Parametr']}** · {pozycja['Kategoria']}  \n"
-            f"{formatuj_zmiane(pozycja['Korzystna zmiana'], pozycja['Jednostka'])} "
-            f"({opis_testu}) → **{kwota(pozycja['Wpływ korzystny'])}**, "
+            f"zmiana: **{formatuj_testowana_zmiane(pozycja, True)}** "
+            f"({formatuj_parametr(pozycja['Obecnie'], pozycja['Jednostka'])} → "
+            f"{formatuj_parametr(pozycja['Wartość po korzystnej zmianie'], pozycja['Jednostka'])})  \n"
+            f"wpływ na wynik: **{kwota(pozycja['Wpływ korzystny'])}**, "
             f"marża **{formatuj_zmiane(pozycja['Wpływ korzystny na marżę'], 'p.p.')}**"
         )
 
@@ -797,41 +830,27 @@ with tab_rekomendacje:
     for numer, pozycja in enumerate(najwieksze_ryzyka, 1):
         st.write(
             f"{numer}. **{pozycja['Parametr']}** · {pozycja['Kategoria']}: "
-            f"{formatuj_zmiane(pozycja['Niekorzystna zmiana'], pozycja['Jednostka'])} → "
+            f"{formatuj_testowana_zmiane(pozycja, False)} → "
             f"**{kwota(pozycja['Wpływ niekorzystny'])}**, "
             f"marża **{formatuj_zmiane(pozycja['Wpływ niekorzystny na marżę'], 'p.p.')}**"
         )
-    ryzyka_ii_instancji = [
-        pozycja for pozycja in wplyw_wzgledny
-        if pozycja["Id"] in {"udzial_ii_instancji", "czas_ii_instancji"}
-    ]
-    if ryzyka_ii_instancji:
-        st.markdown("##### Ryzyka związane z II instancją")
-        for pozycja in ryzyka_ii_instancji:
-            st.write(
-                f"**{pozycja['Parametr']}**: "
-                f"{formatuj_zmiane(pozycja['Niekorzystna zmiana'], pozycja['Jednostka'])} → "
-                f"**{kwota(pozycja['Wpływ niekorzystny'])}**"
-            )
 
     st.markdown("#### Wpływ parametrów na wynik")
     st.caption(
-        "Porównanie wykorzystuje zmianę ±10% bieżącej wartości. Dla wartości zerowych "
-        "lub zmian całkowitych, których nie da się w ten sposób przesunąć, używany jest "
-        "standardowy krok testowy. Wpływów nie należy sumować."
+        f"Porównanie wykorzystuje zmianę o {zmiana_wrazliwosci}% bieżącej wartości "
+        "i obejmuje wyłącznie parametry sterowalne. Wpływów nie należy sumować."
     )
     tabela_wplywu = pd.DataFrame([{
         "Parametr": x["Parametr"],
         "Grupa": x["Kategoria"],
         "Obecnie": formatuj_parametr(x["Obecnie"], x["Jednostka"]),
-        "Zmiana porównawcza": formatuj_zmiane(x["Zmiana porównawcza"], x["Jednostka"]),
+        "Zmiana porównawcza": formatuj_testowana_zmiane(x, True),
         "Wpływ na wynik": x["Wpływ na wynik"],
         "Zmiana marży": x["Wpływ na marżę"],
         "Kierunek poprawy": x["Kierunek poprawy"],
-        "Niekorzystna zmiana": formatuj_zmiane(x["Niekorzystna zmiana"], x["Jednostka"]),
+        "Niekorzystna zmiana": formatuj_testowana_zmiane(x, False),
         "Wpływ niekorzystny": x["Wpływ niekorzystny"],
         "Niekorzystna zmiana marży": x["Wpływ niekorzystny na marżę"],
-        "Sposób testu": "krok standardowy" if x["Test zastępczy"] else "±10% wartości",
     } for x in wplyw_wzgledny])
     st.dataframe(
         tabela_wplywu,
@@ -845,7 +864,7 @@ with tab_rekomendacje:
             "Niekorzystna zmiana marży": st.column_config.NumberColumn(format="%+.2f p.p."),
         },
     )
-    st.markdown("##### Najsilniejsze czynniki wyniku")
+    st.markdown("##### Wpływ zmiany parametrów na wynik")
     wykres_wplywu = pd.DataFrame([{
         "Parametr": x["Parametr"],
         "Korzystna zmiana": x["Wpływ korzystny"],
@@ -853,18 +872,6 @@ with tab_rekomendacje:
     } for x in wplyw_wzgledny[:12]]).set_index("Parametr")
     st.bar_chart(wykres_wplywu, height=420)
 
-    st.markdown("#### Dźwignie operacyjne i zarządcze")
-    if rekomendacje["najwiekszy_wplyw"]:
-        for numer, dzwignia in enumerate(rekomendacje["najwiekszy_wplyw"], 1):
-            st.write(f"{numer}. **{dzwignia['Parametr']}** ({formatuj_zmiane(dzwignia['Zmiana testowa'], dzwignia['Jednostka'])}): {kwota(dzwignia['Wpływ na wynik roczny'])} dla portfela")
-    else:
-        st.write("Brak dodatnich zmian w badanym zakresie.")
-    st.markdown("#### Czynniki strukturalne i ekonomiczne")
-    if rekomendacje["czynniki_zewnetrzne"]:
-        for czynnik in rekomendacje["czynniki_zewnetrzne"]:
-            st.write(f"**{czynnik['Parametr']}** ({formatuj_zmiane(czynnik['Zmiana testowa'], czynnik['Jednostka'])}): {kwota(czynnik['Wpływ na wynik roczny'])} dla portfela")
-    else:
-        st.write("Brak dodatnich zmian w badanym zakresie dla tej grupy.")
     st.markdown("#### Ugody")
     if ekonomika["minimalna_skutecznosc"] is None:
         st.write("Próby ugodowe poza ramami nie osiągają przewagi czasowej w badanym zakresie skuteczności.")

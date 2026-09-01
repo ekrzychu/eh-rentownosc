@@ -5,6 +5,7 @@ from analysis import (
     analiza_wplywu_wzglednego,
     analiza_wrazliwosci,
     analizuj_progi,
+    czy_parametr_sterowalny,
     definicje_parametrow,
     ekonomika_ugod,
     kluczowe_progi,
@@ -78,6 +79,17 @@ class TestSilnikProgow(unittest.TestCase):
         ranking = ranking_progow(progi, "bufor", limit=100)
         self.assertIn("fin", {pozycja["id"] for pozycja in ranking})
         self.assertTrue(all("wykonalne_operacyjnie" not in x for x in ranking))
+
+    def test_najkrotsze_drogi_do_celu_sa_tylko_sterowalne(self):
+        parametry = {**self.parametry, "koszt_staly_na_godzine": 250.0}
+        ranking = ranking_progow(
+            analizuj_progi(parametry, 0.0),
+            "wymagana_zmiana",
+            limit=100,
+            tylko_sterowalne=True,
+        )
+        self.assertTrue(ranking)
+        self.assertTrue(all(czy_parametr_sterowalny(x["id"]) for x in ranking))
 
     def test_scenariusz_nierentowny_i_zmiana_niewystarczajaca(self):
         parametry = {**self.parametry, "koszt_staly_na_godzine": 250.0}
@@ -176,16 +188,39 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
         oczekiwane.add("czas_ii_instancji")
         self.assertTrue(oczekiwane.issubset(identyfikatory))
 
-    def test_analityka_zawiera_obie_dzwignie_ii_instancji(self):
+    def test_udzial_ii_instancji_jest_zalozeniem_a_czas_sterowalny(self):
         parametry = domyslne_parametry()
         definicje = {x["id"] for x in definicje_parametrow(parametry)}
         self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(definicje))
         wrazliwosc = {x["Id"] for x in analiza_wrazliwosci(parametry)}
-        self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(wrazliwosc))
+        self.assertNotIn("udzial_ii_instancji", wrazliwosc)
+        self.assertIn("czas_ii_instancji", wrazliwosc)
         progi = {x["id"] for x in analizuj_progi(parametry, 40.0)["pozycje"]}
         self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(progi))
         wplyw = {x["Id"] for x in analiza_wplywu_wzglednego(parametry)}
-        self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(wplyw))
+        self.assertNotIn("udzial_ii_instancji", wplyw)
+        self.assertIn("czas_ii_instancji", wplyw)
+
+    def test_wrazliwosc_wyklucza_zalozenia_zewnetrzne_i_skale(self):
+        wykluczone = {
+            "wysoki_wps_procent", "automatyczne_ramy", "udzial_ii_instancji",
+            "niski_wps", "wysoki_wps", "udzial:P1", "udzial:P2", "udzial:P3",
+            "kategoryczna_odmowa", "liczba_spraw",
+        }
+        identyfikatory = {x["Id"] for x in analiza_wrazliwosci(domyslne_parametry())}
+        self.assertTrue(wykluczone.isdisjoint(identyfikatory))
+        self.assertTrue(all(czy_parametr_sterowalny(x) for x in identyfikatory))
+
+    def test_wrazliwosc_zawiera_wymagane_dzwignie(self):
+        wymagane = {
+            "fin", "koszt_staly", "wynagrodzenie", "szansa_na_ugode",
+            "zawarte_ugody", "czas_ii_instancji", "procesowe:Duplika",
+            "analiza_ugody", "dodatkowe:P1", "dodatkowe:P2", "dodatkowe:P3",
+            "wspolne:Analiza sprawy i kompletowanie załącznika",
+            "codzienne:Obsługa skrzynki ugody EH",
+        }
+        identyfikatory = {x["Id"] for x in analiza_wrazliwosci(domyslne_parametry())}
+        self.assertTrue(wymagane.issubset(identyfikatory))
 
     def test_udzial_p1_zachowuje_sume_i_relacje(self):
         wynik = przelicz_udzial_rodzaju({"P1": 25.0, "P2": 58.0, "P3": 17.0}, "P1", 35.0)
@@ -216,57 +251,79 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
             zmieniony - bazowy,
         )
 
-    def test_wplyw_wzgledny_zgadza_sie_z_modelem_i_marza(self):
+    def test_zmiana_10_i_20_procent_daje_poprawne_wartosci_dupliki(self):
         parametry = domyslne_parametry()
-        analiza = {
-            x["Id"]: x for x in analiza_wplywu_wzglednego(parametry)
-        }
-        pozycja = analiza["procesowe:Duplika"]
-        nowa = pozycja["Obecnie"] + pozycja["Zmiana porównawcza"]
+        dziesiec = {x["Id"]: x for x in analiza_wrazliwosci(parametry, 10.0)}[
+            "procesowe:Duplika"
+        ]
+        dwadziescia = {x["Id"]: x for x in analiza_wrazliwosci(parametry, 20.0)}[
+            "procesowe:Duplika"
+        ]
+        self.assertEqual(
+            sorted(round(x, 8) for x in (
+                dziesiec["Wartość po korzystnej zmianie"],
+                dziesiec["Wartość po niekorzystnej zmianie"],
+            )),
+            [81.0, 99.0],
+        )
+        self.assertEqual(
+            sorted(round(x, 8) for x in (
+                dwadziescia["Wartość po korzystnej zmianie"],
+                dwadziescia["Wartość po niekorzystnej zmianie"],
+            )),
+            [72.0, 108.0],
+        )
+
+    def test_wplyw_zgadza_sie_z_modelem_i_marza_w_obu_kierunkach(self):
+        parametry = domyslne_parametry()
+        pozycja = {x["Id"]: x for x in analiza_wrazliwosci(parametry, 10.0)}[
+            "procesowe:Duplika"
+        ]
         bazowy = oblicz_model(parametry)
-        scenariusz = oblicz_model(
-            ustaw_parametr(parametry, "procesowe:Duplika", nowa)
-        )
-        self.assertAlmostEqual(
-            pozycja["Wpływ na wynik"],
-            scenariusz["ogolem"]["wynik"] - bazowy["ogolem"]["wynik"],
-        )
-        self.assertAlmostEqual(
-            pozycja["Wpływ na marżę"],
-            scenariusz["ogolem"]["marza"] - bazowy["ogolem"]["marza"],
-        )
-        self.assertAlmostEqual(abs(pozycja["Zmiana porównawcza"]), 9.0)
-
-    def test_wplyw_wzgledny_udzialow_p_zachowuje_sume_100(self):
-        parametry = domyslne_parametry()
-        analiza = analiza_wplywu_wzglednego(parametry)
-        for pozycja in (x for x in analiza if x["Id"].startswith("udzial:")):
-            zmienione = ustaw_parametr(
-                parametry,
-                pozycja["Id"],
-                pozycja["Obecnie"] + pozycja["Zmiana porównawcza"],
+        for wartosc_klucz, wynik_klucz, marza_klucz in (
+            ("Wartość po korzystnej zmianie", "Wpływ korzystny", "Wpływ korzystny na marżę"),
+            ("Wartość po niekorzystnej zmianie", "Wpływ niekorzystny", "Wpływ niekorzystny na marżę"),
+        ):
+            scenariusz = oblicz_model(ustaw_parametr(
+                parametry, "procesowe:Duplika", pozycja[wartosc_klucz]
+            ))
+            self.assertAlmostEqual(
+                pozycja[wynik_klucz],
+                scenariusz["ogolem"]["wynik"] - bazowy["ogolem"]["wynik"],
             )
-            self.assertAlmostEqual(sum(zmienione["udzialy_rodzajow"].values()), 100.0)
+            self.assertAlmostEqual(
+                pozycja[marza_klucz],
+                scenariusz["ogolem"]["marza"] - bazowy["ogolem"]["marza"],
+            )
 
-    def test_wartosc_zero_uzywa_standardowego_kroku_zastepczego(self):
+    def test_procent_ugod_jest_zmieniany_wzglednie(self):
+        pozycja = {
+            x["Id"]: x for x in analiza_wrazliwosci(domyslne_parametry(), 10.0)
+        }["zawarte_ugody"]
+        self.assertEqual(
+            sorted(round(x, 8) for x in (
+                pozycja["Wartość po korzystnej zmianie"],
+                pozycja["Wartość po niekorzystnej zmianie"],
+            )),
+            [45.0, 55.0],
+        )
+
+    def test_wartosc_zero_jest_pominieta(self):
         parametry = {**domyslne_parametry(), "koszt_staly_na_godzine": 0.0}
-        analiza = {x["Id"]: x for x in analiza_wplywu_wzglednego(parametry)}
-        self.assertTrue(analiza["koszt_staly"]["Test zastępczy"])
-        self.assertEqual(analiza["koszt_staly"]["Zmiana porównawcza"], 10.0)
+        identyfikatory = {x["Id"] for x in analiza_wrazliwosci(parametry)}
+        self.assertNotIn("koszt_staly", identyfikatory)
 
-    def test_wplyw_ii_instancji_nie_zmienia_przychodu(self):
+    def test_czas_ii_instancji_nie_zmienia_przychodu(self):
         parametry = domyslne_parametry()
         bazowy_przychod = oblicz_model(parametry)["ogolem"]["przychod"]
-        analiza = {x["Id"]: x for x in analiza_wplywu_wzglednego(parametry)}
-        for identyfikator in ("udzial_ii_instancji", "czas_ii_instancji"):
-            pozycja = analiza[identyfikator]
-            for klucz in ("Korzystna zmiana", "Niekorzystna zmiana"):
-                scenariusz = oblicz_model(ustaw_parametr(
-                    parametry,
-                    identyfikator,
-                    pozycja["Obecnie"] + pozycja[klucz],
-                ))
-                self.assertEqual(scenariusz["ogolem"]["przychod"], bazowy_przychod)
+        pozycja = {x["Id"]: x for x in analiza_wrazliwosci(parametry)}[
+            "czas_ii_instancji"
+        ]
+        for klucz in ("Wartość po korzystnej zmianie", "Wartość po niekorzystnej zmianie"):
+            scenariusz = oblicz_model(ustaw_parametr(
+                parametry, "czas_ii_instancji", pozycja[klucz]
+            ))
+            self.assertEqual(scenariusz["ogolem"]["przychod"], bazowy_przychod)
 
 
 class TestUgodyIPojemnosc(unittest.TestCase):
@@ -341,27 +398,45 @@ class TestUgodyIPojemnosc(unittest.TestCase):
         ugody = ekonomika_ugod(parametry)
         pojemnosc = analiza_pojemnosci(parametry)
         rekomendacje = rekomendacje_deterministyczne(wrazliwosc, progi, ugody, pojemnosc)
-        wszystkie = rekomendacje["najwiekszy_wplyw"] + rekomendacje["czynniki_zewnetrzne"]
+        wszystkie = rekomendacje["najwiekszy_wplyw"]
         self.assertTrue(wszystkie)
         self.assertTrue(all(x["Wpływ na wynik roczny"] > 0 for x in wszystkie))
         self.assertTrue(all("Wykonalne operacyjnie" not in x for x in wszystkie))
 
-    def test_finansowo_korzystna_ii_instancja_pozostaje_wrazliwoscia(self):
-        parametry = {
-            **domyslne_parametry(),
-            "liczba_pracownikow": 3,
-            "obsluga_ii_instancji_minuty": 1000,
+    def test_rekomendacje_sa_sterowalne_posortowane_i_reaguja_na_procent(self):
+        parametry = domyslne_parametry()
+        progi = analizuj_progi(parametry, 0.0)
+        ugody = ekonomika_ugod(parametry)
+        wyniki = {}
+        for procent in (10.0, 20.0):
+            wrazliwosc = analiza_wrazliwosci(parametry, procent)
+            rekomendacje = rekomendacje_deterministyczne(wrazliwosc, progi, ugody)
+            top = rekomendacje["najwiekszy_wplyw"]
+            self.assertTrue(all(czy_parametr_sterowalny(x["Id"]) for x in top))
+            self.assertEqual(
+                [x["Wpływ na wynik roczny"] for x in top],
+                sorted((x["Wpływ na wynik roczny"] for x in top), reverse=True),
+            )
+            wyniki[procent] = {x["Id"]: x["Wpływ na wynik roczny"] for x in top}
+        wspolne = set(wyniki[10.0]) & set(wyniki[20.0])
+        self.assertTrue(any(
+            abs(wyniki[10.0][x] - wyniki[20.0][x]) > 1e-6 for x in wspolne
+        ))
+
+    def test_rekomendacje_odrzucaja_zewnetrzny_wiersz_wejsciowy(self):
+        parametry = domyslne_parametry()
+        zewnetrzny = {
+            "Id": "udzial_ii_instancji", "Parametr": "Udział spraw w II instancji",
+            "Kategoria": "Operacyjne", "Wpływ na wynik roczny": 1_000_000.0,
         }
-        wrazliwosc = {x["Id"]: x for x in analiza_wrazliwosci(parametry)}
-        self.assertGreater(wrazliwosc["udzial_ii_instancji"]["Wpływ na wynik roczny"], 0)
         rekomendacje = rekomendacje_deterministyczne(
-            [wrazliwosc["udzial_ii_instancji"]],
+            [zewnetrzny] + analiza_wrazliwosci(parametry),
             analizuj_progi(parametry, 0.0),
             ekonomika_ugod(parametry),
         )
-        self.assertEqual(
-            [x["Id"] for x in rekomendacje["najwiekszy_wplyw"]],
-            ["udzial_ii_instancji"],
+        self.assertNotIn(
+            "udzial_ii_instancji",
+            {x["Id"] for x in rekomendacje["najwiekszy_wplyw"]},
         )
 
 
