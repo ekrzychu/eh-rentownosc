@@ -429,7 +429,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
     udzialy = wyniki["udzialy_ugod"]
     czasy_podstawowe = wyniki["czasy_sciezek_ugod"]
     czasy_ii_instancji = wyniki["czasy_ii_instancji_sciezek"]
-    czasy = wyniki["czasy_sciezek_z_ii_instancja"]
+    pelne_czasy_sciezek = wyniki["czasy_sciezek_z_ii_instancja"]
     liczba_spraw = parametry["liczba_spraw"]
     koszt_godziny = wyniki["koszt_godziny"]
     nazwy = {
@@ -437,7 +437,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
         "brak_szans": "Brak szans na ugodę", "zawarte_poza_ramami": "Szansa poza ramami → zawarte ugody",
         "brak_ugody_poza_ramami": "Szansa poza ramami → brak ugody",
     }
-    sciezki = [{"Ścieżka": etykieta, "Efektywny udział portfela": udzialy[klucz], "Czas podstawowy ścieżki": czasy_podstawowe[klucz], "Oczekiwany czas II instancji": czasy_ii_instancji[klucz], "Łączny oczekiwany czas ścieżki": czasy[klucz], "Oczekiwana liczba spraw": liczba_spraw * udzialy[klucz] / 100} for klucz, etykieta in nazwy.items()]
+    sciezki = [{"Ścieżka": etykieta, "Efektywny udział portfela": udzialy[klucz], "Czas podstawowy ścieżki": czasy_podstawowe[klucz], "Oczekiwany czas II instancji": czasy_ii_instancji[klucz], "Łączny oczekiwany czas ścieżki": pelne_czasy_sciezek[klucz], "Oczekiwana liczba spraw": liczba_spraw * udzialy[klucz] / 100} for klucz, etykieta in nazwy.items()]
     porownania_def = (
         ("Automatyczne ramy w porównaniu z brakiem szans na ugodę", "automatyczne_ramy", "brak_szans", "automatyczne_ramy"),
         ("Zawarta ugoda poza ramami w porównaniu z brakiem ugody poza ramami", "zawarte_poza_ramami", "brak_ugody_poza_ramami", "zawarte_poza_ramami"),
@@ -445,13 +445,16 @@ def ekonomika_ugod(parametry: dict) -> dict:
     )
     porownania = []
     for etykieta, wariant, odniesienie, udzial_klucz in porownania_def:
-        oszczednosc_minut = czasy[odniesienie] - czasy[wariant]
+        oszczednosc_minut = (
+            pelne_czasy_sciezek[odniesienie]
+            - pelne_czasy_sciezek[wariant]
+        )
         oszczednosc_pln = oszczednosc_minut / 60 * koszt_godziny
         porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ roczny przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
 
-    czas_sukces = czasy["zawarte_poza_ramami"]
-    czas_nieudanej_proby = czasy["brak_ugody_poza_ramami"]
-    czas_bez_proby = czasy["brak_szans"]
+    czas_sukces = pelne_czasy_sciezek["zawarte_poza_ramami"]
+    czas_nieudanej_proby = pelne_czasy_sciezek["brak_ugody_poza_ramami"]
+    czas_bez_proby = pelne_czasy_sciezek["brak_szans"]
     if czas_nieudanej_proby <= czas_bez_proby:
         minimalna_skutecznosc = 0.0
     elif czas_sukces < czas_nieudanej_proby:

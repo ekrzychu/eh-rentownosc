@@ -327,6 +327,65 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
 
 
 class TestUgodyIPojemnosc(unittest.TestCase):
+    def test_porownanie_automatycznych_ram_reaguje_na_analize_ugod(self):
+        etykieta = "Automatyczne ramy w porównaniu z brakiem szans na ugodę"
+        etykieta_wspolnej_analizy = (
+            "Zawarta ugoda poza ramami w porównaniu z brakiem ugody poza ramami"
+        )
+        wyniki = {}
+
+        for minuty_analizy in (0, 30, 60):
+            parametry = {**domyslne_parametry(), "analiza_mozliwosci_ugody": minuty_analizy}
+            model = oblicz_model(parametry)
+            porownania = {
+                wiersz["Porównanie"]: wiersz
+                for wiersz in ekonomika_ugod(parametry)["porownania"]
+            }
+            automatyczne_ramy = porownania[etykieta]
+            oczekiwana_roznica_minut = (
+                model["czasy_sciezek_z_ii_instancja"]["brak_szans"]
+                - model["czasy_sciezek_z_ii_instancja"]["automatyczne_ramy"]
+            )
+            oczekiwana_roznica_pln = (
+                oczekiwana_roznica_minut / 60 * model["koszt_godziny"]
+            )
+            oczekiwany_wplyw_portfela = (
+                oczekiwana_roznica_pln
+                * parametry["liczba_spraw"]
+                * model["udzialy_ugod"]["automatyczne_ramy"]
+                / 100
+            )
+            self.assertAlmostEqual(
+                automatyczne_ramy["Różnica minut na sprawę"], oczekiwana_roznica_minut
+            )
+            self.assertAlmostEqual(
+                automatyczne_ramy["Różnica PLN na sprawę"], oczekiwana_roznica_pln
+            )
+            self.assertAlmostEqual(
+                automatyczne_ramy["Wpływ roczny przy obecnym udziale"],
+                oczekiwany_wplyw_portfela,
+            )
+            wyniki[minuty_analizy] = {
+                "automatyczne_ramy": automatyczne_ramy,
+                "wspolna_analiza": porownania[etykieta_wspolnej_analizy],
+            }
+
+        self.assertAlmostEqual(
+            wyniki[30]["automatyczne_ramy"]["Różnica minut na sprawę"]
+            - wyniki[0]["automatyczne_ramy"]["Różnica minut na sprawę"],
+            30.0,
+        )
+        self.assertAlmostEqual(
+            wyniki[60]["automatyczne_ramy"]["Różnica minut na sprawę"]
+            - wyniki[0]["automatyczne_ramy"]["Różnica minut na sprawę"],
+            60.0,
+        )
+        for kolumna in ("Różnica minut na sprawę", "Różnica PLN na sprawę"):
+            self.assertAlmostEqual(
+                wyniki[0]["wspolna_analiza"][kolumna],
+                wyniki[60]["wspolna_analiza"][kolumna],
+            )
+
     def test_minimalna_skutecznosc_ugod(self):
         parametry = domyslne_parametry()
         analiza = ekonomika_ugod(parametry)
