@@ -17,7 +17,7 @@ KOPIOWANE_SLOWNIKI = (
 # Jedno źródło prawdy dla analiz zarządczych. Prefiksy obejmują wszystkie
 # edytowalne czasy czynności, także czasy dzienne i dodatkowe P1/P2/P3.
 PARAMETRY_STEROWALNE = frozenset({
-    "fin",
+    "srednia_kwota_ugody",
     "koszt_staly",
     "wynagrodzenie",
     "szansa_na_ugode",
@@ -108,7 +108,9 @@ def definicje_parametrow(parametry: dict) -> list[dict]:
     definicje = [
         {"id": "koszt_staly", "nazwa": "Koszt stały / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_staly_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "wynagrodzenie", "nazwa": "Wynagrodzenie pracownika / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["wynagrodzenie_pracownika_na_godzine"] * 10 + 100), "krok": 10.0},
-        {"id": "fin", "nazwa": "FIN", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
+        {"id": "srednia_kwota_ugody", "nazwa": "Średnia kwota ugody", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
+        {"id": "srednia_kwota_wyroku", "nazwa": "Średnia kwota wyroku", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
+        {"id": "podatek_dochodowy", "nazwa": "Podatek dochodowy", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "niski_wps", "nazwa": "Średni WPS poniżej progu", "kategoria": "Warunki ekonomiczne", "jednostka": "zł", "typ": "liczba", "min": 0.0, "max": max(0.0, parametry["prog_wps"] - 0.001), "krok": 1000.0},
         {"id": "wysoki_wps", "nazwa": "Średni WPS od progu wzwyż", "kategoria": "Warunki ekonomiczne", "jednostka": "zł", "typ": "liczba", "min": parametry["prog_wps"], "max": max(parametry["wysoki_wps"] * 4, parametry["prog_wps"] + 100_000), "krok": 1000.0},
         {"id": "kategoryczna_odmowa", "nazwa": "Kategoryczna odmowa", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0 - parametry["automatyczne_ramy_percent"], "krok": 5.0},
@@ -149,7 +151,10 @@ def wartosc_parametru(parametry: dict, identyfikator: str) -> float:
         return sredni_bezposredni_czas_na_sprawe(parametry)
     proste = {
         "koszt_staly": "koszt_staly_na_godzine", "wynagrodzenie": "wynagrodzenie_pracownika_na_godzine",
-        "fin": "fin_percent", "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
+        "srednia_kwota_ugody": "srednia_kwota_ugody_percent",
+        "srednia_kwota_wyroku": "srednia_kwota_wyroku_percent",
+        "podatek_dochodowy": "podatek_dochodowy_percent",
+        "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
         "kategoryczna_odmowa": "kategoryczna_odmowa_percent", "automatyczne_ramy": "automatyczne_ramy_percent",
         "szansa_na_ugode": "szansa_na_ugode_percent", "zawarte_ugody": "zawarte_ugody_percent",
         "udzial_ii_instancji": "udzial_ii_instancji_percent", "czas_ii_instancji": "obsluga_ii_instancji_minuty",
@@ -172,7 +177,10 @@ def ustaw_parametr(parametry: dict, identyfikator: str, wartosc: float) -> dict:
     wynik = kopiuj_parametry(parametry)
     proste = {
         "koszt_staly": "koszt_staly_na_godzine", "wynagrodzenie": "wynagrodzenie_pracownika_na_godzine",
-        "fin": "fin_percent", "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
+        "srednia_kwota_ugody": "srednia_kwota_ugody_percent",
+        "srednia_kwota_wyroku": "srednia_kwota_wyroku_percent",
+        "podatek_dochodowy": "podatek_dochodowy_percent",
+        "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
         "kategoryczna_odmowa": "kategoryczna_odmowa_percent", "automatyczne_ramy": "automatyczne_ramy_percent",
         "szansa_na_ugode": "szansa_na_ugode_percent", "zawarte_ugody": "zawarte_ugody_percent",
         "udzial_ii_instancji": "udzial_ii_instancji_percent", "czas_ii_instancji": "obsluga_ii_instancji_minuty",
@@ -311,7 +319,9 @@ def kluczowe_progi(parametry: dict, docelowa_marza: float, analiza_progow: dict 
         ),
         "koszt_staly": po_id["koszt_staly"],
         "wynagrodzenie": po_id["wynagrodzenie"],
-        "fin": po_id["fin"],
+        "srednia_kwota_ugody": po_id["srednia_kwota_ugody"],
+        "srednia_kwota_wyroku": po_id["srednia_kwota_wyroku"],
+        "podatek_dochodowy": po_id["podatek_dochodowy"],
         "zawarte_ugody": po_id["zawarte_ugody"],
     }
 
@@ -456,14 +466,28 @@ def ekonomika_ugod(parametry: dict) -> dict:
         )
         porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ roczny przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
 
-    czas_sukces = pelne_czasy_sciezek["zawarte_poza_ramami"]
-    czas_nieudanej_proby = pelne_czasy_sciezek["brak_ugody_poza_ramami"]
-    czas_bez_proby = pelne_czasy_sciezek["brak_szans"]
-    if czas_nieudanej_proby <= czas_bez_proby:
+    bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))
+    wynik_bez_prob = bez_prob["ogolem"]["wynik"]
+    wynik_zero_sukcesu = oblicz_model(
+        ustaw_parametr(parametry, "zawarte_ugody", 0.0)
+    )["ogolem"]["wynik"]
+    wynik_pelnego_sukcesu = oblicz_model(
+        ustaw_parametr(parametry, "zawarte_ugody", 100.0)
+    )["ogolem"]["wynik"]
+    if wynik_zero_sukcesu >= wynik_bez_prob - 1e-9:
         minimalna_skutecznosc = 0.0
-    elif czas_sukces < czas_nieudanej_proby:
-        minimalna_skutecznosc = 100 * (czas_nieudanej_proby - czas_bez_proby) / (czas_nieudanej_proby - czas_sukces)
-        minimalna_skutecznosc = min(100.0, max(0.0, minimalna_skutecznosc))
+    elif wynik_pelnego_sukcesu >= wynik_bez_prob - 1e-9:
+        dol, gora = 0.0, 100.0
+        for _ in range(48):
+            srodek = (dol + gora) / 2
+            wynik_scenariusza = oblicz_model(
+                ustaw_parametr(parametry, "zawarte_ugody", srodek)
+            )["ogolem"]["wynik"]
+            if wynik_scenariusza >= wynik_bez_prob:
+                gora = srodek
+            else:
+                dol = srodek
+        minimalna_skutecznosc = gora
     else:
         minimalna_skutecznosc = None
 
@@ -474,8 +498,12 @@ def ekonomika_ugod(parametry: dict) -> dict:
         wyniki_poprawy = oblicz_model(ustaw_parametr(parametry, "zawarte_ugody", nowa))
         wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik roczny": wyniki_poprawy["ogolem"]["wynik"] - bazowy_wynik})
 
-    bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))
-    return {"sciezki": sciezki, "porownania": porownania, "minimalna_skutecznosc": minimalna_skutecznosc, "obecna_skutecznosc": parametry["zawarte_ugody_percent"], "bufor_skutecznosci": None if minimalna_skutecznosc is None else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc, "wartosc_poprawy": wartosc_poprawy, "strategia_wplyw_pln": bazowy_wynik - bez_prob["ogolem"]["wynik"], "strategia_wplyw_godzin": bez_prob["laczne_godziny"] - wyniki["laczne_godziny"]}
+    przychod_wedlug_zakonczenia = [
+        {"Sposób zakończenia": "Sprawy zakończone ugodą", "Oczekiwany udział": udzialy["zakonczone_ugoda"], "Oczekiwana liczba spraw": liczba_spraw * udzialy["zakonczone_ugoda"] / 100, "Oczekiwany przychód": wyniki["ogolem"]["przychod_ugody"]},
+        {"Sposób zakończenia": "Sprawy zakończone wyrokiem", "Oczekiwany udział": udzialy["bez_ugody"], "Oczekiwana liczba spraw": liczba_spraw * udzialy["bez_ugody"] / 100, "Oczekiwany przychód": wyniki["ogolem"]["przychod_wyroki"]},
+        {"Sposób zakończenia": "Razem", "Oczekiwany udział": 100.0, "Oczekiwana liczba spraw": liczba_spraw, "Oczekiwany przychód": wyniki["ogolem"]["przychod"]},
+    ]
+    return {"sciezki": sciezki, "porownania": porownania, "przychod_wedlug_zakonczenia": przychod_wedlug_zakonczenia, "minimalna_skutecznosc": minimalna_skutecznosc, "obecna_skutecznosc": parametry["zawarte_ugody_percent"], "bufor_skutecznosci": None if minimalna_skutecznosc is None else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc, "wartosc_poprawy": wartosc_poprawy, "strategia_wplyw_pln": bazowy_wynik - wynik_bez_prob, "strategia_wplyw_godzin": bez_prob["laczne_godziny"] - wyniki["laczne_godziny"]}
 
 
 def minimalna_liczba_pracownikow(parametry: dict, limit: int = 1000) -> int | None:
@@ -525,7 +553,7 @@ def analiza_pojemnosci(parametry: dict) -> dict:
     wolumeny = []
     for liczba_spraw in sorted(punkty):
         wynik = oblicz_model(ustaw_parametr(parametry, "liczba_spraw", liczba_spraw))
-        wolumeny.append({"Liczba spraw": liczba_spraw, "Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt"], "Wynik": wynik["ogolem"]["wynik"], "Marża": wynik["ogolem"]["marza"], "Wykorzystanie pojemności": wykorzystanie_pojemnosci(wynik)})
+        wolumeny.append({"Liczba spraw": liczba_spraw, "Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt"], "Wynik po podatku": wynik["ogolem"]["wynik"], "Marża po podatku": wynik["ogolem"]["marza"], "Wykorzystanie pojemności": wykorzystanie_pojemnosci(wynik)})
 
     rentowne = []
     if maksimum is not None:
@@ -535,9 +563,9 @@ def analiza_pojemnosci(parametry: dict) -> dict:
                 rentowne.append(liczba_spraw)
     segmenty = []
     for grupa in wyniki["grupy"]:
-        przychod = grupa["wynagrodzenie"]
-        segmenty.append({"Segment": f"{grupa['rodzaj']} / {'WPS poniżej progu' if grupa['grupa_wps'] == 'niski_wps' else 'WPS od progu wzwyż'}", "Liczba spraw": grupa["liczba"], "Przychód na sprawę": przychod, "Koszt na sprawę": grupa["koszt"], "Wynik na sprawę": grupa["wynik_jednostkowy"], "Marża": grupa["wynik_jednostkowy"] / przychod * 100 if przychod else 0.0, "Łączny wynik": grupa["laczny_wynik"]})
-    segmenty.sort(key=lambda x: x["Wynik na sprawę"], reverse=True)
+        przychod = grupa["oczekiwane_wynagrodzenie"]
+        segmenty.append({"Segment": f"{grupa['rodzaj']} / {'WPS poniżej progu' if grupa['grupa_wps'] == 'niski_wps' else 'WPS od progu wzwyż'}", "Liczba spraw": grupa["liczba"], "Przychód na sprawę": przychod, "Koszt na sprawę": grupa["koszt"], "Wynik przed podatkiem na sprawę": grupa["wynik_jednostkowy"], "Marża przed podatkiem": grupa["wynik_jednostkowy"] / przychod * 100 if przychod else 0.0, "Łączny wynik przed podatkiem": grupa["laczny_wynik"]})
+    segmenty.sort(key=lambda x: x["Wynik przed podatkiem na sprawę"], reverse=True)
     return {
         "liczba_pracownikow": parametry["liczba_pracownikow"], "dni_pracy": parametry["liczba_dni_pracy_w_roku"],
         "godziny_brutto": pojemnosc["pojemnosc_brutto_minuty"] / 60, "godziny_dzienne": pojemnosc["czynnosci_dzienne_minuty"] / 60,
@@ -556,7 +584,15 @@ def symuluj_pojedyncza_zmiane(parametry: dict, identyfikator: str, nowa_wartosc:
     zmienione_parametry = ustaw_parametr(parametry, identyfikator, nowa_wartosc)
     scenariusz = oblicz_model(zmienione_parametry)
     def metryki(wynik: dict) -> dict:
-        return {"Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt"], "Wynik": wynik["ogolem"]["wynik"], "Marża": wynik["ogolem"]["marza"], "Godziny pracy": wynik["laczne_godziny"]}
+        return {
+            "Przychód": wynik["ogolem"]["przychod"],
+            "Koszt": wynik["ogolem"]["koszt"],
+            "Wynik przed podatkiem": wynik["ogolem"]["wynik_przed_podatkiem"],
+            "Podatek dochodowy": wynik["ogolem"]["podatek_dochodowy"],
+            "Wynik po podatku": wynik["ogolem"]["wynik_po_podatku"],
+            "Marża po podatku": wynik["ogolem"]["marza_po_podatku"],
+            "Godziny pracy": wynik["laczne_godziny"],
+        }
     obecnie, po_zmianie = metryki(bazowe), metryki(scenariusz)
     roznica = {nazwa: po_zmianie[nazwa] - obecnie[nazwa] for nazwa in obecnie}
     return {"parametry": zmienione_parametry, "obecnie": obecnie, "scenariusz": po_zmianie, "roznica": roznica, "wyniki": scenariusz}
@@ -593,7 +629,7 @@ def rekomendacje_deterministyczne(wrazliwosc: list[dict], progi: dict, ugody: di
         korzystne, key=lambda x: abs(x["Wpływ na wynik roczny"]), reverse=True
     )[:5]
     segmenty = pojemnosc.get("segmenty", []) if pojemnosc else []
-    bufory = ranking_progow(progi, "bufor")
+    bufory = ranking_progow(progi, "bufor", tylko_sterowalne=True)
     drogi_do_celu = ranking_progow(
         progi, "wymagana_zmiana", tylko_sterowalne=True
     )

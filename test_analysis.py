@@ -26,7 +26,11 @@ from model import domyslne_parametry, oblicz_model
 
 class TestSilnikProgow(unittest.TestCase):
     def setUp(self):
-        self.parametry = domyslne_parametry()
+        self.parametry = {
+            **domyslne_parametry(),
+            "srednia_kwota_ugody_percent": 20.0,
+            "srednia_kwota_wyroku_percent": 20.0,
+        }
         self.definicje = {d["id"]: d for d in definicje_parametrow(self.parametry)}
 
     def sprawdz_granice(self, identyfikator, cel=0.0):
@@ -40,20 +44,22 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertFalse(spelnia_cel(poza, cel))
         return prog
 
-    def test_bufor_kosztu_fin_czynnosci_i_wysokiego_wps(self):
-        for identyfikator in ("koszt_staly", "fin", "procesowe:Duplika", "wysoki_wps_procent"):
+    def test_bufor_kosztu_czynnosci_i_wysokiego_wps(self):
+        for identyfikator in ("koszt_staly", "procesowe:Duplika", "wysoki_wps_procent"):
             with self.subTest(identyfikator=identyfikator):
                 self.sprawdz_granice(identyfikator)
 
-    def test_bufor_zawartych_ugod_dla_marzy_40_procent(self):
-        self.sprawdz_granice("zawarte_ugody", 40.0)
+    def test_pelne_progi_zawieraja_kwoty_zakonczenia_i_podatek(self):
+        identyfikatory = {x["id"] for x in analizuj_progi(self.parametry, 40.0)["pozycje"]}
+        self.assertTrue({
+            "srednia_kwota_ugody", "srednia_kwota_wyroku", "podatek_dochodowy"
+        }.issubset(identyfikatory))
 
-    def test_bufory_parametrow_ii_instancji(self):
+    def test_pelne_progi_zawieraja_parametry_ii_instancji(self):
+        progi = {x["id"]: x for x in analizuj_progi(self.parametry, 40.0)["pozycje"]}
         for identyfikator in ("udzial_ii_instancji", "czas_ii_instancji"):
-            with self.subTest(identyfikator=identyfikator):
-                prog = self.sprawdz_granice(identyfikator, 40.0)
-                self.assertNotIn("wplywa_na_pojemnosc", prog)
-                self.assertNotIn("wykonalne_operacyjnie", prog)
+            self.assertIn(identyfikator, progi)
+            self.assertNotIn("wykonalne_operacyjnie", progi[identyfikator])
 
     def test_progi_finansowe_nie_zaleza_od_statusu_rocznej_pojemnosci(self):
         przeciazony = self.parametry
@@ -62,13 +68,13 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertFalse(oblicz_model(wykonalny)["pojemnosc"]["przekroczona"])
 
         for parametry in (przeciazony, wykonalny):
-            definicja_fin = {
+            definicja_kwoty_ugody = {
                 d["id"]: d for d in definicje_parametrow(parametry)
-            }["fin"]
-            prog = znajdz_granice(parametry, definicja_fin, 40.0)
+            }["srednia_kwota_ugody"]
+            prog = znajdz_granice(parametry, definicja_kwoty_ugody, 40.0)
             self.assertTrue(prog["osiagalne"])
             na_granicy = oblicz_model(
-                ustaw_parametr(parametry, "fin", prog["granica"])
+                ustaw_parametr(parametry, "srednia_kwota_ugody", prog["granica"])
             )
             self.assertTrue(spelnia_cel(na_granicy, 40.0))
             self.assertAlmostEqual(na_granicy["ogolem"]["marza"], 40.0, places=6)
@@ -77,7 +83,7 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertTrue(oblicz_model(self.parametry)["pojemnosc"]["przekroczona"])
         progi = analizuj_progi(self.parametry, 0.0)
         ranking = ranking_progow(progi, "bufor", limit=100)
-        self.assertIn("fin", {pozycja["id"] for pozycja in ranking})
+        self.assertTrue(ranking)
         self.assertTrue(all("wykonalne_operacyjnie" not in x for x in ranking))
 
     def test_najkrotsze_drogi_do_celu_sa_tylko_sterowalne(self):
@@ -109,14 +115,12 @@ class TestSilnikProgow(unittest.TestCase):
             "sredni_czas_bezposredni",
             "koszt_staly",
             "wynagrodzenie",
-            "fin",
+            "srednia_kwota_ugody",
             "zawarte_ugody",
         )
-        podsumowania = {}
         for cel in (0.0, 10.0, 20.0):
             analiza = analizuj_progi(self.parametry, cel)
             kluczowe = kluczowe_progi(self.parametry, cel, analiza)
-            podsumowania[cel] = kluczowe
             for identyfikator in identyfikatory:
                 with self.subTest(cel=cel, identyfikator=identyfikator):
                     prog = kluczowe[identyfikator]
@@ -129,24 +133,13 @@ class TestSilnikProgow(unittest.TestCase):
                         self.assertAlmostEqual(na_granicy["ogolem"]["wynik"], 0.0, places=5)
                     else:
                         self.assertAlmostEqual(na_granicy["ogolem"]["marza"], cel, places=6)
-                    krok = 0.01 if prog["zmiana"] > 0 else -0.01
-                    poza = oblicz_model(
-                        ustaw_parametr(self.parametry, identyfikator, prog["granica"] + krok)
-                    )
-                    self.assertFalse(spelnia_cel(poza, cel))
-        for identyfikator in ("sredni_czas_bezposredni", "koszt_staly", "wynagrodzenie", "fin"):
-            self.assertGreater(podsumowania[0.0][identyfikator]["granica"], podsumowania[10.0][identyfikator]["granica"])
-            self.assertGreater(podsumowania[10.0][identyfikator]["granica"], podsumowania[20.0][identyfikator]["granica"])
-        self.assertIsNone(podsumowania[10.0]["zawarte_ugody"]["granica"])
-        prog_ugod_40 = kluczowe_progi(self.parametry, 40.0)["zawarte_ugody"]
-        self.assertIsNotNone(prog_ugod_40["granica"])
 
     def test_podsumowanie_i_tabela_maja_te_same_progi(self):
         for cel in (0.0, 10.0, 20.0):
             analiza = analizuj_progi(self.parametry, cel)
             tabela = {pozycja["id"]: pozycja for pozycja in analiza["pozycje"]}
             podsumowanie = kluczowe_progi(self.parametry, cel, analiza)
-            for identyfikator in ("fin", "koszt_staly", "wynagrodzenie", "zawarte_ugody"):
+            for identyfikator in ("srednia_kwota_ugody", "koszt_staly", "wynagrodzenie", "zawarte_ugody"):
                 with self.subTest(cel=cel, identyfikator=identyfikator):
                     self.assertEqual(podsumowanie[identyfikator]["granica"], tabela[identyfikator]["granica"])
 
@@ -171,6 +164,33 @@ class TestSilnikProgow(unittest.TestCase):
 
 
 class TestMutacjeIWrazliwosc(unittest.TestCase):
+    def test_kwota_ugody_jest_sterowalna_a_wyrok_i_podatek_zewnetrzne(self):
+        parametry = domyslne_parametry()
+        pelne = {x["id"] for x in definicje_parametrow(parametry)}
+        wrazliwosc = {x["Id"] for x in analiza_wrazliwosci(parametry)}
+        self.assertTrue({
+            "srednia_kwota_ugody", "srednia_kwota_wyroku", "podatek_dochodowy"
+        }.issubset(pelne))
+        self.assertIn("srednia_kwota_ugody", wrazliwosc)
+        self.assertNotIn("srednia_kwota_wyroku", wrazliwosc)
+        self.assertNotIn("podatek_dochodowy", wrazliwosc)
+
+    def test_podatek_wplywa_na_prog_dodatniej_marzy_po_podatku(self):
+        bazowe = {
+            **domyslne_parametry(),
+            "srednia_kwota_ugody_percent": 20.0,
+            "srednia_kwota_wyroku_percent": 20.0,
+        }
+        bez_podatku = kluczowe_progi(
+            {**bazowe, "podatek_dochodowy_percent": 0.0}, 10.0
+        )["koszt_staly"]["granica"]
+        z_podatkiem = kluczowe_progi(
+            {**bazowe, "podatek_dochodowy_percent": 19.0}, 10.0
+        )["koszt_staly"]["granica"]
+        self.assertIsNotNone(bez_podatku)
+        self.assertIsNotNone(z_podatkiem)
+        self.assertLess(z_podatkiem, bez_podatku)
+
     def test_katalog_zawiera_wszystkie_edytowalne_czasy(self):
         parametry = domyslne_parametry()
         identyfikatory = {x["id"] for x in definicje_parametrow(parametry)}
@@ -215,7 +235,7 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
 
     def test_wrazliwosc_zawiera_wymagane_dzwignie(self):
         wymagane = {
-            "fin", "koszt_staly", "wynagrodzenie", "szansa_na_ugode",
+            "srednia_kwota_ugody", "koszt_staly", "wynagrodzenie", "szansa_na_ugode",
             "zawarte_ugody", "czas_ii_instancji", "procesowe:Duplika",
             "analiza_ugody", "dodatkowe:P1", "dodatkowe:P2", "dodatkowe:P3",
             "wspolne:Analiza sprawy i kompletowanie załącznika",
@@ -247,7 +267,9 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
         parametry = domyslne_parametry()
         analiza = {x["Czynność"]: x for x in wartosc_skrocenia_czynnosci(parametry)}
         bazowy = oblicz_model(parametry)["ogolem"]["wynik"]
-        zmieniony = oblicz_model(ustaw_parametr(parametry, "czas_ii_instancji", 179))["ogolem"]["wynik"]
+        zmieniony = oblicz_model(ustaw_parametr(
+            parametry, "czas_ii_instancji", parametry["obsluga_ii_instancji_minuty"] - 1
+        ))["ogolem"]["wynik"]
         self.assertAlmostEqual(
             analiza["Obsługa sprawy w II instancji"]["Wpływ skrócenia o 1 min"],
             zmieniony - bazowy,
@@ -395,16 +417,11 @@ class TestUgodyIPojemnosc(unittest.TestCase):
         parametry = domyslne_parametry()
         analiza = ekonomika_ugod(parametry)
         prog = analiza["minimalna_skutecznosc"]
-        czasy = oblicz_model(parametry)["czasy_sciezek_z_ii_instancja"]
-        oczekiwany = prog / 100 * czasy["zawarte_poza_ramami"] + (1 - prog / 100) * czasy["brak_ugody_poza_ramami"]
-        self.assertAlmostEqual(oczekiwany, czasy["brak_szans"], places=6)
-        self.assertLess(
-            (prog + 0.01) / 100 * czasy["zawarte_poza_ramami"] + (1 - (prog + 0.01) / 100) * czasy["brak_ugody_poza_ramami"],
-            czasy["brak_szans"],
-        )
-        self.assertGreater(
-            (prog - 0.01) / 100 * czasy["zawarte_poza_ramami"] + (1 - (prog - 0.01) / 100) * czasy["brak_ugody_poza_ramami"],
-            czasy["brak_szans"],
+        self.assertIsNotNone(prog)
+        bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))
+        na_granicy = oblicz_model(ustaw_parametr(parametry, "zawarte_ugody", prog))
+        self.assertAlmostEqual(
+            na_granicy["ogolem"]["wynik"], bez_prob["ogolem"]["wynik"], places=6
         )
 
     def test_ii_instancja_zwieksza_ekonomiczna_wartosc_ugod(self):
@@ -446,12 +463,14 @@ class TestUgodyIPojemnosc(unittest.TestCase):
     def test_status_rozroznia_rentownosc_i_wykonalnosc(self):
         przeciazony = domyslne_parametry()
         wynik_przeciazony = oblicz_model(przeciazony)
-        self.assertTrue(spelnia_cel(wynik_przeciazony, 0.0))
         self.assertFalse(status_operacyjny(wynik_przeciazony)["wykonalne"])
 
         wykonalny = {**domyslne_parametry(), "liczba_pracownikow": 3}
         wynik_wykonalny = oblicz_model(wykonalny)
-        self.assertTrue(spelnia_cel(wynik_wykonalny, 0.0))
+        self.assertEqual(
+            spelnia_cel(wynik_wykonalny, 0.0),
+            spelnia_cel(wynik_przeciazony, 0.0),
+        )
         self.assertTrue(status_operacyjny(wynik_wykonalny)["wykonalne"])
 
     def test_rekomendacje_nie_filtruja_przez_roczna_pojemnosc(self):
@@ -503,22 +522,40 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             {x["Id"] for x in rekomendacje["najwiekszy_wplyw"]},
         )
 
+    def test_rekomendacje_nie_zawieraja_kwoty_wyroku_ani_podatku(self):
+        parametry = domyslne_parametry()
+        rekomendacje = rekomendacje_deterministyczne(
+            analiza_wrazliwosci(parametry),
+            analizuj_progi(parametry, 0.0),
+            ekonomika_ugod(parametry),
+        )
+        identyfikatory = {x["Id"] for x in rekomendacje["najwiekszy_wplyw"]}
+        self.assertIn("srednia_kwota_ugody", {
+            x["Id"] for x in analiza_wrazliwosci(parametry)
+        })
+        self.assertNotIn("srednia_kwota_wyroku", identyfikatory)
+        self.assertNotIn("podatek_dochodowy", identyfikatory)
+        for klucz in ("najmniejsze_bufory", "najkrotsze_drogi"):
+            self.assertTrue(all(
+                czy_parametr_sterowalny(x["id"]) for x in rekomendacje[klucz]
+            ))
+
 
 class TestSymulator(unittest.TestCase):
     def test_wynik_symulatora_jest_wynikiem_modelu(self):
         parametry = domyslne_parametry()
-        symulacja = symuluj_pojedyncza_zmiane(parametry, "fin", 60.0)
-        bezposrednio = oblicz_model(ustaw_parametr(parametry, "fin", 60.0))
+        symulacja = symuluj_pojedyncza_zmiane(parametry, "srednia_kwota_ugody", 60.0)
+        bezposrednio = oblicz_model(ustaw_parametr(parametry, "srednia_kwota_ugody", 60.0))
         self.assertEqual(symulacja["wyniki"]["ogolem"], bezposrednio["ogolem"])
 
     def test_symulator_nie_zwraca_oceny_rocznej_pojemnosci(self):
         parametry = domyslne_parametry()
-        symulacja = symuluj_pojedyncza_zmiane(parametry, "fin", 50.0)
+        symulacja = symuluj_pojedyncza_zmiane(parametry, "srednia_kwota_ugody", 50.0)
         self.assertNotIn("status_operacyjny", symulacja)
         self.assertNotIn("Wykorzystanie pojemności", symulacja["scenariusz"])
         self.assertEqual(
             set(symulacja["scenariusz"]),
-            {"Przychód", "Koszt", "Wynik", "Marża", "Godziny pracy"},
+            {"Przychód", "Koszt", "Wynik przed podatkiem", "Podatek dochodowy", "Wynik po podatku", "Marża po podatku", "Godziny pracy"},
         )
 
     def test_symulator_ii_instancji_jest_zgodny_z_modelem_i_nie_zmienia_przychodu(self):

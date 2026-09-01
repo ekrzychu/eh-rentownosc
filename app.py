@@ -91,10 +91,10 @@ def tabela_podsumowania(podsumowanie: dict) -> pd.DataFrame:
         ("Liczba spraw", f"{podsumowanie['liczba_spraw']:,}".replace(",", " ")),
         ("Przychód", kwota(podsumowanie["przychod"])),
         ("Koszt", kwota(podsumowanie["koszt"])),
-        ("Wynik", kwota(podsumowanie["wynik"])),
+        ("Wynik przed podatkiem", kwota(podsumowanie["wynik"])),
         ("Średni przychód na sprawę", kwota(podsumowanie["sredni_przychod"])),
         ("Średni koszt na sprawę", kwota(podsumowanie["sredni_koszt"])),
-        ("Średni wynik na sprawę", kwota(podsumowanie["sredni_wynik"])),
+        ("Średni wynik przed podatkiem na sprawę", kwota(podsumowanie["sredni_wynik"])),
     ]
     return pd.DataFrame(dane, columns=["Pozycja", "Wartość"])
 
@@ -184,10 +184,20 @@ with st.sidebar:
     with st.expander("Portfel", expanded=True):
         liczba_spraw = st.number_input("Liczba spraw w portfelu", min_value=0, value=domyslne["liczba_spraw"], step=1)
         prog_wps = st.number_input("Próg WPS", min_value=0.0, value=float(domyslne["prog_wps"]), step=500.0)
-        fin_percent = st.number_input(
-            "Średnia kwota wyroku / ugody (% WPS)", min_value=0.0, max_value=100.0,
-            value=domyslne["fin_percent"], step=0.1, format="%.1f",
-            help="Np. 70% oznacza, że średnia kwota wyroku/ugody wynosi 70% WPS, czyli jest o 30% niższa od pierwotnego WPS.",
+        srednia_kwota_ugody_percent = st.number_input(
+            "Średnia kwota ugody (% WPS)", min_value=0.0, max_value=100.0,
+            value=domyslne["srednia_kwota_ugody_percent"], step=0.1, format="%.1f",
+            help="Procent WPS odpowiadający średniej kwocie ugody. Np. 70% oznacza, że średnia ugoda wynosi 70% WPS, a podstawą części zmiennej wynagrodzenia jest różnica między WPS a tą kwotą.",
+        )
+        srednia_kwota_wyroku_percent = st.number_input(
+            "Średnia kwota wyroku (% WPS)", min_value=0.0, max_value=100.0,
+            value=domyslne["srednia_kwota_wyroku_percent"], step=0.1, format="%.1f",
+            help="Procent WPS odpowiadający średniej kwocie zasądzonej wyrokiem. Np. 95% oznacza, że średnia kwota wyroku wynosi 95% WPS, a podstawą części zmiennej wynagrodzenia jest różnica między WPS a tą kwotą.",
+        )
+        podatek_dochodowy_percent = st.number_input(
+            "Podatek dochodowy (%)", min_value=0.0, max_value=100.0,
+            value=domyslne["podatek_dochodowy_percent"], step=0.1, format="%.1f",
+            help="Uproszczona stawka podatku dochodowego naliczana od dodatniego wyniku przed podatkiem. Przy stracie podatek w modelu wynosi 0 zł.",
         )
         niski_wps = st.number_input("Średni WPS poniżej progu", min_value=0.0, value=float(domyslne["niski_wps"]), step=100.0)
         wysoki_wps = st.number_input("Średni WPS od progu wzwyż", min_value=0.0, value=float(domyslne["wysoki_wps"]), step=100.0)
@@ -377,7 +387,10 @@ if wysoki_wps < prog_wps:
     st.stop()
 
 parametry = {
-    "liczba_spraw": liczba_spraw, "prog_wps": prog_wps, "fin_percent": fin_percent,
+    "liczba_spraw": liczba_spraw, "prog_wps": prog_wps,
+    "srednia_kwota_ugody_percent": srednia_kwota_ugody_percent,
+    "srednia_kwota_wyroku_percent": srednia_kwota_wyroku_percent,
+    "podatek_dochodowy_percent": podatek_dochodowy_percent,
     "niski_wps": niski_wps, "wysoki_wps": wysoki_wps,
     "koszt_staly_na_godzine": koszt_staly, "wynagrodzenie_pracownika_na_godzine": wynagrodzenie_pracownika,
     "liczba_pracownikow": liczba_pracownikow, "liczba_dni_pracy_w_roku": liczba_dni_pracy_w_roku,
@@ -398,8 +411,12 @@ ogolem = wyniki["ogolem"]
 kpi = st.columns(4, gap="medium")
 kpi[0].metric("Przychód", kwota(ogolem["przychod"]))
 kpi[1].metric("Koszt", kwota(ogolem["koszt"]))
-kpi[2].metric("Zysk / strata", kwota(ogolem["wynik"]))
-kpi[3].metric("Marża", procent(ogolem["marza"]))
+kpi[2].metric("Zysk / strata po podatku", kwota(ogolem["wynik_po_podatku"]))
+kpi[3].metric("Marża po podatku", procent(ogolem["marza_po_podatku"]))
+
+podatek_1, podatek_2 = st.columns(2)
+podatek_1.metric("Wynik przed podatkiem", kwota(ogolem["wynik_przed_podatkiem"]))
+podatek_2.metric("Podatek dochodowy", kwota(ogolem["podatek_dochodowy"]))
 
 st.caption(
     "Czynności dzienne są naliczane proporcjonalnie do liczby osobodni potrzebnych "
@@ -454,8 +471,8 @@ def wiersz_laczny(rodzaj: str, dane: dict) -> dict:
         "Koszt jednej sprawy": dane["sredni_koszt"],
         "Łączny przychód": dane["przychod"],
         "Łączny koszt": dane["koszt"],
-        "Łączny wynik": dane["wynik"],
-        "Średni wynik na sprawie": dane["sredni_wynik"],
+        "Łączny wynik przed podatkiem": dane["wynik"],
+        "Średni wynik przed podatkiem na sprawie": dane["sredni_wynik"],
     }
 
 
@@ -471,8 +488,8 @@ def wiersz_grupy(grupa: dict, zakres_wps: str) -> dict:
         "Koszt jednej sprawy": grupa["koszt"],
         "Łączny przychód": grupa["laczny_przychod"],
         "Łączny koszt": grupa["laczny_koszt"],
-        "Łączny wynik": grupa["laczny_wynik"],
-        "Średni wynik na sprawie": grupa["wynik_jednostkowy"],
+        "Łączny wynik przed podatkiem": grupa["laczny_wynik"],
+        "Średni wynik przed podatkiem na sprawie": grupa["wynik_jednostkowy"],
     }
 
 
@@ -501,8 +518,8 @@ st.dataframe(
         "Koszt jednej sprawy": st.column_config.NumberColumn(format="%.2f zł"),
         "Łączny przychód": st.column_config.NumberColumn(format="%.2f zł"),
         "Łączny koszt": st.column_config.NumberColumn(format="%.2f zł"),
-        "Łączny wynik": st.column_config.NumberColumn(format="%.2f zł"),
-        "Średni wynik na sprawie": st.column_config.NumberColumn(format="%.2f zł"),
+        "Łączny wynik przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
+        "Średni wynik przed podatkiem na sprawie": st.column_config.NumberColumn(format="%.2f zł"),
     },
 )
 
@@ -510,13 +527,13 @@ st.divider()
 st.header("Wykresy")
 kolumna_1, kolumna_2 = st.columns(2, gap="large")
 with kolumna_1:
-    st.subheader("Przychód, koszt i wynik")
-    st.bar_chart(pd.DataFrame({"Kwota": [ogolem["przychod"], ogolem["koszt"], ogolem["wynik"]]}, index=["Przychód", "Koszt", "Wynik"]), height=300)
+    st.subheader("Przychód, koszt i wynik po podatku")
+    st.bar_chart(pd.DataFrame({"Kwota": [ogolem["przychod"], ogolem["koszt"], ogolem["wynik"]]}, index=["Przychód", "Koszt", "Wynik po podatku"]), height=300)
 with kolumna_2:
-    st.subheader("Wynik według rodzaju sprawy")
-    st.bar_chart(rodzaje_ogolem.set_index("Rodzaj")[["Łączny wynik"]], height=300)
-st.subheader("Średni wynik na sprawę według WPS")
-st.bar_chart(pd.DataFrame({"Średni wynik": [wyniki["wps_niski"]["sredni_wynik"], wyniki["wps_wysoki"]["sredni_wynik"]]}, index=["WPS poniżej progu", "WPS od progu wzwyż"]), height=260)
+    st.subheader("Wynik przed podatkiem według rodzaju sprawy")
+    st.bar_chart(rodzaje_ogolem.set_index("Rodzaj")[["Łączny wynik przed podatkiem"]], height=300)
+st.subheader("Średni wynik przed podatkiem na sprawę według WPS")
+st.bar_chart(pd.DataFrame({"Średni wynik przed podatkiem": [wyniki["wps_niski"]["sredni_wynik"], wyniki["wps_wysoki"]["sredni_wynik"]]}, index=["WPS poniżej progu", "WPS od progu wzwyż"]), height=260)
 
 st.divider()
 st.header("Centrum rentowności i decyzji")
@@ -527,7 +544,7 @@ tab_prog, tab_wrazliwosc, tab_ugody, tab_portfel, tab_symulator, tab_rekomendacj
 
 with tab_prog:
     stan, cel, status_celu = st.columns([1, 1.25, 1], gap="large")
-    stan.metric("Obecna marża", procent(ogolem["marza"]))
+    stan.metric("Obecna marża po podatku", procent(ogolem["marza"]))
     with cel:
         docelowa_marza = st.number_input(
             "Minimalna akceptowalna marża (%)", min_value=0.0, max_value=100.0,
@@ -574,13 +591,20 @@ with tab_prog:
             "Maksymalnie dla celu", "Wymagany poziom",
             "Sama zmiana wynagrodzenia godzinowego nie wystarczy do osiągnięcia celu.",
         )
-    dolna_lewa, dolna_prawa = st.columns(2, gap="large")
+    dolna_lewa, dolna_srodkowa, dolna_prawa = st.columns(3, gap="large")
     with dolna_lewa:
-        st.markdown("#### FIN")
+        st.markdown("#### Kwota ugody")
         pokaz_kluczowa_granice(
-            kluczowe["fin"], kluczowe["cel_spelniony"], "Obecny FIN",
-            "Maksymalny FIN dla celu", "Wymagany FIN",
-            "Sama zmiana FIN nie wystarczy do osiągnięcia celu.",
+            kluczowe["srednia_kwota_ugody"], kluczowe["cel_spelniony"], "Obecnie",
+            "Maksymalnie dla celu", "Wymagany poziom",
+            "Sama zmiana średniej kwoty ugody nie wystarczy do osiągnięcia celu.",
+        )
+    with dolna_srodkowa:
+        st.markdown("#### Kwota wyroku")
+        pokaz_kluczowa_granice(
+            kluczowe["srednia_kwota_wyroku"], kluczowe["cel_spelniony"], "Obecnie",
+            "Maksymalnie dla celu", "Wymagany poziom",
+            "Sama zmiana średniej kwoty wyroku nie wystarczy do osiągnięcia celu.",
         )
     with dolna_prawa:
         st.markdown("#### Ugody")
@@ -594,6 +618,13 @@ with tab_prog:
             "Łączny udział całego portfela zakończony ugodą: "
             f"**{procent(wyniki['udzialy_ugod']['zakonczone_ugoda'])}**"
         )
+
+    st.markdown("#### Podatek dochodowy")
+    pokaz_kluczowa_granice(
+        kluczowe["podatek_dochodowy"], kluczowe["cel_spelniony"], "Obecnie",
+        "Maksymalnie dla celu", "Wymagany poziom",
+        "Sama zmiana stawki podatku nie wystarczy do osiągnięcia celu.",
+    )
 
     st.subheader("Pełna analiza granic")
     if analiza_progow["cel_spelniony"]:
@@ -696,6 +727,18 @@ with tab_wrazliwosc:
 with tab_ugody:
     st.subheader("Ekonomika ugód")
     ekonomika = ekonomika_ugod(parametry)
+    st.subheader("Przychód według sposobu zakończenia")
+    st.dataframe(
+        pd.DataFrame(ekonomika["przychod_wedlug_zakonczenia"]),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Oczekiwany udział": st.column_config.NumberColumn(format="%.2f%%"),
+            "Oczekiwana liczba spraw": st.column_config.NumberColumn(format="%.2f"),
+            "Oczekiwany przychód": st.column_config.NumberColumn(format="%.2f zł"),
+        },
+    )
+    st.subheader("Czas ścieżek zakończenia")
     st.caption("Czasy ścieżek nie obejmują dodatkowego czasu P1/P2/P3 ani czynności dziennych pracowników.")
     st.dataframe(pd.DataFrame(ekonomika["sciezki"]), hide_index=True, width="stretch", column_config={
         "Efektywny udział portfela": st.column_config.NumberColumn(format="%.2f%%"),
@@ -704,7 +747,7 @@ with tab_ugody:
         "Łączny oczekiwany czas ścieżki": st.column_config.NumberColumn(format="%.1f min"),
         "Oczekiwana liczba spraw": st.column_config.NumberColumn(format="%.1f"),
     })
-    st.subheader("Wartość ekonomiczna ścieżek")
+    st.subheader("Porównanie czasu i kosztu obsługi ścieżek")
     tabela_porownan_ugod = pd.DataFrame(ekonomika["porownania"]).rename(columns={
         "Wpływ roczny przy obecnym udziale": "Wpływ dla portfela przy obecnym udziale",
     })
@@ -716,7 +759,7 @@ with tab_ugody:
     st.subheader("Opłacalność prób ugodowych poza ramami")
     u1, u2, u3 = st.columns(3)
     u1.metric("Obecna skuteczność", procent(ekonomika["obecna_skutecznosc"]))
-    u2.metric("Minimalna opłacalna skuteczność", procent(ekonomika["minimalna_skutecznosc"]) if ekonomika["minimalna_skutecznosc"] is not None else "Nieosiągalna")
+    u2.metric("Minimalna opłacalna skuteczność dla wyniku", procent(ekonomika["minimalna_skutecznosc"]) if ekonomika["minimalna_skutecznosc"] is not None else "Nieosiągalna")
     u3.metric("Bufor", f"{ekonomika['bufor_skutecznosci']:+.2f} p.p.".replace(".", ",") if ekonomika["bufor_skutecznosci"] is not None else "—")
     st.subheader("Wartość poprawy skuteczności")
     st.dataframe(pd.DataFrame([{
@@ -767,10 +810,10 @@ with tab_portfel:
     wolumeny = pd.DataFrame(pojemnosc_analiza["wolumeny"])
     st.dataframe(wolumeny, hide_index=True, width="stretch", column_config={
         "Przychód": st.column_config.NumberColumn(format="%.2f zł"), "Koszt": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wynik": st.column_config.NumberColumn(format="%.2f zł"), "Marża": st.column_config.NumberColumn(format="%.2f%%"),
+        "Wynik po podatku": st.column_config.NumberColumn(format="%.2f zł"), "Marża po podatku": st.column_config.NumberColumn(format="%.2f%%"),
         "Wykorzystanie pojemności": st.column_config.NumberColumn(format="%.1f%%"),
     })
-    st.line_chart(wolumeny.set_index("Liczba spraw")[["Wynik"]], height=300)
+    st.line_chart(wolumeny.set_index("Liczba spraw")[["Wynik po podatku"]], height=300)
     if pojemnosc_analiza["minimalny_rentowny_wolumen"] is None:
         st.write("Wykonalny zakres pojemności nie zawiera rentownego wolumenu.")
     else:
@@ -780,8 +823,8 @@ with tab_portfel:
     segmenty = pd.DataFrame(pojemnosc_analiza["segmenty"])
     st.dataframe(segmenty, hide_index=True, width="stretch", column_config={
         "Przychód na sprawę": st.column_config.NumberColumn(format="%.2f zł"), "Koszt na sprawę": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wynik na sprawę": st.column_config.NumberColumn(format="%.2f zł"), "Marża": st.column_config.NumberColumn(format="%.2f%%"),
-        "Łączny wynik": st.column_config.NumberColumn(format="%.2f zł"),
+        "Wynik przed podatkiem na sprawę": st.column_config.NumberColumn(format="%.2f zł"), "Marża przed podatkiem": st.column_config.NumberColumn(format="%.2f%%"),
+        "Łączny wynik przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
     })
     if pojemnosc_analiza["segmenty"]:
         st.write(f"Najbardziej rentowny segment: **{pojemnosc_analiza['segmenty'][0]['Segment']}**")
@@ -808,7 +851,7 @@ with tab_symulator:
         obecna = symulacja["obecnie"][nazwa]
         scenariuszowa = symulacja["scenariusz"][nazwa]
         roznica = symulacja["roznica"][nazwa]
-        if nazwa == "Marża":
+        if nazwa == "Marża po podatku":
             formatuj = lambda x: procent(x) if x is not None else "—"
         elif nazwa == "Godziny pracy":
             formatuj = lambda x: f"{liczba(x, 2)} h" if x is not None else "—"

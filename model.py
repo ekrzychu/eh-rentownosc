@@ -47,16 +47,18 @@ DODATKOWE_MINUTY = {"P1": 90, "P2": 150, "P3": 240}
 P1_PERCENT = 25.0
 P2_PERCENT = 58.0
 P3_PERCENT = 17.0
-HIGH_WPS_PERCENT = 80.0
+HIGH_WPS_PERCENT = 79.0
 LOW_WPS_PERCENT = 100.0 - HIGH_WPS_PERCENT
-FIN_PERCENT = 50.0
+SREDNIA_KWOTA_UGODY_PERCENT = 70.0
+SREDNIA_KWOTA_WYROKU_PERCENT = 95.0
+PODATEK_DOCHODOWY_PERCENT = 0.0
 
 KATEGORYCZNA_ODMOWA_PERCENT = 15.0
 AUTOMATYCZNE_RAMY_PERCENT = 30.0
 SZANSA_NA_UGODE_PERCENT = 50.0
 ZAWARTE_UGODY_PERCENT = 50.0
 UDZIAL_II_INSTANCJI_PERCENT = 20.0
-OBSLUGA_II_INSTANCJI_MINUTY = 180
+OBSLUGA_II_INSTANCJI_MINUTY = 210
 LICZBA_PRACOWNIKOW = 2
 LICZBA_DNI_PRACY_W_ROKU = 251
 MINUTY_DNIA_PRACY = 480
@@ -85,7 +87,9 @@ def domyslne_parametry() -> dict:
         "dodatkowe_minuty": DODATKOWE_MINUTY.copy(),
         "udzialy_rodzajow": {"P1": P1_PERCENT, "P2": P2_PERCENT, "P3": P3_PERCENT},
         "wysoki_wps_procent": HIGH_WPS_PERCENT,
-        "fin_percent": FIN_PERCENT,
+        "srednia_kwota_ugody_percent": SREDNIA_KWOTA_UGODY_PERCENT,
+        "srednia_kwota_wyroku_percent": SREDNIA_KWOTA_WYROKU_PERCENT,
+        "podatek_dochodowy_percent": PODATEK_DOCHODOWY_PERCENT,
         "kategoryczna_odmowa_percent": KATEGORYCZNA_ODMOWA_PERCENT,
         "automatyczne_ramy_percent": AUTOMATYCZNE_RAMY_PERCENT,
         "szansa_na_ugode_percent": SZANSA_NA_UGODE_PERCENT,
@@ -313,12 +317,38 @@ def oblicz_podzial_spraw(
     return podzial
 
 
-def oblicz_wynagrodzenie(wps: float, prog_wps: float, fin_percent: float) -> float:
-    """Oblicza wynagrodzenie kancelarii dla jednej sprawy."""
-    fin = wps * (fin_percent / 100)
+def oblicz_wynagrodzenie(
+    wps: float, prog_wps: float, kwota_koncowa_percent: float
+) -> float:
+    """Oblicza wynagrodzenie dla jednego sposobu zakończenia sprawy."""
+    if not 0 <= kwota_koncowa_percent <= 100:
+        raise ValueError("Średnia kwota końcowa musi mieścić się w zakresie 0–100% WPS.")
+    kwota_koncowa = wps * kwota_koncowa_percent / 100
     if wps < prog_wps:
-        return 250 + min(0.20 * (wps - fin), 2000)
-    return 500 + min(0.08 * (wps - fin), 5000)
+        return 250 + min(0.20 * (wps - kwota_koncowa), 2000)
+    return 500 + min(0.08 * (wps - kwota_koncowa), 5000)
+
+
+def oblicz_podatek_dochodowy(
+    przychod: float, koszt: float, podatek_dochodowy_percent: float
+) -> dict[str, float]:
+    """Nakłada uproszczony podatek wyłącznie na dodatni wynik przed podatkiem."""
+    if not 0 <= podatek_dochodowy_percent <= 100:
+        raise ValueError("Podatek dochodowy musi mieścić się w zakresie 0–100%.")
+    wynik_przed_podatkiem = przychod - koszt
+    podatek_dochodowy = (
+        max(wynik_przed_podatkiem, 0.0) * podatek_dochodowy_percent / 100
+    )
+    wynik_po_podatku = wynik_przed_podatkiem - podatek_dochodowy
+    return {
+        "wynik_przed_podatkiem": wynik_przed_podatkiem,
+        "podatek_dochodowy": podatek_dochodowy,
+        "wynik_po_podatku": wynik_po_podatku,
+        "marza_przed_podatkiem": (
+            wynik_przed_podatkiem / przychod * 100 if przychod else 0.0
+        ),
+        "marza_po_podatku": wynik_po_podatku / przychod * 100 if przychod else 0.0,
+    }
 
 
 def podsumuj_grupy(grupy: list[dict]) -> dict:
@@ -327,12 +357,16 @@ def podsumuj_grupy(grupy: list[dict]) -> dict:
     przychod = sum(grupa["laczny_przychod"] for grupa in grupy)
     koszt = sum(grupa["laczny_koszt"] for grupa in grupy)
     wynik = przychod - koszt
+    przychod_ugody = sum(grupa["laczny_przychod_ugody"] for grupa in grupy)
+    przychod_wyroki = sum(grupa["laczny_przychod_wyroki"] for grupa in grupy)
     return {
         "liczba_spraw": liczba_spraw,
         "przychod": przychod,
         "koszt": koszt,
         "wynik": wynik,
         "marza": wynik / przychod * 100 if przychod else 0.0,
+        "przychod_ugody": przychod_ugody,
+        "przychod_wyroki": przychod_wyroki,
         "sredni_przychod": przychod / liczba_spraw if liczba_spraw else 0.0,
         "sredni_koszt": koszt / liczba_spraw if liczba_spraw else 0.0,
         "sredni_wynik": wynik / liczba_spraw if liczba_spraw else 0.0,
@@ -347,13 +381,23 @@ def oblicz_grupe(
     parametry: dict,
     srednie_minuty_sciezki: float,
     narzut_dzienny_na_sprawe: float,
+    udzial_ugod: float,
+    udzial_wyrokow: float,
 ) -> dict:
     """Oblicza wynik jednej grupy P/WPS z księgową alokacją narzutu dziennego."""
     koszt_godziny = (
         parametry["koszt_staly_na_godzine"]
         + parametry["wynagrodzenie_pracownika_na_godzine"]
     )
-    wynagrodzenie = oblicz_wynagrodzenie(wps, parametry["prog_wps"], parametry["fin_percent"])
+    wynagrodzenie_ugoda = oblicz_wynagrodzenie(
+        wps, parametry["prog_wps"], parametry["srednia_kwota_ugody_percent"]
+    )
+    wynagrodzenie_wyrok = oblicz_wynagrodzenie(
+        wps, parametry["prog_wps"], parametry["srednia_kwota_wyroku_percent"]
+    )
+    oczekiwany_przychod_ugody = udzial_ugod / 100 * wynagrodzenie_ugoda
+    oczekiwany_przychod_wyroki = udzial_wyrokow / 100 * wynagrodzenie_wyrok
+    wynagrodzenie = oczekiwany_przychod_ugody + oczekiwany_przychod_wyroki
     bezposrednie_minuty = srednie_minuty_sciezki + parametry["dodatkowe_minuty"][rodzaj]
     koszt_bezposredni = koszt_godziny * bezposrednie_minuty / 60
     koszt = koszt_bezposredni + narzut_dzienny_na_sprawe
@@ -364,12 +408,21 @@ def oblicz_grupe(
         "wps": wps,
         "liczba": liczba,
         "wynagrodzenie": wynagrodzenie,
+        "wynagrodzenie_ugoda": wynagrodzenie_ugoda,
+        "wynagrodzenie_wyrok": wynagrodzenie_wyrok,
+        "oczekiwane_wynagrodzenie": wynagrodzenie,
+        "udzial_ugod": udzial_ugod,
+        "udzial_wyrokow": udzial_wyrokow,
+        "oczekiwany_przychod_ugody": oczekiwany_przychod_ugody,
+        "oczekiwany_przychod_wyroki": oczekiwany_przychod_wyroki,
         "koszt_bezposredni": koszt_bezposredni,
         "narzut_dzienny_na_sprawe": narzut_dzienny_na_sprawe,
         "koszt": koszt,
         "wynik_jednostkowy": wynik_jednostkowy,
         "laczne_minuty": bezposrednie_minuty,
         "laczny_przychod": liczba * wynagrodzenie,
+        "laczny_przychod_ugody": liczba * oczekiwany_przychod_ugody,
+        "laczny_przychod_wyroki": liczba * oczekiwany_przychod_wyroki,
         "laczny_koszt": liczba * koszt,
         "laczny_wynik": liczba * wynik_jednostkowy,
     }
@@ -447,6 +500,8 @@ def oblicz_model(parametry: dict | None = None) -> dict:
                     parametry,
                     srednie_minuty_sciezki,
                     narzut_dzienny_na_sprawe,
+                    udzialy_ugod["zakonczone_ugoda"],
+                    udzialy_ugod["bez_ugody"],
                 )
             )
 
@@ -460,6 +515,16 @@ def oblicz_model(parametry: dict | None = None) -> dict:
     }
     laczne_minuty = bezposrednie_minuty_spraw + czynnosci_dzienne_lifecycle_minuty
     ogolem = podsumuj_grupy(grupy)
+    rozliczenie_podatku = oblicz_podatek_dochodowy(
+        ogolem["przychod"], ogolem["koszt"], parametry["podatek_dochodowy_percent"]
+    )
+    ogolem.update(rozliczenie_podatku)
+    # W całej aplikacji ogólne pola wynik i marża oznaczają wartości po podatku.
+    ogolem["wynik"] = rozliczenie_podatku["wynik_po_podatku"]
+    ogolem["marza"] = rozliczenie_podatku["marza_po_podatku"]
+    ogolem["sredni_wynik"] = (
+        ogolem["wynik"] / liczba_spraw if liczba_spraw else 0.0
+    )
 
     return {
         "ogolem": ogolem,
@@ -477,6 +542,8 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         **wskazniki_ii_instancji,
         "obsluga_ii_instancji_minuty": parametry["obsluga_ii_instancji_minuty"],
         "koszt_godziny": koszt_godziny,
+        **rozliczenie_podatku,
+        "podatek_dochodowy_percent": parametry["podatek_dochodowy_percent"],
         "bezposrednie_minuty_spraw": bezposrednie_minuty_spraw,
         **metryki_lifecycle,
         # Zachowane klucze oznaczają wyłącznie narzut lifecycle, nigdy roczny.
@@ -605,26 +672,3 @@ def oblicz_prog_wynagrodzenia_pracownika(parametry: dict) -> dict:
     return _oblicz_prog_kosztu(
         parametry, "wynagrodzenie_pracownika_na_godzine", "koszt_staly_na_godzine"
     )
-
-
-def oblicz_prog_fin(parametry: dict, tolerancja: float = 0.0001) -> dict:
-    """Wyznacza maksymalny FIN (% WPS) zapewniający wynik nie mniejszy od zera."""
-
-    def wynik_dla(fin_percent: float) -> float:
-        return oblicz_model(_parametry_z_zmiana(parametry, fin_percent=fin_percent))["ogolem"]["wynik"]
-
-    wynik_0 = wynik_dla(0.0)
-    wynik_100 = wynik_dla(100.0)
-    if wynik_0 < 0:
-        return {"mozliwe": False, "rentowny_w_calym_zakresie": False}
-    if wynik_100 >= 0:
-        return {"mozliwe": True, "rentowny_w_calym_zakresie": True, "prog": 100.0}
-
-    dol, gora = 0.0, 100.0
-    while gora - dol > tolerancja:
-        srodek = (dol + gora) / 2
-        if wynik_dla(srodek) >= 0:
-            dol = srodek
-        else:
-            gora = srodek
-    return {"mozliwe": True, "rentowny_w_calym_zakresie": False, "prog": dol}
