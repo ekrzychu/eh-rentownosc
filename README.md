@@ -179,3 +179,17 @@ Linux and macOS:
 ```bash
 ./.venv/bin/python -m unittest
 ```
+
+---
+
+## Model „W czasie”
+
+Zakładka **W czasie** jest testowym modelem ekonomicznego rozkładu portfela na
+miesiące. Korzysta z tych samych przychodów, ścieżek spraw, nakładu pracy i
+kosztów co główny model lifecycle, a następnie pokazuje moment ich wystąpienia,
+wynik skumulowany oraz czasowy break-even przed podatkiem.
+
+To nie jest jeszcze pełny model przepływów pieniężnych. Obecna wersja nie
+uwzględnia miesięcznego payrollu ani kosztu niewykorzystanej obsady, terminów
+zapłaty podatku dochodowego, historycznych rozkładów przeżycia spraw ani
+rzeczywistych dat kalendarzowych.

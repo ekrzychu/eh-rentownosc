@@ -21,6 +21,7 @@ from model import (
     oblicz_udzialy_ugod,
     oblicz_wskazniki_ii_instancji,
 )
+from timeline import domyslne_parametry_czasowe, oblicz_model_czasowy
 
 
 st.set_page_config(page_title="Analiza rentowności", layout="wide")
@@ -538,8 +539,8 @@ st.bar_chart(pd.DataFrame({"Średni wynik przed podatkiem": [wyniki["wps_niski"]
 st.divider()
 st.header("Centrum rentowności i decyzji")
 st.caption("Analiza wpływu parametrów, granic rentowności i możliwości poprawy wyniku.")
-tab_prog, tab_wrazliwosc, tab_ugody, tab_portfel, tab_symulator, tab_rekomendacje = st.tabs([
-    "Próg i bufor", "Wrażliwość", "Ugody", "Portfel i pojemność", "Symulator", "Rekomendacje",
+tab_prog, tab_wrazliwosc, tab_ugody, tab_portfel, tab_symulator, tab_rekomendacje, tab_czas = st.tabs([
+    "Próg i bufor", "Wrażliwość", "Ugody", "Portfel i pojemność", "Symulator", "Rekomendacje", "W czasie",
 ])
 
 with tab_prog:
@@ -947,3 +948,184 @@ with tab_rekomendacje:
             st.write(f"**{pozycja['parametr']}**: granica {formatuj_parametr(pozycja['granica'], pozycja['jednostka'])}, zmiana {formatuj_zmiane(pozycja['zmiana'], pozycja['jednostka'])}")
     else:
         st.write("Brak pojedynczych zmian dla wybranego celu marży w badanym zakresie.")
+
+with tab_czas:
+    st.subheader("Kiedy zaczniemy zarabiać?")
+    st.caption(
+        "Model czasowy rozkłada obecną ekonomię portfela na miesiące. "
+        "Nie zmienia łącznego przychodu ani kosztu lifecycle. W tej wersji nie "
+        "modeluje miesięcznego payrollu ani momentu zapłaty podatku dochodowego."
+    )
+
+    czas_domyslny = domyslne_parametry_czasowe()
+    with st.expander("Założenia modelu czasowego", expanded=True):
+        tryb_naplywu_etykieta = st.radio(
+            "Sposób napływu spraw",
+            ("Równomiernie", "Wszystkie na początku"),
+            horizontal=True,
+            help=(
+                "Miesiąc 0 oznacza moment przejęcia sprawy do obsługi przez "
+                "kancelarię, a nie formalną datę wniesienia pozwu."
+            ),
+        )
+        okres_naplywu_miesiace = czas_domyslny["okres_naplywu_miesiace"]
+        if tryb_naplywu_etykieta == "Równomiernie":
+            okres_naplywu_miesiace = st.number_input(
+                "Okres napływu spraw (miesiące)",
+                min_value=1,
+                max_value=60,
+                value=czas_domyslny["okres_naplywu_miesiace"],
+                step=1,
+                help="Portfel jest dzielony na równe oczekiwane kohorty miesięczne.",
+            )
+        czas_1, czas_2, czas_3 = st.columns(3)
+        with czas_1:
+            miesiace_do_ugody = st.number_input(
+                "Od wpływu sprawy do ugody (miesiące)",
+                min_value=0,
+                max_value=120,
+                value=czas_domyslny["miesiace_do_ugody"],
+                step=1,
+                help="Oczekiwany miesiąc zakończenia sprawy ugodą.",
+            )
+        with czas_2:
+            miesiace_do_wyroku_i = st.number_input(
+                "Od wpływu sprawy do wyroku I instancji (miesiące)",
+                min_value=0,
+                max_value=120,
+                value=czas_domyslny["miesiace_do_wyroku_i"],
+                step=1,
+                help="Okres aktywnej obsługi procesu w I instancji.",
+            )
+        with czas_3:
+            miesiace_wyrok_i_do_ii = st.number_input(
+                "Od wyroku I do wyroku II instancji (miesiące)",
+                min_value=0,
+                max_value=120,
+                value=czas_domyslny["miesiace_wyrok_i_do_ii"],
+                step=1,
+                help="Dotyczy oczekiwanego odsetka spraw przechodzących do II instancji.",
+            )
+        czas_4, czas_5 = st.columns(2)
+        with czas_4:
+            opoznienie_platnosci_miesiace = st.number_input(
+                "Opóźnienie płatności klienta (miesiące)",
+                min_value=0,
+                max_value=120,
+                value=czas_domyslny["opoznienie_platnosci_miesiace"],
+                step=1,
+                help="Przesuwa przychód po zakończeniu sprawy, bez zmiany jego kwoty.",
+            )
+        with czas_5:
+            horyzont_miesiace = st.number_input(
+                "Horyzont analizy (miesiące)",
+                min_value=6,
+                max_value=120,
+                value=czas_domyslny["horyzont_miesiace"],
+                step=1,
+                help="Zakres widocznej tabeli i wykresów; pełny cykl nadal jest uzgadniany.",
+            )
+
+    parametry_czasowe = {
+        "tryb_naplywu": tryb_naplywu_etykieta,
+        "okres_naplywu_miesiace": int(okres_naplywu_miesiace),
+        "miesiace_do_ugody": int(miesiace_do_ugody),
+        "miesiace_do_wyroku_i": int(miesiace_do_wyroku_i),
+        "miesiace_wyrok_i_do_ii": int(miesiace_wyrok_i_do_ii),
+        "opoznienie_platnosci_miesiace": int(opoznienie_platnosci_miesiace),
+        "horyzont_miesiace": int(horyzont_miesiace),
+    }
+    czasowy = oblicz_model_czasowy(parametry, parametry_czasowe)
+    kpi_czas = czasowy["kpi"]
+
+    czas_kpi_1, czas_kpi_2, czas_kpi_3 = st.columns(3)
+    czas_kpi_1.metric(
+        "Break-even skumulowany", kpi_czas["break_even_skumulowany"]
+    )
+    czas_kpi_2.metric(
+        "Pierwszy miesiąc dodatniego wyniku miesięcznego",
+        (
+            f"Miesiąc {kpi_czas['pierwszy_dodatni_miesiac']}"
+            if kpi_czas["pierwszy_dodatni_miesiac"] is not None
+            else "Nie osiągnięto w horyzoncie"
+        ),
+    )
+    czas_kpi_3.metric(
+        "Najgłębszy deficyt skumulowany",
+        kwota(kpi_czas["najglebszy_deficyt_skumulowany"]),
+        f"miesiąc {kpi_czas['miesiac_najglebszego_deficytu']}",
+    )
+    czas_kpi_4, czas_kpi_5 = st.columns(2)
+    czas_kpi_4.metric(
+        "Wynik skumulowany na końcu horyzontu",
+        kwota(kpi_czas["wynik_skumulowany_na_koniec_horyzontu"]),
+    )
+    czas_kpi_5.metric(
+        "Udział przychodu lifecycle zrealizowany w horyzoncie",
+        procent(kpi_czas["udzial_przychodu_lifecycle_w_horyzoncie"]),
+    )
+    st.caption(
+        "Najgłębszy deficyt jest modelowanym wynikiem ekonomicznym, a nie "
+        "rzeczywistym zapotrzebowaniem na finansowanie. Payroll i termin zapłaty "
+        "podatku nie są tu uwzględnione."
+    )
+    st.caption(
+        "Podatek dochodowy nie jest w tej wersji rozkładany w czasie. "
+        "Próg czasowy dotyczy wyniku ekonomicznego przed podatkiem."
+    )
+
+    if not czasowy["podsumowanie"]["pelny_cykl_w_horyzoncie"]:
+        st.warning("Horyzont nie obejmuje pełnego cyklu portfela.")
+        st.caption(
+            f"Po horyzoncie pozostaje {kwota(czasowy['podsumowanie']['pozostaly_przychod'])} "
+            f"przychodu i {kwota(czasowy['podsumowanie']['pozostaly_koszt'])} kosztu."
+        )
+
+    tabela_czasowa = pd.DataFrame(czasowy["tabela_miesieczna"])
+    st.subheader("Przychód, koszt i wynik miesięczny")
+    st.line_chart(
+        tabela_czasowa.set_index("Miesiąc")[
+            ["Przychód razem", "Koszt", "Wynik miesięczny"]
+        ],
+        height=340,
+    )
+    st.subheader("Skumulowany wynik przed podatkiem")
+    wykres_skumulowany = tabela_czasowa.set_index("Miesiąc")[["Wynik skumulowany"]].copy()
+    wykres_skumulowany["Poziom zero"] = 0.0
+    st.line_chart(wykres_skumulowany, height=340)
+
+    with st.expander("Szczegółowa tabela miesięczna"):
+        kolumny_tabeli = [
+            "Miesiąc",
+            "Nowe sprawy",
+            "Ugody",
+            "Zakończenia po I instancji",
+            "Zakończenia po II instancji",
+            "Przychód z ugód",
+            "Przychód z wyroków",
+            "Przychód razem",
+            "Bezpośrednie godziny pracy",
+            "Godziny czynności dziennych",
+            "Koszt",
+            "Wynik miesięczny",
+            "Wynik skumulowany",
+        ]
+        st.dataframe(
+            tabela_czasowa[kolumny_tabeli],
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Nowe sprawy": st.column_config.NumberColumn(format="%.2f"),
+                "Ugody": st.column_config.NumberColumn(format="%.2f"),
+                "Zakończenia po I instancji": st.column_config.NumberColumn(format="%.2f"),
+                "Zakończenia po II instancji": st.column_config.NumberColumn(format="%.2f"),
+                "Przychód z ugód": st.column_config.NumberColumn(format="%.2f zł"),
+                "Przychód z wyroków": st.column_config.NumberColumn(format="%.2f zł"),
+                "Przychód razem": st.column_config.NumberColumn(format="%.2f zł"),
+                "Bezpośrednie godziny pracy": st.column_config.NumberColumn(format="%.2f h"),
+                "Godziny czynności dziennych": st.column_config.NumberColumn(format="%.2f h"),
+                "Koszt": st.column_config.NumberColumn(format="%.2f zł"),
+                "Wynik miesięczny": st.column_config.NumberColumn(format="%.2f zł"),
+                "Wynik skumulowany": st.column_config.NumberColumn(format="%.2f zł"),
+            },
+        )
