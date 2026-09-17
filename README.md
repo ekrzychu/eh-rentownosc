@@ -187,19 +187,28 @@ Linux and macOS:
 Aplikacja pokazuje dwa powiązane, ale odrębne ujęcia ekonomiczne:
 
 - główny model cyklu życia wycenia pełną ekonomię referencyjnej rocznej
-  kohorty spraw: przychód, pracę zużytą przez sprawy, koszt i wynik całego
-  cyklu;
+  kohorty spraw jako koszt zużytego zasobu pracowników oraz jeden roczny koszt
+  stały całej operacji;
 - sekcja **W czasie** symuluje ciągłe działanie firmy przy stałym napływie.
   Wartość „Roczny napływ spraw” jest dzielona przez 12 i taka oczekiwana
   kohorta pojawia się w każdym miesiącu horyzontu.
 
-Model czasowy nalicza co miesiąc pełny koszt dostarczonej obsady. Liczba
-pracowników wyznacza pojemność brutto, a czynności dzienne zużywają jej część
-bez tworzenia drugiego kosztu. Bezpośrednia praca nad sprawami trafia do kolejki
+Stawka `koszt_staly_na_godzine` oznacza koszt całej operacji w godzinie jej
+działania. Nie jest kosztem pracownika ani kosztem godziny pracy nad sprawą.
+Rocznie jest naliczana raz jako `stawka × dni pracy × 8 godzin`, także przy
+zerowym napływie lub zerowej obsadzie. Koszt pracy kohorty to wymagane godziny
+zasobu pracowników pomnożone wyłącznie przez stawkę wynagrodzenia. Przy
+dodatnim napływie koszt stały jest rozdzielany równo na sprawy tylko na potrzeby
+raportowania segmentów; nie staje się przez to kosztem zależnym od aktywności.
+
+Model czasowy nalicza w każdym miesiącu jeden koszt stały operacji oraz payroll
+utrzymywanej obsady. Liczba pracowników mnoży wyłącznie płatne godziny
+pracowników, nigdy koszt stały. Czynności dzienne zużywają część pojemności bez
+tworzenia drugiego kosztu. Bezpośrednia praca nad sprawami trafia do kolejki
 FIFO. Jeżeli pojemność jest za mała, backlog narasta, zakończenia spraw się
-opóźniają, a przychód czeka na wykonanie wymaganej pracy. Niewykorzystana
-pojemność jest pokazywana zarządczo, ale jej koszt nadal pozostaje częścią
-pełnego kosztu zespołu.
+opóźniają, a przychód czeka na wykonanie wymaganej pracy. Koszt
+niewykorzystanej pojemności oznacza wyłącznie płatny, niewykorzystany czas
+pracowników i jest wyceniany stawką wynagrodzenia.
 
 Oba widoki stosują tę samą fizyczną definicję dnia pracy: pracownik ma 480
 płatnych minut, w których mieszczą się zarówno czynności dzienne, jak i praca
@@ -212,13 +221,17 @@ koszt faktycznie utrzymywanej obsady, także jej niewykorzystanego czasu.
 Widok **W czasie** rozdziela nową pracę przypadającą na miesiąc, pracę już
 oczekującą, pracę wykonaną oraz backlog na koniec. Osobno pokazuje deficyt
 rozruchowy, koszt niewykorzystanej pojemności i strukturalny niedobór obsady.
-Dlatego dodatnia marża kohorty lifecycle może współistnieć ze stratą czasową,
-jeśli zespół jest nadmiarowy, albo z rosnącym backlogiem, jeśli jest za mały.
+Dlatego dodatnia marża kohorty lifecycle może współistnieć ze stratą czasową:
+kohorta zużywa tylko potrzebny zasób, natomiast najmniejsza wykonalna całkowita
+obsada może dostarczać więcej płatnych godzin niż potrzeba. Różnica rocznych
+kosztów modeli jest wtedy równa niewykorzystanym godzinom pracowników razy ich
+stawka. Zbyt mała obsada powoduje z kolei rosnący backlog i opóźnienie przychodu.
 
-Break-even skumulowany oznacza pierwszy miesiąc po początkowym deficycie, w
-którym skumulowany wynik przed podatkiem wraca do co najmniej zera. Przecięcie
-nie jest oznaczane jako trwałe, jeżeli pojemność jest niewystarczająca albo
-dojrzały wynik miesięczny pozostaje ujemny.
+Główny KPI break-even pokazuje wyłącznie trwały break-even: wynik skumulowany
+wrócił do co najmniej zera, nie spadł później pod zero, pojemność jest wykonalna,
+a dojrzały wynik miesięczny jest dodatni. Pierwsze surowe przecięcie zera jest
+osobną diagnostyką i może być nietrwałe. Status „Na granicy” jest wykonalny,
+ale oznacza brak bufora pojemności.
 
 Obecna wersja nie modeluje terminów płatności podatku, podwyżek wynagrodzeń i
 inflacji, sezonowości napływu, rzeczywistych historycznych rozkładów czasu,

@@ -39,7 +39,8 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertTrue(prog["osiagalne"])
         na_granicy = oblicz_model(ustaw_parametr(self.parametry, identyfikator, prog["granica"]))
         self.assertTrue(spelnia_cel(na_granicy, cel))
-        krok = 0.01 if prog["zmiana"] > 0 else -0.01
+        rozmiar_kroku = 0.1 if identyfikator == "wysoki_wps_procent" else 0.01
+        krok = rozmiar_kroku if prog["zmiana"] > 0 else -rozmiar_kroku
         poza = oblicz_model(ustaw_parametr(self.parametry, identyfikator, prog["granica"] + krok))
         self.assertFalse(spelnia_cel(poza, cel))
         return prog
@@ -47,7 +48,7 @@ class TestSilnikProgow(unittest.TestCase):
     def test_bufor_kosztu_czynnosci_i_wysokiego_wps(self):
         for identyfikator in ("koszt_staly", "procesowe:Duplika", "wysoki_wps_procent"):
             with self.subTest(identyfikator=identyfikator):
-                self.sprawdz_granice(identyfikator)
+                self.sprawdz_granice(identyfikator, 40.0)
 
     def test_pelne_progi_zawieraja_kwoty_zakonczenia_i_podatek(self):
         identyfikatory = {x["id"] for x in analizuj_progi(self.parametry, 40.0)["pozycje"]}
@@ -68,16 +69,16 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertFalse(oblicz_model(wykonalny)["pojemnosc"]["przekroczona"])
 
         for parametry in (przeciazony, wykonalny):
-            definicja_kwoty_ugody = {
+            definicja_kosztu_stalego = {
                 d["id"]: d for d in definicje_parametrow(parametry)
-            }["srednia_kwota_ugody"]
-            prog = znajdz_granice(parametry, definicja_kwoty_ugody, 40.0)
+            }["koszt_staly"]
+            prog = znajdz_granice(parametry, definicja_kosztu_stalego, 40.0)
             self.assertTrue(prog["osiagalne"])
             na_granicy = oblicz_model(
-                ustaw_parametr(parametry, "srednia_kwota_ugody", prog["granica"])
+                ustaw_parametr(parametry, "koszt_staly", prog["granica"])
             )
             self.assertTrue(spelnia_cel(na_granicy, 40.0))
-            self.assertAlmostEqual(na_granicy["ogolem"]["marza"], 40.0, places=6)
+            self.assertAlmostEqual(na_granicy["ogolem"]["marza_po_podatku"], 40.0, places=6)
 
     def test_ranking_progow_nie_filtruje_przekroczonej_pojemnosci(self):
         self.assertTrue(oblicz_model(self.parametry)["pojemnosc"]["przekroczona"])
@@ -87,7 +88,7 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertTrue(all("wykonalne_operacyjnie" not in x for x in ranking))
 
     def test_najkrotsze_drogi_do_celu_sa_tylko_sterowalne(self):
-        parametry = {**self.parametry, "koszt_staly_na_godzine": 250.0}
+        parametry = {**self.parametry, "koszt_staly_na_godzine": 700.0}
         ranking = ranking_progow(
             analizuj_progi(parametry, 0.0),
             "wymagana_zmiana",
@@ -98,7 +99,7 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertTrue(all(czy_parametr_sterowalny(x["id"]) for x in ranking))
 
     def test_scenariusz_nierentowny_i_zmiana_niewystarczajaca(self):
-        parametry = {**self.parametry, "koszt_staly_na_godzine": 250.0}
+        parametry = {**self.parametry, "koszt_staly_na_godzine": 700.0}
         definicje = {d["id"]: d for d in definicje_parametrow(parametry)}
         prog = znajdz_granice(parametry, definicje["koszt_staly"], 0.0)
         self.assertEqual(prog["typ"], "wymagana_zmiana")
@@ -130,9 +131,9 @@ class TestSilnikProgow(unittest.TestCase):
                         ustaw_parametr(self.parametry, identyfikator, prog["granica"])
                     )
                     if cel == 0:
-                        self.assertAlmostEqual(na_granicy["ogolem"]["wynik"], 0.0, places=5)
+                        self.assertAlmostEqual(na_granicy["ogolem"]["wynik_po_podatku"], 0.0, places=5)
                     else:
-                        self.assertAlmostEqual(na_granicy["ogolem"]["marza"], cel, places=6)
+                        self.assertAlmostEqual(na_granicy["ogolem"]["marza_po_podatku"], cel, places=6)
 
     def test_podsumowanie_i_tabela_maja_te_same_progi(self):
         for cel in (0.0, 10.0, 20.0):
@@ -259,17 +260,17 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
     def test_wartosc_minuty_zgadza_sie_z_modelem(self):
         parametry = domyslne_parametry()
         analiza = {x["Czynność"]: x for x in wartosc_skrocenia_czynnosci(parametry)}
-        bazowy = oblicz_model(parametry)["ogolem"]["wynik"]
-        zmieniony = oblicz_model(ustaw_parametr(parametry, "procesowe:Duplika", parametry["procesowe_czynnosci"]["Duplika"] - 1))["ogolem"]["wynik"]
+        bazowy = oblicz_model(parametry)["ogolem"]["wynik_po_podatku"]
+        zmieniony = oblicz_model(ustaw_parametr(parametry, "procesowe:Duplika", parametry["procesowe_czynnosci"]["Duplika"] - 1))["ogolem"]["wynik_po_podatku"]
         self.assertAlmostEqual(analiza["Duplika"]["Wpływ skrócenia o 1 min"], zmieniony - bazowy)
 
     def test_wartosc_minuty_ii_instancji_jest_wazona_modelem(self):
         parametry = domyslne_parametry()
         analiza = {x["Czynność"]: x for x in wartosc_skrocenia_czynnosci(parametry)}
-        bazowy = oblicz_model(parametry)["ogolem"]["wynik"]
+        bazowy = oblicz_model(parametry)["ogolem"]["wynik_po_podatku"]
         zmieniony = oblicz_model(ustaw_parametr(
             parametry, "czas_ii_instancji", parametry["obsluga_ii_instancji_minuty"] - 1
-        ))["ogolem"]["wynik"]
+        ))["ogolem"]["wynik_po_podatku"]
         self.assertAlmostEqual(
             analiza["Obsługa sprawy w II instancji"]["Wpływ skrócenia o 1 min"],
             zmieniony - bazowy,
@@ -313,11 +314,11 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
             ))
             self.assertAlmostEqual(
                 pozycja[wynik_klucz],
-                scenariusz["ogolem"]["wynik"] - bazowy["ogolem"]["wynik"],
+                scenariusz["ogolem"]["wynik_po_podatku"] - bazowy["ogolem"]["wynik_po_podatku"],
             )
             self.assertAlmostEqual(
                 pozycja[marza_klucz],
-                scenariusz["ogolem"]["marza"] - bazowy["ogolem"]["marza"],
+                scenariusz["ogolem"]["marza_po_podatku"] - bazowy["ogolem"]["marza_po_podatku"],
             )
 
     def test_procent_ugod_jest_zmieniany_wzglednie(self):
@@ -373,7 +374,7 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             oczekiwana_roznica_pln = (
                 oczekiwana_roznica_minut
                 / 60
-                * model["koszt_godziny"]
+                * parametry["wynagrodzenie_pracownika_na_godzine"]
                 * 480
                 / (480 - sum(parametry["codzienne_czynnosci"].values()))
             )
@@ -422,7 +423,7 @@ class TestUgodyIPojemnosc(unittest.TestCase):
         bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))
         na_granicy = oblicz_model(ustaw_parametr(parametry, "zawarte_ugody", prog))
         self.assertAlmostEqual(
-            na_granicy["ogolem"]["wynik"], bez_prob["ogolem"]["wynik"], places=6
+            na_granicy["ogolem"]["wynik_po_podatku"], bez_prob["ogolem"]["wynik_po_podatku"], places=6
         )
 
     def test_ii_instancja_zwieksza_ekonomiczna_wartosc_ugod(self):
@@ -449,13 +450,27 @@ class TestUgodyIPojemnosc(unittest.TestCase):
     def test_brak_pojemnosci_nie_jest_raportowany_jako_zero_spraw(self):
         parametry = domyslne_parametry()
         parametry["codzienne_czynnosci"] = {"Czynności dzienne": 600}
-        with self.assertRaisesRegex(ValueError, "zużywają cały dzień pracy"):
+        with self.assertRaisesRegex(ValueError, "pozostawiać czas"):
             maksymalna_liczba_spraw(parametry)
-        with self.assertRaisesRegex(ValueError, "zużywają cały dzień pracy"):
+        with self.assertRaisesRegex(ValueError, "pozostawiać czas"):
             analiza_pojemnosci(parametry)
 
     def test_analiza_pojemnosci_ma_szesc_segmentow(self):
         self.assertEqual(len(analiza_pojemnosci(domyslne_parametry())["segmenty"]), 6)
+
+    def test_rentowny_wolumen_jest_dokladnie_sprawdzany_dla_alokacji_dyskretnej(self):
+        parametry = domyslne_parametry()
+        analiza = analiza_pojemnosci(parametry)
+        rentowne = []
+        for naplyw in range(analiza["maksymalne_sprawy"] + 1):
+            wynik = oblicz_model({**parametry, "liczba_spraw": naplyw})
+            if (
+                not wynik["pojemnosc"]["przekroczona"]
+                and wynik["ogolem"]["wynik_po_podatku"] >= -1e-7
+            ):
+                rentowne.append(naplyw)
+        self.assertEqual(analiza["minimalny_rentowny_wolumen"], min(rentowne))
+        self.assertEqual(analiza["maksymalny_rentowny_wolumen"], max(rentowne))
 
     def test_ii_instancja_zmniejsza_maksymalna_pojemnosc(self):
         parametry = domyslne_parametry()

@@ -32,6 +32,19 @@ class TestAlokacjaSpraw(unittest.TestCase):
         self.assertEqual(podzial["P2"], {"wysoki_wps": 278, "niski_wps": 70})
         self.assertEqual(podzial["P3"], {"wysoki_wps": 82, "niski_wps": 20})
 
+    def test_globalny_cel_wysokiego_wps_jest_zachowany(self):
+        podzial = oblicz_podzial_spraw(600, {"P1": 25, "P2": 58, "P3": 17}, 79)
+        self.assertEqual(sum(x["wysoki_wps"] for x in podzial.values()), 474)
+        self.assertEqual(sum(sum(x.values()) for x in podzial.values()), 600)
+        self.assertEqual(
+            podzial,
+            {
+                "P1": {"wysoki_wps": 118, "niski_wps": 32},
+                "P2": {"wysoki_wps": 275, "niski_wps": 73},
+                "P3": {"wysoki_wps": 81, "niski_wps": 21},
+            },
+        )
+
     def test_niewygodna_liczba_spraw_sumuje_sie_poprawnie(self):
         alokacja = alokuj_liczby_z_procentow(601, {"P1": 25, "P2": 58, "P3": 17})
         self.assertEqual(sum(alokacja.values()), 601)
@@ -167,8 +180,8 @@ class TestDrugaInstancja(unittest.TestCase):
             parametry = {**self.parametry, "udzial_ii_instancji_percent": udzial}
             warianty.append(oblicz_model(parametry))
         self.assertEqual(len({wynik["ogolem"]["przychod"] for wynik in warianty}), 1)
-        self.assertLess(warianty[0]["ogolem"]["koszt"], warianty[1]["ogolem"]["koszt"])
-        self.assertLess(warianty[1]["ogolem"]["koszt"], warianty[2]["ogolem"]["koszt"])
+        self.assertLess(warianty[0]["ogolem"]["koszt_calkowity"], warianty[1]["ogolem"]["koszt_calkowity"])
+        self.assertLess(warianty[1]["ogolem"]["koszt_calkowity"], warianty[2]["ogolem"]["koszt_calkowity"])
         self.assertLess(warianty[0]["bezposrednie_minuty_spraw"], warianty[2]["bezposrednie_minuty_spraw"])
         self.assertLess(
             warianty[0]["pojemnosc"]["bezposrednie_minuty_spraw"],
@@ -179,20 +192,27 @@ class TestDrugaInstancja(unittest.TestCase):
         bez_czasu = oblicz_model({**self.parametry, "obsluga_ii_instancji_minuty": 0})
         dlugi_czas = oblicz_model({**self.parametry, "obsluga_ii_instancji_minuty": 360})
         self.assertEqual(bez_czasu["ogolem"]["przychod"], dlugi_czas["ogolem"]["przychod"])
-        self.assertGreater(dlugi_czas["ogolem"]["koszt"], bez_czasu["ogolem"]["koszt"])
-        self.assertLess(dlugi_czas["ogolem"]["wynik"], bez_czasu["ogolem"]["wynik"])
-        self.assertLess(dlugi_czas["ogolem"]["marza"], bez_czasu["ogolem"]["marza"])
+        self.assertGreater(dlugi_czas["ogolem"]["koszt_calkowity"], bez_czasu["ogolem"]["koszt_calkowity"])
+        self.assertLess(dlugi_czas["ogolem"]["wynik_po_podatku"], bez_czasu["ogolem"]["wynik_po_podatku"])
+        self.assertLess(dlugi_czas["ogolem"]["marza_po_podatku"], bez_czasu["ogolem"]["marza_po_podatku"])
         self.assertGreater(dlugi_czas["bezposrednie_minuty_spraw"], bez_czasu["bezposrednie_minuty_spraw"])
 
     def test_koszt_ii_instancji_uzgadnia_sie_z_grupami_i_portfelem(self):
         bez_ii = oblicz_model({**self.parametry, "udzial_ii_instancji_percent": 0.0})
         roznica_minut = self.wyniki["bezposrednie_minuty_spraw"] - bez_ii["bezposrednie_minuty_spraw"]
-        roznica_kosztu = self.wyniki["ogolem"]["koszt"] - bez_ii["ogolem"]["koszt"]
+        roznica_kosztu = self.wyniki["ogolem"]["koszt_calkowity"] - bez_ii["ogolem"]["koszt_calkowity"]
         self.assertAlmostEqual(roznica_minut, self.wyniki["ii_instancja_minuty_lacznie"])
-        self.assertGreater(roznica_kosztu, roznica_minut / 60 * self.wyniki["koszt_godziny"])
         self.assertAlmostEqual(
-            sum(grupa["laczny_koszt"] for grupa in self.wyniki["grupy"]),
-            self.wyniki["ogolem"]["koszt"],
+            roznica_kosztu,
+            roznica_minut
+            / 60
+            * 480
+            / (480 - sum(self.parametry["codzienne_czynnosci"].values()))
+            * self.parametry["wynagrodzenie_pracownika_na_godzine"],
+        )
+        self.assertAlmostEqual(
+            sum(grupa["laczny_koszt_calkowity"] for grupa in self.wyniki["grupy"]),
+            self.wyniki["ogolem"]["koszt_calkowity"],
         )
 
     def test_przypadki_brzezne(self):
@@ -241,31 +261,36 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
         )
         self.assertAlmostEqual(ulamkowe["ekwiwalent_osobodni_kohorty"], 1604 / 6.5)
 
-    def test_ekonomia_kohorty_nie_zalezy_od_obsady_ani_dni_pracy(self):
-        porownywane = [
+    def test_ekonomia_kohorty_nie_zalezy_od_obsady_a_dni_zmieniaja_tylko_staly_koszt(self):
+        rozne_obsady = [
             oblicz_model({
                 **domyslne_parametry(),
                 "liczba_pracownikow": pracownicy,
-                "liczba_dni_pracy_w_roku": dni,
             })
-            for pracownicy, dni in ((1, 150), (2, 251), (4, 350))
+            for pracownicy in (1, 2, 5, 200)
         ]
         for klucz in (
-            "przychod", "koszt", "wynik", "marza",
+            "przychod", "koszt_calkowity", "wynik_po_podatku", "marza_po_podatku",
         ):
             self.assertTrue(all(
-                wynik["ogolem"][klucz] == porownywane[0]["ogolem"][klucz]
-                for wynik in porownywane
+                wynik["ogolem"][klucz] == rozne_obsady[0]["ogolem"][klucz]
+                for wynik in rozne_obsady
             ))
+        rozne_dni = [
+            oblicz_model({**domyslne_parametry(), "liczba_dni_pracy_w_roku": dni})
+            for dni in (150, 251, 350)
+        ]
         for klucz in (
             "bezposrednie_minuty_spraw",
             "ekwiwalent_osobodni_kohorty",
             "czynnosci_dzienne_lifecycle_minuty",
+            "koszt_pracy_pracownika_lifecycle",
         ):
-            self.assertTrue(all(wynik[klucz] == porownywane[0][klucz] for wynik in porownywane))
+            self.assertTrue(all(wynik[klucz] == rozne_dni[0][klucz] for wynik in rozne_dni))
+        self.assertEqual([x["koszt_staly_roczny"] for x in rozne_dni], [43_200, 72_288, 100_800])
         self.assertNotEqual(
-            porownywane[0]["pojemnosc"]["pojemnosc_brutto_minuty"],
-            porownywane[-1]["pojemnosc"]["pojemnosc_brutto_minuty"],
+            rozne_dni[0]["pojemnosc"]["pojemnosc_brutto_minuty"],
+            rozne_dni[-1]["pojemnosc"]["pojemnosc_brutto_minuty"],
         )
 
     def test_zmiana_czynnosci_dziennej_ma_dokladny_koszt_lifecycle(self):
@@ -287,8 +312,10 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
             oczekiwane_minuty,
         )
         self.assertAlmostEqual(
-            po_zmianie["ogolem"]["koszt"] - bazowy["ogolem"]["koszt"],
-            oczekiwane_minuty / 60 * bazowy["koszt_godziny"],
+            po_zmianie["ogolem"]["koszt_calkowity"] - bazowy["ogolem"]["koszt_calkowity"],
+            oczekiwane_minuty
+            / 60
+            * parametry["wynagrodzenie_pracownika_na_godzine"],
         )
 
     def test_skrocenie_czasu_bezposredniego_oszczedza_tez_narzut_lifecycle(self):
@@ -307,11 +334,15 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
             po_zmianie["czynnosci_dzienne_lifecycle_minuty"],
             bazowy["czynnosci_dzienne_lifecycle_minuty"],
         )
-        self.assertGreater(
-            bazowy["ogolem"]["koszt"] - po_zmianie["ogolem"]["koszt"],
+        self.assertAlmostEqual(
+            bazowy["ogolem"]["koszt_calkowity"] - po_zmianie["ogolem"]["koszt_calkowity"],
             (bazowy["bezposrednie_minuty_spraw"] - po_zmianie["bezposrednie_minuty_spraw"])
-            / 60 * bazowy["koszt_godziny"],
+            / 60
+            * 480
+            / 390
+            * parametry["wynagrodzenie_pracownika_na_godzine"],
         )
+        self.assertEqual(po_zmianie["koszt_staly_roczny"], bazowy["koszt_staly_roczny"])
 
     def test_domyslna_pojemnosc_wynika_z_aktualnych_parametrow(self):
         parametry = domyslne_parametry()
@@ -384,7 +415,7 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
     def test_brak_czasu_na_sprawy_jest_wykrywany(self):
         parametry = domyslne_parametry()
         parametry["codzienne_czynnosci"] = {"Czynności dzienne": MINUTY_DNIA_PRACY}
-        with self.assertRaisesRegex(ValueError, "zużywają cały dzień pracy"):
+        with self.assertRaisesRegex(ValueError, "pozostawiać czas"):
             oblicz_model(parametry)
 
     def test_lifecycle_i_pojemnosc_uzywaja_tego_samego_dnia_480_minut(self):
@@ -435,7 +466,31 @@ class TestModelFinansowy(unittest.TestCase):
         self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 239.625)
         self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 233_955)
         self.assertAlmostEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 53_989.61538461538)
-        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 460_135.49538461544)
+        self.assertAlmostEqual(wynik["koszt_staly_roczny"], 72_288.0)
+        self.assertAlmostEqual(wynik["koszt_pracy_pracownika_lifecycle"], 287_368.72615384613)
+        self.assertAlmostEqual(wynik["ogolem"]["koszt_calkowity"], 359_656.7261538462)
+        self.assertAlmostEqual(
+            wynik["koszt_staly_roczny"],
+            domyslne_parametry()["koszt_staly_na_godzine"] * 251 * 8,
+        )
+
+    def test_czas_sprawy_nie_zmienia_kosztu_stalego(self):
+        parametry = domyslne_parametry()
+        bazowy = oblicz_model(parametry)
+        zmienione = oblicz_model(
+            {
+                **parametry,
+                "procesowe_czynnosci": {
+                    **parametry["procesowe_czynnosci"],
+                    "Duplika": 0,
+                },
+            }
+        )
+        self.assertEqual(bazowy["koszt_staly_roczny"], zmienione["koszt_staly_roczny"])
+        self.assertLess(
+            zmienione["koszt_pracy_pracownika_lifecycle"],
+            bazowy["koszt_pracy_pracownika_lifecycle"],
+        )
 
     def test_przychod_wedlug_zakonczenia_i_grup_uzgadnia_sie(self):
         wynik = oblicz_model()
@@ -500,7 +555,7 @@ class TestModelFinansowy(unittest.TestCase):
             oczekiwana_zmiana_przychodu,
         )
         self.assertLess(wyzsza["bezposrednie_minuty_spraw"], nizsza["bezposrednie_minuty_spraw"])
-        self.assertLess(wyzsza["ogolem"]["koszt"], nizsza["ogolem"]["koszt"])
+        self.assertLess(wyzsza["ogolem"]["koszt_calkowity"], nizsza["ogolem"]["koszt_calkowity"])
 
     def test_rowne_kwoty_koncowe_uniezalezniaja_przychod_od_ugod(self):
         parametry = {
@@ -534,19 +589,48 @@ class TestModelFinansowy(unittest.TestCase):
     def test_koszty_grup_uzgadniaja_sie_z_portfelem(self):
         wynik = oblicz_model()
         self.assertAlmostEqual(
-            sum(dane["koszt"] for dane in wynik["rodzaje"].values()),
-            wynik["ogolem"]["koszt"],
+            sum(dane["koszt_calkowity"] for dane in wynik["rodzaje"].values()),
+            wynik["ogolem"]["koszt_calkowity"],
         )
         self.assertAlmostEqual(
-            wynik["wps_niski"]["koszt"] + wynik["wps_wysoki"]["koszt"],
-            wynik["ogolem"]["koszt"],
+            wynik["wps_niski"]["koszt_calkowity"] + wynik["wps_wysoki"]["koszt_calkowity"],
+            wynik["ogolem"]["koszt_calkowity"],
         )
+        self.assertAlmostEqual(
+            sum(grupa["laczny_koszt_pracy_pracownika"] for grupa in wynik["grupy"]),
+            wynik["koszt_pracy_pracownika_lifecycle"],
+        )
+        self.assertAlmostEqual(
+            sum(grupa["laczny_alokowany_koszt_staly"] for grupa in wynik["grupy"]),
+            wynik["koszt_staly_roczny"],
+        )
+        p1 = next(g for g in wynik["grupy"] if g["rodzaj"] == "P1")
+        p3 = next(g for g in wynik["grupy"] if g["rodzaj"] == "P3")
+        self.assertLess(p1["koszt_pracy_pracownika"], p3["koszt_pracy_pracownika"])
+        self.assertEqual(p1["alokowany_koszt_staly"], p3["alokowany_koszt_staly"])
 
     def test_zero_spraw_nie_powoduje_dzielenia_przez_zero(self):
         wynik = oblicz_model({**domyslne_parametry(), "liczba_spraw": 0})
         self.assertEqual(wynik["narzut_dzienny_na_sprawe"], 0.0)
         self.assertEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 0.0)
-        self.assertEqual(wynik["ogolem"]["koszt"], 0.0)
+        self.assertEqual(wynik["koszt_pracy_pracownika_lifecycle"], 0.0)
+        self.assertEqual(wynik["ogolem"]["koszt_calkowity"], 72_288.0)
+        self.assertEqual(wynik["ogolem"]["wynik_przed_podatkiem"], -72_288.0)
+
+    def test_centralna_walidacja_odrzuca_niefizyczne_parametry(self):
+        przypadki = (
+            {"liczba_spraw": 1.5},
+            {"liczba_pracownikow": -1},
+            {"liczba_dni_pracy_w_roku": -1},
+            {"prog_wps": 0},
+            {"niski_wps": 10_000},
+            {"wysoki_wps": 9_999},
+            {"wysoki_wps_procent": 101},
+            {"koszt_staly_na_godzine": -1},
+        )
+        for zmiana in przypadki:
+            with self.subTest(zmiana=zmiana), self.assertRaises(ValueError):
+                oblicz_model({**domyslne_parametry(), **zmiana})
 
 
 class TestProgiRentownosci(unittest.TestCase):
@@ -576,14 +660,14 @@ class TestProgiRentownosci(unittest.TestCase):
             wynik_po["czynnosci_dzienne_lifecycle_minuty"],
             wynik_przed["czynnosci_dzienne_lifecycle_minuty"],
         )
-        self.assertAlmostEqual(wynik_po["ogolem"]["wynik"], 0, places=6)
+        self.assertAlmostEqual(wynik_po["ogolem"]["wynik_po_podatku"], 0, places=6)
 
     def test_progi_kosztow_uzywaja_wszystkich_godzin(self):
         parametry = domyslne_parametry()
         prog_staly = oblicz_prog_kosztu_stalego(parametry)
         self.assertTrue(prog_staly["mozliwe"])
         self.assertAlmostEqual(
-            oblicz_model({**parametry, "koszt_staly_na_godzine": prog_staly["prog"]})["ogolem"]["wynik"],
+            oblicz_model({**parametry, "koszt_staly_na_godzine": prog_staly["prog"]})["ogolem"]["wynik_po_podatku"],
             0,
             places=6,
         )
@@ -591,7 +675,7 @@ class TestProgiRentownosci(unittest.TestCase):
         prog_pracownik = oblicz_prog_wynagrodzenia_pracownika(parametry)
         self.assertTrue(prog_pracownik["mozliwe"])
         self.assertAlmostEqual(
-            oblicz_model({**parametry, "wynagrodzenie_pracownika_na_godzine": prog_pracownik["prog"]})["ogolem"]["wynik"],
+            oblicz_model({**parametry, "wynagrodzenie_pracownika_na_godzine": prog_pracownik["prog"]})["ogolem"]["wynik_po_podatku"],
             0,
             places=6,
         )

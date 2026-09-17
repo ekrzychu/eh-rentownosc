@@ -40,7 +40,7 @@ def _miesiac(value: int | None) -> str:
 
 
 def _break_even_value(kpi: dict, capacity: dict) -> tuple[str, str]:
-    if capacity["status_pojemnosci"] == "Niewystarczająca":
+    if "status_break_even" not in kpi and capacity["status_pojemnosci"] == "Niewystarczająca":
         return "Brak", "Brak trwałego break-even przy obecnej obsadzie."
     if kpi["break_even_status"] == "osiagniety":
         return f"Miesiąc {kpi['break_even_miesiac']}", kpi["status_break_even"]
@@ -101,11 +101,11 @@ def _cumulative_chart(table: pd.DataFrame, horizon: int, break_even: int | None)
 
 
 def _finance_chart(table: pd.DataFrame, horizon: int):
-    melted = table[["Miesiąc", "Przychód razem", "Koszt zespołu"]].melt(
+    melted = table[["Miesiąc", "Przychód razem", "Miesięczny koszt operacji"]].melt(
         "Miesiąc", var_name="Pozycja", value_name="Kwota"
     )
     melted["Pozycja"] = melted["Pozycja"].replace(
-        {"Przychód razem": "Przychód", "Koszt zespołu": "Koszt zespołu"}
+        {"Przychód razem": "Przychód", "Miesięczny koszt operacji": "Koszt operacji"}
     )
     return (
         alt.Chart(melted)
@@ -117,7 +117,7 @@ def _finance_chart(table: pd.DataFrame, horizon: int):
                 "Pozycja:N",
                 title=None,
                 scale=alt.Scale(
-                    domain=["Przychód", "Koszt zespołu"],
+                    domain=["Przychód", "Koszt operacji"],
                     range=["#16a34a", "#dc2626"],
                 ),
             ),
@@ -256,7 +256,7 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
         help=_kwota(kpi["wynik_skumulowany_na_koniec_horyzontu"]),
     )
     if kpi["wynik_nadal_narasta"]:
-        primary_top[1].caption("Deficyt nadal narasta.")
+        primary_top[1].caption("Skumulowany wynik ma trwały trend spadkowy.")
     primary_bottom = st.columns(2, gap="large", wrap=True)
     primary_bottom[0].metric(
         "Backlog",
@@ -264,11 +264,14 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
         help=f"Dokładnie {_liczba(summary['backlog_koniec_godziny'], 2)} h.",
     )
     primary_bottom[1].metric("Pojemność", capacity["status_pojemnosci"])
-    primary_bottom[1].caption(
-        f"{parametry['liczba_pracownikow']} os. → potrzeba min. {minimum_staff}"
-        if minimum_staff is not None
-        else "Brak możliwej stabilnej obsady przy tych założeniach."
-    )
+    if capacity["status_pojemnosci"] == "Na granicy":
+        primary_bottom[1].caption("Wykonalna operacyjnie, ale bez bufora pojemności.")
+    else:
+        primary_bottom[1].caption(
+            f"{parametry['liczba_pracownikow']} os. → potrzeba min. {minimum_staff}"
+            if minimum_staff is not None
+            else "Brak możliwej stabilnej obsady przy tych założeniach."
+        )
 
     loss_reasons = [
         "rozruch: koszt przed dojrzeniem przychodów"
@@ -338,9 +341,18 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             "Pojemność na sprawy",
             f"{_liczba(capacity['pojemnosc_na_sprawy_minuty'] / 60, 1)} h/mies.",
         )
-        st.metric(
-            "Miesięczny koszt zespołu",
-            _kwota(capacity["miesieczny_koszt_zespolu"]),
+        koszt_metrics = st.columns(3, wrap=True)
+        koszt_metrics[0].metric(
+            "Miesięczny koszt stały",
+            _kwota(capacity["miesieczny_koszt_staly"]),
+        )
+        koszt_metrics[1].metric(
+            "Miesięczny koszt pracowników",
+            _kwota(capacity["miesieczny_koszt_pracownikow"]),
+        )
+        koszt_metrics[2].metric(
+            "Miesięczny koszt operacji",
+            _kwota(capacity["miesieczny_koszt_operacji"]),
         )
 
     with st.expander("Szczegóły modelu", expanded=False):
@@ -362,6 +374,17 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             if kpi["najglebszy_deficyt_potwierdzony"]
             else "Historyczne minimum przypada na koniec horyzontu i nie jest "
             "skończonym maksymalnym zapotrzebowaniem na finansowanie."
+        )
+        przeciecie_nietrwale = (
+            " — nietrwałe"
+            if kpi["pierwsze_przeciecie_status"] == "osiagniety"
+            and kpi["break_even_status"] != "osiagniety"
+            else ""
+        )
+        st.write(
+            "Pierwsze surowe przecięcie zera wyniku skumulowanego: "
+            f"**{kpi['pierwsze_przeciecie_skumulowane']}{przeciecie_nietrwale}**. "
+            "Główny KPI pokazuje wyłącznie trwały break-even."
         )
         detail_2 = st.columns(3, wrap=True)
         detail_2[0].metric(
@@ -397,8 +420,12 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
                     "Wartość": _procent(diagnosis["marza_lifecycle_przed_podatkiem"]),
                 },
                 {
-                    "Pozycja": "Roczny przychód lifecycle",
-                    "Wartość": _kwota(diagnosis["roczny_przychod_lifecycle"]),
+                    "Pozycja": "Koszt lifecycle kohorty",
+                    "Wartość": _kwota(diagnosis["koszt_lifecycle_roczny"]),
+                },
+                {
+                    "Pozycja": "Roczny koszt utrzymywanej operacji",
+                    "Wartość": _kwota(diagnosis["koszt_operacji_czasowy_roczny"]),
                 },
                 {
                     "Pozycja": "Roczne wymagane godziny zasobu",
@@ -423,8 +450,9 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             )
 
     with st.expander("Szczegóły miesiąc po miesiącu", expanded=False):
+        tabela_do_wyswietlenia = table.drop(columns=["Koszt zespołu"], errors="ignore")
         st.dataframe(
-            table,
+            tabela_do_wyswietlenia,
             hide_index=True,
             width="stretch",
             column_config={
@@ -434,7 +462,9 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
                 "Przychód z wyroków": st.column_config.NumberColumn(format="%.2f zł"),
                 "Przychód razem": st.column_config.NumberColumn(format="%.2f zł"),
                 "Koszt niewykorzystanej pojemności": st.column_config.NumberColumn(format="%.2f zł"),
-                "Koszt zespołu": st.column_config.NumberColumn(format="%.2f zł"),
+                "Miesięczny koszt stały": st.column_config.NumberColumn(format="%.2f zł"),
+                "Miesięczny koszt pracowników": st.column_config.NumberColumn(format="%.2f zł"),
+                "Miesięczny koszt operacji": st.column_config.NumberColumn(format="%.2f zł"),
                 "Wynik miesięczny przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
                 "Wynik skumulowany przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
             },
@@ -458,7 +488,7 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
                     "Pojemność netto (h/mies.)": st.column_config.NumberColumn(format="%.1f h"),
                     "Średnie wykorzystanie": st.column_config.NumberColumn(format="%.1f%%"),
                     "Backlog po horyzoncie (h)": st.column_config.NumberColumn(format="%.1f h"),
-                    "Miesięczny koszt zespołu": st.column_config.NumberColumn(format="%.2f zł"),
+                    "Miesięczny koszt operacji": st.column_config.NumberColumn(format="%.2f zł"),
                     "Wynik miesięczny w stanie stabilnym": st.column_config.NumberColumn(format="%.2f zł"),
                 },
             )

@@ -100,11 +100,11 @@ def tabela_podsumowania(podsumowanie: dict) -> pd.DataFrame:
             f"{podsumowanie['liczba_spraw']:,}".replace(",", " "),
         ),
         ("Przychód", kwota(podsumowanie["przychod"])),
-        ("Koszt", kwota(podsumowanie["koszt"])),
-        ("Wynik przed podatkiem", kwota(podsumowanie["wynik"])),
+        ("Koszt", kwota(podsumowanie["koszt_calkowity"])),
+        ("Wynik przed podatkiem", kwota(podsumowanie["wynik_przed_podatkiem"])),
         ("Średni przychód na sprawę", kwota(podsumowanie["sredni_przychod"])),
         ("Średni koszt na sprawę", kwota(podsumowanie["sredni_koszt"])),
-        ("Średni wynik przed podatkiem na sprawę", kwota(podsumowanie["sredni_wynik"])),
+        ("Średni wynik przed podatkiem na sprawę", kwota(podsumowanie["sredni_wynik_przed_podatkiem"])),
     ]
     return pd.DataFrame(dane, columns=["Pozycja", "Wartość"])
 
@@ -225,7 +225,7 @@ with st.sidebar:
         niski_wps = st.number_input("Średni WPS poniżej progu", min_value=0.0, value=float(domyslne["niski_wps"]), step=100.0)
         wysoki_wps = st.number_input("Średni WPS od progu wzwyż", min_value=0.0, value=float(domyslne["wysoki_wps"]), step=100.0)
         udzial_ii_instancji_percent = st.number_input(
-            "Liczba spraw II Instancji (%)",
+            "Udział spraw bez ugody w II instancji (%)",
             min_value=0.0, max_value=100.0,
             value=domyslne["udzial_ii_instancji_percent"], step=0.1, format="%.1f",
             help="Procent spraw niezakończonych ugodą, które wymagają obsługi w II instancji.",
@@ -317,11 +317,13 @@ with st.sidebar:
         )
 
     with st.expander("Koszt pracy"):
-        koszt_staly = st.number_input("Koszt stały na godzinę", min_value=0.0, value=domyslne["koszt_staly_na_godzine"], step=1.0)
-        wynagrodzenie_pracownika = st.number_input("Wynagrodzenie pracownika na godzinę", min_value=0.0, value=domyslne["wynagrodzenie_pracownika_na_godzine"], step=1.0)
+        koszt_staly = st.number_input("Koszt stały operacji / h", min_value=0.0, value=domyslne["koszt_staly_na_godzine"], step=1.0)
+        wynagrodzenie_pracownika = st.number_input("Wynagrodzenie pracownika / h", min_value=0.0, value=domyslne["wynagrodzenie_pracownika_na_godzine"], step=1.0)
         st.caption(
-            "Obsada nie zmienia kosztu cyklu kohorty referencyjnej. W analizie "
-            "„W czasie” wyznacza jednak miesięczną pojemność i pełny koszt zespołu."
+            "Koszt stały jest ponoszony raz dla całej operacji i nie jest mnożony "
+            "przez liczbę pracowników. Obsada nie zmienia kosztu cyklu kohorty "
+            "referencyjnej, ale w analizie „W czasie” wyznacza miesięczną "
+            "pojemność i payroll."
         )
         liczba_pracownikow = st.number_input(
             "Liczba pracowników", min_value=0,
@@ -331,7 +333,14 @@ with st.sidebar:
             "Liczba dni pracy w roku", min_value=0,
             value=int(domyslne["liczba_dni_pracy_w_roku"]), step=1,
         )
-        karta_podsumowania("Łączny koszt godziny", kwota(koszt_staly + wynagrodzenie_pracownika))
+        karta_podsumowania(
+            "Roczny koszt stały operacji",
+            kwota(koszt_staly * liczba_dni_pracy_w_roku * 8),
+        )
+        karta_podsumowania(
+            "Koszt jednego pracownika / rok",
+            kwota(wynagrodzenie_pracownika * liczba_dni_pracy_w_roku * 8),
+        )
 
     with st.expander("Czas pracy"):
         st.caption("Czynności wspólne")
@@ -440,7 +449,7 @@ ogolem = wyniki["ogolem"]
 
 kpi = st.columns(4, gap="medium")
 kpi[0].metric("Przychód", kwota(ogolem["przychod"]))
-kpi[1].metric("Koszt", kwota(ogolem["koszt"]))
+kpi[1].metric("Koszt", kwota(ogolem["koszt_calkowity"]))
 kpi[2].metric("Zysk / strata po podatku", kwota(ogolem["wynik_po_podatku"]))
 kpi[3].metric("Marża po podatku", procent(ogolem["marza_po_podatku"]))
 
@@ -500,9 +509,9 @@ def wiersz_laczny(rodzaj: str, dane: dict) -> dict:
         "Bezpośredni czas jednej sprawy (h)": (wyniki["srednie_minuty_sciezki_ugody"] + dodatkowe[rodzaj]) / 60,
         "Koszt jednej sprawy": dane["sredni_koszt"],
         "Łączny przychód": dane["przychod"],
-        "Łączny koszt": dane["koszt"],
-        "Łączny wynik przed podatkiem": dane["wynik"],
-        "Średni wynik przed podatkiem na sprawie": dane["sredni_wynik"],
+        "Łączny koszt": dane["koszt_calkowity"],
+        "Łączny wynik przed podatkiem": dane["wynik_przed_podatkiem"],
+        "Średni wynik przed podatkiem na sprawie": dane["sredni_wynik_przed_podatkiem"],
     }
 
 
@@ -515,11 +524,11 @@ def wiersz_grupy(grupa: dict, zakres_wps: str) -> dict:
         "Liczba spraw": liczba,
         "Udział w kohorcie": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
         "Bezpośredni czas jednej sprawy (h)": grupa["laczne_minuty"] / 60,
-        "Koszt jednej sprawy": grupa["koszt"],
+        "Koszt jednej sprawy": grupa["koszt_calkowity"],
         "Łączny przychód": grupa["laczny_przychod"],
-        "Łączny koszt": grupa["laczny_koszt"],
-        "Łączny wynik przed podatkiem": grupa["laczny_wynik"],
-        "Średni wynik przed podatkiem na sprawie": grupa["wynik_jednostkowy"],
+        "Łączny koszt": grupa["laczny_koszt_calkowity"],
+        "Łączny wynik przed podatkiem": grupa["laczny_wynik_przed_podatkiem"],
+        "Średni wynik przed podatkiem na sprawie": grupa["wynik_jednostkowy_przed_podatkiem"],
     }
 
 
@@ -558,12 +567,12 @@ st.header("Wykresy")
 kolumna_1, kolumna_2 = st.columns(2, gap="large")
 with kolumna_1:
     st.subheader("Przychód, koszt i wynik po podatku")
-    st.bar_chart(pd.DataFrame({"Kwota": [ogolem["przychod"], ogolem["koszt"], ogolem["wynik"]]}, index=["Przychód", "Koszt", "Wynik po podatku"]), height=300)
+    st.bar_chart(pd.DataFrame({"Kwota": [ogolem["przychod"], ogolem["koszt_calkowity"], ogolem["wynik_po_podatku"]]}, index=["Przychód", "Koszt", "Wynik po podatku"]), height=300)
 with kolumna_2:
     st.subheader("Wynik przed podatkiem według rodzaju sprawy")
     st.bar_chart(rodzaje_ogolem.set_index("Rodzaj")[["Łączny wynik przed podatkiem"]], height=300)
 st.subheader("Średni wynik przed podatkiem na sprawę według WPS")
-st.bar_chart(pd.DataFrame({"Średni wynik przed podatkiem": [wyniki["wps_niski"]["sredni_wynik"], wyniki["wps_wysoki"]["sredni_wynik"]]}, index=["WPS poniżej progu", "WPS od progu wzwyż"]), height=260)
+st.bar_chart(pd.DataFrame({"Średni wynik przed podatkiem": [wyniki["wps_niski"]["sredni_wynik_przed_podatkiem"], wyniki["wps_wysoki"]["sredni_wynik_przed_podatkiem"]]}, index=["WPS poniżej progu", "WPS od progu wzwyż"]), height=260)
 
 st.divider()
 st.header("Centrum rentowności i decyzji")
@@ -586,13 +595,13 @@ wybrana_sekcja = st.segmented_control(
 
 if wybrana_sekcja == "Próg i bufor":
     stan, cel, status_celu = st.columns([1, 1.25, 1], gap="large")
-    stan.metric("Obecna marża po podatku", procent(ogolem["marza"]))
+    stan.metric("Obecna marża po podatku", procent(ogolem["marza_po_podatku"]))
     with cel:
         docelowa_marza = st.number_input(
             "Minimalna akceptowalna marża (%)", min_value=0.0, max_value=100.0,
             value=0.0, step=0.5, format="%.1f", key="docelowa_marza",
         )
-    roznica_do_celu = ogolem["marza"] - docelowa_marza
+    roznica_do_celu = ogolem["marza_po_podatku"] - docelowa_marza
     status_celu.metric(
         "Status celu",
         "Cel osiągnięty" if roznica_do_celu >= -1e-7 else f"Brakuje {liczba(abs(roznica_do_celu), 1)} p.p.",
@@ -621,7 +630,7 @@ if wybrana_sekcja == "Próg i bufor":
             )
     with gorna_prawa:
         st.markdown("#### Koszt")
-        st.markdown("##### Koszt stały / h")
+        st.markdown("##### Koszt stały operacji / h")
         pokaz_kluczowa_granice(
             kluczowe["koszt_staly"], kluczowe["cel_spelniony"], "Obecnie",
             "Maksymalnie dla celu", "Wymagany poziom",
@@ -858,7 +867,7 @@ if wybrana_sekcja == "Portfel i pojemność":
         "Wynik po podatku": st.column_config.NumberColumn(format="%.2f zł"), "Marża po podatku": st.column_config.NumberColumn(format="%.2f%%"),
         "Wykorzystanie pojemności": st.column_config.NumberColumn(format="%.1f%%"),
     })
-    st.line_chart(wolumeny.set_index("Liczba spraw")[["Wynik po podatku"]], height=300)
+    st.line_chart(wolumeny.set_index("Roczny napływ spraw")[["Wynik po podatku"]], height=300)
     if pojemnosc_analiza["minimalny_rentowny_wolumen"] is None:
         st.write("Wykonalny zakres pojemności nie zawiera rentownego wolumenu.")
     else:

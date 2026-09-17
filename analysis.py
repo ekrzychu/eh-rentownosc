@@ -2,7 +2,7 @@
 
 from math import ceil, floor
 
-from model import oblicz_model
+from model import oblicz_model, oblicz_podzial_spraw
 
 
 KOPIOWANE_SLOWNIKI = (
@@ -106,7 +106,7 @@ def przelicz_udzial_rodzaju(udzialy: dict[str, float], rodzaj: str, nowy_udzial:
 def definicje_parametrow(parametry: dict) -> list[dict]:
     """Buduje katalog dźwigni z aktualnych, a nie historycznych parametrów."""
     definicje = [
-        {"id": "koszt_staly", "nazwa": "Koszt stały / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_staly_na_godzine"] * 10 + 100), "krok": 10.0},
+        {"id": "koszt_staly", "nazwa": "Koszt stały operacji / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_staly_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "wynagrodzenie", "nazwa": "Wynagrodzenie pracownika / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["wynagrodzenie_pracownika_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "srednia_kwota_ugody", "nazwa": "Średnia kwota ugody", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "srednia_kwota_wyroku", "nazwa": "Średnia kwota wyroku", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
@@ -120,7 +120,7 @@ def definicje_parametrow(parametry: dict) -> list[dict]:
         {"id": "udzial_ii_instancji", "nazwa": "Udział spraw w II instancji", "kategoria": "Operacyjne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "czas_ii_instancji", "nazwa": "Obsługa sprawy w II instancji", "kategoria": "Operacyjne", "podkategoria": "II instancja", "jednostka": "min", "typ": "czas", "min": 0.0, "max": max(1440.0, parametry["obsluga_ii_instancji_minuty"] + 1440), "krok": 10.0},
         {"id": "wysoki_wps_procent", "nazwa": "Udział wysokiego WPS", "kategoria": "Struktura portfela", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
-        {"id": "liczba_spraw", "nazwa": "Liczba spraw", "kategoria": "Struktura portfela", "jednostka": "spraw", "typ": "calkowita", "min": 0, "max": max(1000, parametry["liczba_spraw"] * 3 + 500), "krok": 50},
+        {"id": "liczba_spraw", "nazwa": "Roczny napływ spraw", "kategoria": "Struktura portfela", "jednostka": "spraw", "typ": "calkowita", "min": 0, "max": max(1000, parametry["liczba_spraw"] * 3 + 500), "krok": 50},
     ]
     for rodzaj in parametry["udzialy_rodzajow"]:
         definicje.append({"id": f"udzial:{rodzaj}", "nazwa": f"Udział {rodzaj}", "kategoria": "Struktura portfela", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0})
@@ -204,8 +204,11 @@ def ustaw_parametr(parametry: dict, identyfikator: str, wartosc: float) -> dict:
 def spelnia_cel(wyniki: dict, docelowa_marza: float) -> bool:
     ogolem = wyniki["ogolem"]
     if docelowa_marza <= 0:
-        return ogolem["wynik"] >= -1e-7
-    return ogolem["przychod"] > 0 and ogolem["marza"] >= docelowa_marza - 1e-7
+        return ogolem["wynik_po_podatku"] >= -1e-7
+    return (
+        ogolem["przychod"] > 0
+        and ogolem["marza_po_podatku"] >= docelowa_marza - 1e-7
+    )
 
 
 def wykorzystanie_pojemnosci(wyniki: dict) -> float | None:
@@ -331,8 +334,8 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
     if zmiana_percent <= 0:
         raise ValueError("Zmiana analizowanego parametru musi być dodatnia.")
     bazowe = oblicz_model(parametry)
-    bazowy_wynik = bazowe["ogolem"]["wynik"]
-    bazowa_marza = bazowe["ogolem"]["marza"]
+    bazowy_wynik = bazowe["ogolem"]["wynik_po_podatku"]
+    bazowa_marza = bazowe["ogolem"]["marza_po_podatku"]
     wiersze = []
     for definicja in sterowalne_definicje_parametrow(parametry):
         identyfikator = definicja["id"]
@@ -353,14 +356,14 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
             if rzeczywista == obecnie:
                 continue
             wyniki = oblicz_model(zmienione)
-            wynik = wyniki["ogolem"]["wynik"]
-            marza = wyniki["ogolem"]["marza"]
+            wynik = wyniki["ogolem"]["wynik_po_podatku"]
+            marza = wyniki["ogolem"]["marza_po_podatku"]
             scenariusze.append({
                 "wartosc": rzeczywista,
                 "zmiana": rzeczywista - obecnie,
-                "wynik": wynik,
+                "wynik_po_podatku": wynik,
                 "wplyw": wynik - bazowy_wynik,
-                "marza": marza,
+                "marza_po_podatku": marza,
                 "wplyw_marza": marza - bazowa_marza,
                 "zmiana_percent": (rzeczywista / obecnie - 1) * 100,
             })
@@ -375,33 +378,33 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
             "Zmiana analizowana (%)": zmiana_percent,
             "Zmiana porównawcza": korzystny["zmiana"],
             "Wartość po zmianie": korzystny["wartosc"],
-            "Wynik bazowy": bazowy_wynik, "Wynik po zmianie": korzystny["wynik"],
+            "Wynik bazowy": bazowy_wynik, "Wynik po zmianie": korzystny["wynik_po_podatku"],
             "Wpływ na wynik": korzystny["wplyw"],
-            "Marża bazowa": bazowa_marza, "Marża po zmianie": korzystny["marza"],
+            "Marża bazowa": bazowa_marza, "Marża po zmianie": korzystny["marza_po_podatku"],
             "Wpływ na marżę": korzystny["wplyw_marza"],
             "Kierunek poprawy": "wzrost" if korzystny["zmiana"] > 0 else "spadek",
             "Korzystna zmiana": korzystny["zmiana"],
             "Korzystna zmiana (%)": korzystny["zmiana_percent"],
             "Wartość po korzystnej zmianie": korzystny["wartosc"],
             "Wpływ korzystny": korzystny["wplyw"],
-            "Marża po korzystnej zmianie": korzystny["marza"],
+            "Marża po korzystnej zmianie": korzystny["marza_po_podatku"],
             "Wpływ korzystny na marżę": korzystny["wplyw_marza"],
             "Niekorzystna zmiana": niekorzystny["zmiana"],
             "Niekorzystna zmiana (%)": niekorzystny["zmiana_percent"],
             "Wartość po niekorzystnej zmianie": niekorzystny["wartosc"],
             "Wpływ niekorzystny": niekorzystny["wplyw"],
-            "Wynik po niekorzystnej zmianie": niekorzystny["wynik"],
-            "Marża po niekorzystnej zmianie": niekorzystny["marza"],
+            "Wynik po niekorzystnej zmianie": niekorzystny["wynik_po_podatku"],
+            "Marża po niekorzystnej zmianie": niekorzystny["marza_po_podatku"],
             "Wpływ niekorzystny na marżę": niekorzystny["wplyw_marza"],
             # Aliasy utrzymują zgodność dotychczasowego API analitycznego.
             "Wynik obecny": bazowy_wynik, "Marża obecna": bazowa_marza,
             "Zmiana testowa": korzystny["zmiana"],
             "Wartość po poprawie": korzystny["wartosc"],
             "Wpływ na wynik roczny": korzystny["wplyw"],
-            "Wynik po poprawie": korzystny["wynik"],
-            "Marża po poprawie": korzystny["marza"],
-            "Wynik po pogorszeniu": niekorzystny["wynik"],
-            "Marża po pogorszeniu": niekorzystny["marza"],
+            "Wynik po poprawie": korzystny["wynik_po_podatku"],
+            "Marża po poprawie": korzystny["marza_po_podatku"],
+            "Wynik po pogorszeniu": niekorzystny["wynik_po_podatku"],
+            "Marża po pogorszeniu": niekorzystny["marza_po_podatku"],
         })
     return sorted(
         wiersze,
@@ -418,7 +421,7 @@ def analiza_wplywu_wzglednego(
 
 
 def wartosc_skrocenia_czynnosci(parametry: dict) -> list[dict]:
-    bazowy = oblicz_model(parametry)["ogolem"]["wynik"]
+    bazowy = oblicz_model(parametry)["ogolem"]["wynik_po_podatku"]
     wiersze = []
     for definicja in sterowalne_definicje_parametrow(parametry):
         if definicja["typ"] != "czas":
@@ -427,7 +430,7 @@ def wartosc_skrocenia_czynnosci(parametry: dict) -> list[dict]:
         wartosci = {}
         for minuty in (1, 10):
             nowa = max(0.0, obecnie - minuty)
-            wartosci[minuty] = oblicz_model(ustaw_parametr(parametry, definicja["id"], nowa))["ogolem"]["wynik"] - bazowy
+            wartosci[minuty] = oblicz_model(ustaw_parametr(parametry, definicja["id"], nowa))["ogolem"]["wynik_po_podatku"] - bazowy
         wiersze.append({"Czynność": definicja["nazwa"], "Kategoria": definicja.get("podkategoria", definicja["kategoria"]), "Wpływ skrócenia o 1 min": wartosci[1], "Wpływ skrócenia o 10 min": wartosci[10]})
     return sorted(wiersze, key=lambda x: x["Wpływ skrócenia o 10 min"], reverse=True)
 
@@ -439,7 +442,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
     czasy_ii_instancji = wyniki["czasy_ii_instancji_sciezek"]
     pelne_czasy_sciezek = wyniki["czasy_sciezek_z_ii_instancja"]
     liczba_spraw = parametry["liczba_spraw"]
-    koszt_godziny = wyniki["koszt_godziny"]
+    wynagrodzenie_godzinowe = parametry["wynagrodzenie_pracownika_na_godzine"]
     dzienne_minuty = sum(parametry["codzienne_czynnosci"].values())
     produktywne_minuty = 480 - dzienne_minuty
     if produktywne_minuty <= 0:
@@ -466,18 +469,21 @@ def ekonomika_ugod(parametry: dict) -> dict:
             - pelne_czasy_sciezek[wariant]
         )
         oszczednosc_pln = (
-            oszczednosc_minut / 60 * koszt_godziny * mnoznik_kosztu_lifecycle
+            oszczednosc_minut
+            / 60
+            * wynagrodzenie_godzinowe
+            * mnoznik_kosztu_lifecycle
         )
         porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ roczny przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
 
     bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))
-    wynik_bez_prob = bez_prob["ogolem"]["wynik"]
+    wynik_bez_prob = bez_prob["ogolem"]["wynik_po_podatku"]
     wynik_zero_sukcesu = oblicz_model(
         ustaw_parametr(parametry, "zawarte_ugody", 0.0)
-    )["ogolem"]["wynik"]
+    )["ogolem"]["wynik_po_podatku"]
     wynik_pelnego_sukcesu = oblicz_model(
         ustaw_parametr(parametry, "zawarte_ugody", 100.0)
-    )["ogolem"]["wynik"]
+    )["ogolem"]["wynik_po_podatku"]
     if wynik_zero_sukcesu >= wynik_bez_prob - 1e-9:
         minimalna_skutecznosc = 0.0
     elif wynik_pelnego_sukcesu >= wynik_bez_prob - 1e-9:
@@ -486,7 +492,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
             srodek = (dol + gora) / 2
             wynik_scenariusza = oblicz_model(
                 ustaw_parametr(parametry, "zawarte_ugody", srodek)
-            )["ogolem"]["wynik"]
+            )["ogolem"]["wynik_po_podatku"]
             if wynik_scenariusza >= wynik_bez_prob:
                 gora = srodek
             else:
@@ -495,12 +501,12 @@ def ekonomika_ugod(parametry: dict) -> dict:
     else:
         minimalna_skutecznosc = None
 
-    bazowy_wynik = wyniki["ogolem"]["wynik"]
+    bazowy_wynik = wyniki["ogolem"]["wynik_po_podatku"]
     wartosc_poprawy = []
     for punkty in (1, 5, 10):
         nowa = min(100.0, parametry["zawarte_ugody_percent"] + punkty)
         wyniki_poprawy = oblicz_model(ustaw_parametr(parametry, "zawarte_ugody", nowa))
-        wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik roczny": wyniki_poprawy["ogolem"]["wynik"] - bazowy_wynik})
+        wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik roczny": wyniki_poprawy["ogolem"]["wynik_po_podatku"] - bazowy_wynik})
 
     przychod_wedlug_zakonczenia = [
         {"Sposób zakończenia": "Sprawy zakończone ugodą", "Oczekiwany udział": udzialy["zakonczone_ugoda"], "Oczekiwana liczba spraw": liczba_spraw * udzialy["zakonczone_ugoda"] / 100, "Oczekiwany przychód": wyniki["ogolem"]["przychod_ugody"]},
@@ -519,23 +525,42 @@ def minimalna_liczba_pracownikow(parametry: dict, limit: int = 1000) -> int | No
 
 
 def maksymalna_liczba_spraw(parametry: dict, limit: int = 1_000_000) -> int | None:
-    przy_zerowym_wolumenie = oblicz_model(ustaw_parametr(parametry, "liczba_spraw", 0))
-    if przy_zerowym_wolumenie["pojemnosc"]["przekroczona"]:
+    """Zwraca największy wykonalny całkowity napływ bez założenia monotoniczności."""
+    bazowy = oblicz_model(parametry)
+    pojemnosc = bazowy["pojemnosc"]["pojemnosc_spraw_minuty"]
+    czasy = {
+        rodzaj: bazowy["srednie_minuty_sciezki_ugody"]
+        + parametry["dodatkowe_minuty"][rodzaj]
+        for rodzaj in parametry["udzialy_rodzajow"]
+    }
+    sredni_czas = sum(
+        parametry["udzialy_rodzajow"][rodzaj] / 100 * czas
+        for rodzaj, czas in czasy.items()
+    )
+    if sredni_czas <= 0:
         return None
-    if oblicz_model(ustaw_parametr(parametry, "liczba_spraw", 1))["bezposrednie_minuty_spraw"] <= 0:
+
+    # Alokacja największych reszt może lokalnie przesuwać sprawę między P1/P2/P3.
+    # Błąd względem udziałów dokładnych jest ograniczony przez jeden przypadek
+    # na kategorię, co daje bezpieczną skończoną granicę pełnego skanowania.
+    bezpieczna_gorna = floor((pojemnosc + sum(czasy.values())) / sredni_czas) + 2
+    gorna = min(limit, max(0, bezpieczna_gorna))
+    maksimum = 0
+    for liczba_spraw in range(gorna + 1):
+        podzial = oblicz_podzial_spraw(
+            liczba_spraw,
+            parametry["udzialy_rodzajow"],
+            parametry["wysoki_wps_procent"],
+        )
+        minuty = sum(
+            sum(podzial[rodzaj].values()) * czasy[rodzaj]
+            for rodzaj in podzial
+        )
+        if minuty <= pojemnosc + 1e-9:
+            maksimum = liczba_spraw
+    if gorna == limit and maksimum == limit:
         return None
-    dol, gora = 0, max(1, parametry["liczba_spraw"])
-    while gora < limit and not oblicz_model(ustaw_parametr(parametry, "liczba_spraw", gora))["pojemnosc"]["przekroczona"]:
-        dol, gora = gora, min(limit, gora * 2)
-    if gora == limit and not oblicz_model(ustaw_parametr(parametry, "liczba_spraw", gora))["pojemnosc"]["przekroczona"]:
-        return None
-    while dol + 1 < gora:
-        srodek = (dol + gora) // 2
-        if oblicz_model(ustaw_parametr(parametry, "liczba_spraw", srodek))["pojemnosc"]["przekroczona"]:
-            gora = srodek
-        else:
-            dol = srodek
-    return dol
+    return maksimum
 
 
 def analiza_pojemnosci(parametry: dict) -> dict:
@@ -557,18 +582,45 @@ def analiza_pojemnosci(parametry: dict) -> dict:
     wolumeny = []
     for liczba_spraw in sorted(punkty):
         wynik = oblicz_model(ustaw_parametr(parametry, "liczba_spraw", liczba_spraw))
-        wolumeny.append({"Liczba spraw": liczba_spraw, "Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt"], "Wynik po podatku": wynik["ogolem"]["wynik"], "Marża po podatku": wynik["ogolem"]["marza"], "Wykorzystanie pojemności": wykorzystanie_pojemnosci(wynik)})
+        wolumeny.append({"Roczny napływ spraw": liczba_spraw, "Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt_calkowity"], "Wynik po podatku": wynik["ogolem"]["wynik_po_podatku"], "Marża po podatku": wynik["ogolem"]["marza_po_podatku"], "Wykorzystanie pojemności": wykorzystanie_pojemnosci(wynik)})
 
     rentowne = []
     if maksimum is not None:
-        krok = 1 if maksimum <= 10_000 else max(1, maksimum // 2000)
-        for liczba_spraw in range(0, maksimum + 1, krok):
-            if spelnia_cel(oblicz_model(ustaw_parametr(parametry, "liczba_spraw", liczba_spraw)), 0.0):
+        wzorce = {
+            (grupa["rodzaj"], grupa["grupa_wps"]): grupa
+            for grupa in wyniki["grupy"]
+        }
+        for liczba_spraw in range(0, maksimum + 1):
+            podzial = oblicz_podzial_spraw(
+                liczba_spraw,
+                parametry["udzialy_rodzajow"],
+                parametry["wysoki_wps_procent"],
+            )
+            bezposrednie_minuty = sum(
+                sum(grupy_wps.values())
+                * (
+                    wyniki["srednie_minuty_sciezki_ugody"]
+                    + parametry["dodatkowe_minuty"][rodzaj]
+                )
+                for rodzaj, grupy_wps in podzial.items()
+            )
+            if bezposrednie_minuty > wyniki["pojemnosc"]["pojemnosc_spraw_minuty"] + 1e-9:
+                continue
+            wynik_przed_podatkiem = -wyniki["koszt_staly_roczny"]
+            for rodzaj, grupy_wps in podzial.items():
+                for grupa_wps, liczba in grupy_wps.items():
+                    wzorzec = wzorce[(rodzaj, grupa_wps)]
+                    wynik_przed_podatkiem += liczba * (
+                        wzorzec["oczekiwane_wynagrodzenie"]
+                        - wzorzec["koszt_pracy_pracownika"]
+                    )
+            if wynik_przed_podatkiem >= -1e-7:
                 rentowne.append(liczba_spraw)
     segmenty = []
     for grupa in wyniki["grupy"]:
         przychod = grupa["oczekiwane_wynagrodzenie"]
-        segmenty.append({"Segment": f"{grupa['rodzaj']} / {'WPS poniżej progu' if grupa['grupa_wps'] == 'niski_wps' else 'WPS od progu wzwyż'}", "Liczba spraw": grupa["liczba"], "Przychód na sprawę": przychod, "Koszt na sprawę": grupa["koszt"], "Wynik przed podatkiem na sprawę": grupa["wynik_jednostkowy"], "Marża przed podatkiem": grupa["wynik_jednostkowy"] / przychod * 100 if przychod else 0.0, "Łączny wynik przed podatkiem": grupa["laczny_wynik"]})
+        wynik_jednostkowy = grupa["wynik_jednostkowy_przed_podatkiem"]
+        segmenty.append({"Segment": f"{grupa['rodzaj']} / {'WPS poniżej progu' if grupa['grupa_wps'] == 'niski_wps' else 'WPS od progu wzwyż'}", "Liczba spraw": grupa["liczba"], "Przychód na sprawę": przychod, "Koszt pracy na sprawę": grupa["koszt_pracy_pracownika"], "Alokowany koszt stały na sprawę": grupa["alokowany_koszt_staly"], "Koszt na sprawę": grupa["koszt_calkowity"], "Wynik przed podatkiem na sprawę": wynik_jednostkowy, "Marża przed podatkiem": wynik_jednostkowy / przychod * 100 if przychod else 0.0, "Łączny wynik przed podatkiem": grupa["laczny_wynik_przed_podatkiem"]})
     segmenty.sort(key=lambda x: x["Wynik przed podatkiem na sprawę"], reverse=True)
     return {
         "liczba_pracownikow": parametry["liczba_pracownikow"], "dni_pracy": parametry["liczba_dni_pracy_w_roku"],
@@ -590,7 +642,7 @@ def symuluj_pojedyncza_zmiane(parametry: dict, identyfikator: str, nowa_wartosc:
     def metryki(wynik: dict) -> dict:
         return {
             "Przychód": wynik["ogolem"]["przychod"],
-            "Koszt": wynik["ogolem"]["koszt"],
+            "Koszt": wynik["ogolem"]["koszt_calkowity"],
             "Wynik przed podatkiem": wynik["ogolem"]["wynik_przed_podatkiem"],
             "Podatek dochodowy": wynik["ogolem"]["podatek_dochodowy"],
             "Wynik po podatku": wynik["ogolem"]["wynik_po_podatku"],

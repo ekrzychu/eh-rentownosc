@@ -10,7 +10,12 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from math import ceil, isclose
 
-from model import MINUTY_DNIA_PRACY, domyslne_parametry, oblicz_model
+from model import (
+    MINUTY_DNIA_PRACY,
+    domyslne_parametry,
+    oblicz_model,
+    waliduj_parametry,
+)
 
 
 SCIEZKI_UGODOWE = ("automatyczne_ramy", "zawarte_poza_ramami")
@@ -114,10 +119,60 @@ def wyznacz_break_even(
     return {"status": "od_poczatku", "miesiac": None, "etykieta": "Od początku"}
 
 
+def wyznacz_trwaly_break_even(
+    wyniki_skumulowane: list[float],
+    miesiace: list[int],
+    status_pojemnosci: str,
+    wynik_miesieczny_w_stanie_stabilnym: float | None,
+) -> dict:
+    """Wskazuje przecięcie, po którym wynik nie wraca pod zero i jest trwały."""
+    if len(miesiace) != len(wyniki_skumulowane):
+        raise ValueError("Lista miesięcy musi odpowiadać liście wyników.")
+    if status_pojemnosci == "Niewystarczająca":
+        return {
+            "status": "brak_pojemnosci",
+            "miesiac": None,
+            "etykieta": "Brak trwałego break-even przy obecnej obsadzie",
+        }
+    if wynik_miesieczny_w_stanie_stabilnym is None:
+        return {
+            "status": "niepotwierdzony",
+            "miesiac": None,
+            "etykieta": "Niepotwierdzony w horyzoncie",
+        }
+    if wynik_miesieczny_w_stanie_stabilnym <= TOLERANCJA:
+        return {
+            "status": "brak_ekonomiczny",
+            "miesiac": None,
+            "etykieta": "Brak trwałego break-even przy obecnej ekonomice",
+        }
+
+    byl_deficyt = any(wynik < -TOLERANCJA for wynik in wyniki_skumulowane)
+    if not byl_deficyt:
+        return {"status": "od_poczatku", "miesiac": None, "etykieta": "Od początku"}
+    for indeks, (miesiac, wynik) in enumerate(zip(miesiace, wyniki_skumulowane)):
+        if (
+            miesiac > 0
+            and wynik >= -TOLERANCJA
+            and all(pozniejszy >= -TOLERANCJA for pozniejszy in wyniki_skumulowane[indeks:])
+        ):
+            return {
+                "status": "osiagniety",
+                "miesiac": miesiac,
+                "etykieta": f"Miesiąc {miesiac}",
+            }
+    return {
+        "status": "nie_osiagnieto",
+        "miesiac": None,
+        "etykieta": "Nie osiągnięto w horyzoncie",
+    }
+
+
 def oblicz_pojemnosc_miesieczna(
     parametry: dict, lifecycle: dict | None = None
 ) -> dict:
     """Oblicza dostarczoną pojemność, koszt i stabilność systemu."""
+    waliduj_parametry(parametry)
     if lifecycle is None:
         lifecycle = oblicz_model(parametry)
     pracownicy = parametry["liczba_pracownikow"]
@@ -127,8 +182,18 @@ def oblicz_pojemnosc_miesieczna(
     dzienne_minuty = pracownicy * dni_rocznie * dzienne_na_pracownika / 12
     netto_minuty = max(brutto_minuty - dzienne_minuty, 0.0)
     popyt_minuty = lifecycle["bezposrednie_minuty_spraw"] / 12
-    koszt_godziny = lifecycle["koszt_godziny"]
-    koszt_zespolu = brutto_minuty / 60 * koszt_godziny
+    godziny_operacyjne_miesiecznie = dni_rocznie * 8 / 12
+    koszt_staly_miesiecznie = (
+        godziny_operacyjne_miesiecznie * parametry["koszt_staly_na_godzine"]
+    )
+    koszt_pracownikow_miesiecznie = (
+        brutto_minuty
+        / 60
+        * parametry["wynagrodzenie_pracownika_na_godzine"]
+    )
+    koszt_operacji_miesiecznie = (
+        koszt_staly_miesiecznie + koszt_pracownikow_miesiecznie
+    )
     tolerancja = max(TOLERANCJA, popyt_minuty * 1e-9)
     if popyt_minuty < netto_minuty - tolerancja:
         status = "Stabilna"
@@ -141,8 +206,11 @@ def oblicz_pojemnosc_miesieczna(
         "czynnosci_dzienne_minuty": dzienne_minuty,
         "pojemnosc_na_sprawy_minuty": netto_minuty,
         "miesieczny_popyt_minuty": popyt_minuty,
-        "koszt_godziny": koszt_godziny,
-        "miesieczny_koszt_zespolu": koszt_zespolu,
+        "godziny_operacyjne_miesiecznie": godziny_operacyjne_miesiecznie,
+        "miesieczny_koszt_staly": koszt_staly_miesiecznie,
+        "miesieczny_koszt_pracownikow": koszt_pracownikow_miesiecznie,
+        "miesieczny_koszt_operacji": koszt_operacji_miesiecznie,
+        "miesieczny_koszt_zespolu": koszt_operacji_miesiecznie,
         "status_pojemnosci": status,
         "brak_pojemnosci_na_sprawy": dzienne_minuty >= brutto_minuty - TOLERANCJA,
     }
@@ -152,6 +220,7 @@ def minimalna_liczba_pracownikow_dla_stabilnosci(
     parametry: dict, lifecycle: dict | None = None
 ) -> int | None:
     """Zwraca najmniejszą całkowitą obsadę bez strukturalnego deficytu mocy."""
+    waliduj_parametry(parametry)
     if lifecycle is None:
         lifecycle = oblicz_model(parametry)
     popyt = lifecycle["bezposrednie_minuty_spraw"] / 12
@@ -376,10 +445,14 @@ def _status_break_even(
 ) -> str:
     if capacity_status == "Niewystarczająca":
         return "Brak trwałego break-even przy obecnej obsadzie"
+    if steady_monthly_result is not None and steady_monthly_result <= TOLERANCJA:
+        return "Brak trwałego break-even przy obecnej ekonomice"
+    if break_even["status"] == "niepotwierdzony":
+        return "Niepotwierdzony w horyzoncie"
     if break_even["status"] == "nie_osiagnieto":
         return "Nie osiągnięto w horyzoncie"
     sustainable = (
-        capacity_status == "Stabilna"
+        capacity_status in {"Stabilna", "Na granicy"}
         and steady_monthly_result is not None
         and steady_monthly_result > TOLERANCJA
     )
@@ -479,8 +552,10 @@ def oblicz_model_czasowy(
         settlement_revenue = payments[month]["ugoda"]
         judgment_revenue = payments[month]["wyrok"]
         revenue = settlement_revenue + judgment_revenue
-        team_cost = capacity["miesieczny_koszt_zespolu"]
-        monthly_result = revenue - team_cost
+        fixed_cost = capacity["miesieczny_koszt_staly"]
+        employee_cost = capacity["miesieczny_koszt_pracownikow"]
+        operation_cost = capacity["miesieczny_koszt_operacji"]
+        monthly_result = revenue - operation_cost
         cumulative_result += monthly_result
         backlog_end_minutes_month = sum(
             packet.minutes_remaining for packet in queue
@@ -522,9 +597,15 @@ def oblicz_model_czasowy(
                 "Wykorzystanie pojemności (%)": utilization,
                 "Niewykorzystana pojemność (h)": unused_minutes / 60,
                 "Koszt niewykorzystanej pojemności": (
-                    unused_minutes / 60 * capacity["koszt_godziny"]
+                    unused_minutes
+                    / 60
+                    * parametry["wynagrodzenie_pracownika_na_godzine"]
                 ),
-                "Koszt zespołu": team_cost,
+                "Miesięczny koszt stały": fixed_cost,
+                "Miesięczny koszt pracowników": employee_cost,
+                "Miesięczny koszt operacji": operation_cost,
+                # Alias zgodnościowy; wszystkie nowe widoki używają rozbicia kosztów.
+                "Koszt zespołu": operation_cost,
                 "Wynik miesięczny przed podatkiem": monthly_result,
                 "Wynik skumulowany przed podatkiem": cumulative_result,
             }
@@ -566,7 +647,7 @@ def oblicz_model_czasowy(
             ):
                 raise RuntimeError(f"Miesięczna kohorta nie uzgadnia pola {name}.")
 
-    break_even = wyznacz_break_even(
+    pierwsze_przeciecie = wyznacz_break_even(
         [row["Wynik skumulowany przed podatkiem"] for row in rows],
         [row["Miesiąc"] for row in rows],
     )
@@ -608,7 +689,7 @@ def oblicz_model_czasowy(
         and isclose(mature_demand, target_monthly_demand, rel_tol=1e-9, abs_tol=1e-6)
     )
     steady_monthly_result = (
-        mature_revenue - capacity["miesieczny_koszt_zespolu"]
+        mature_revenue - capacity["miesieczny_koszt_operacji"]
         if maturity_reached and mature_revenue is not None
         else None
     )
@@ -646,8 +727,14 @@ def oblicz_model_czasowy(
         if completed_cases_for_delay > TOLERANCJA
         else 0.0
     )
+    trwaly_break_even = wyznacz_trwaly_break_even(
+        [row["Wynik skumulowany przed podatkiem"] for row in rows],
+        [row["Miesiąc"] for row in rows],
+        capacity["status_pojemnosci"],
+        steady_monthly_result,
+    )
     break_even_sustainability = _status_break_even(
-        break_even, capacity["status_pojemnosci"], steady_monthly_result
+        trwaly_break_even, capacity["status_pojemnosci"], steady_monthly_result
     )
     if capacity["status_pojemnosci"] == "Niewystarczająca":
         maturity_status = "Nieosiągalny przy obecnej obsadzie"
@@ -660,25 +747,35 @@ def oblicz_model_czasowy(
         > deepest["Wynik skumulowany przed podatkiem"] + TOLERANCJA
         for row in rows[deepest["Miesiąc"] :]
     )
+    recent_monthly_trend = (
+        sum(row["Wynik miesięczny przed podatkiem"] for row in recent_rows)
+        / len(recent_rows)
+        if recent_rows
+        else None
+    )
+    long_run_or_recent_result = (
+        steady_monthly_result
+        if steady_monthly_result is not None
+        else recent_monthly_trend
+    )
     cumulative_still_falling = (
-        capacity["status_pojemnosci"] == "Niewystarczająca"
-        and len(rows) >= 2
-        and rows[-1]["Wynik skumulowany przed podatkiem"]
-        < rows[-2]["Wynik skumulowany przed podatkiem"] - TOLERANCJA
+        long_run_or_recent_result is not None
+        and long_run_or_recent_result < -TOLERANCJA
     )
     current_capacity_delay = (
         max(horizon - queue[0].due_month, 0) if queue else 0
     )
-    lifecycle_resource_hours = lifecycle["laczne_godziny"]
+    lifecycle_resource_hours = lifecycle["laczne_godziny_zasobu_lifecycle"]
     supplied_annual_hours = capacity["pojemnosc_brutto_minuty"] / 60 * 12
     annual_capacity_balance = supplied_annual_hours - lifecycle_resource_hours
     minimum_team_monthly_cost = (
-        minimum_staff
+        capacity["miesieczny_koszt_staly"]
+        + minimum_staff
         * parametry["liczba_dni_pracy_w_roku"]
         * MINUTY_DNIA_PRACY
         / 12
         / 60
-        * capacity["koszt_godziny"]
+        * parametry["wynagrodzenie_pracownika_na_godzine"]
         if minimum_staff is not None
         else None
     )
@@ -694,6 +791,19 @@ def oblicz_model_czasowy(
         row["Wynik skumulowany przed podatkiem"] < -TOLERANCJA
         for row in rows[: min(nominal_maturity_month, len(rows))]
     )
+    lifecycle_total_cost = lifecycle["koszt_calkowity_lifecycle"]
+    temporal_annual_cost = capacity["miesieczny_koszt_operacji"] * 12
+    reconciliation_difference = temporal_annual_cost - lifecycle_total_cost
+    expected_reconciliation_difference = (
+        annual_capacity_balance * parametry["wynagrodzenie_pracownika_na_godzine"]
+    )
+    if not isclose(
+        reconciliation_difference,
+        expected_reconciliation_difference,
+        rel_tol=1e-10,
+        abs_tol=1e-6,
+    ):
+        raise RuntimeError("Koszty lifecycle i czasowe nie uzgadniają się.")
 
     return {
         "parametry_czasowe": czas,
@@ -706,10 +816,13 @@ def oblicz_model_czasowy(
             "ostatnie_12_miesiecy_wykorzystanie_percent": recent_utilization,
         },
         "kpi": {
-            "break_even_skumulowany": break_even["etykieta"],
-            "break_even_status": break_even["status"],
-            "break_even_miesiac": break_even["miesiac"],
+            "break_even_skumulowany": trwaly_break_even["etykieta"],
+            "break_even_status": trwaly_break_even["status"],
+            "break_even_miesiac": trwaly_break_even["miesiac"],
             "status_break_even": break_even_sustainability,
+            "pierwsze_przeciecie_skumulowane": pierwsze_przeciecie["etykieta"],
+            "pierwsze_przeciecie_status": pierwsze_przeciecie["status"],
+            "pierwsze_przeciecie_miesiac": pierwsze_przeciecie["miesiac"],
             "pierwszy_dodatni_miesiac": first_positive,
             "najglebszy_deficyt_skumulowany": deepest[
                 "Wynik skumulowany przed podatkiem"
@@ -720,6 +833,7 @@ def oblicz_model_czasowy(
                 "Wynik skumulowany przed podatkiem"
             ],
             "wynik_nadal_narasta": cumulative_still_falling,
+            "trend_miesieczny_wyniku": long_run_or_recent_result,
             "wynik_miesieczny_w_stanie_stabilnym": steady_monthly_result,
             "wynik_roczny_w_stanie_stabilnym": (
                 steady_monthly_result * 12
@@ -760,6 +874,12 @@ def oblicz_model_czasowy(
             "bilans_pojemnosci_rocznie_godziny": annual_capacity_balance,
             "wynik_miesieczny_przy_minimalnej_obsadzie": (
                 mature_result_at_minimum_staff
+            ),
+            "koszt_lifecycle_roczny": lifecycle_total_cost,
+            "koszt_operacji_czasowy_roczny": temporal_annual_cost,
+            "roznica_kosztu_czasowy_minus_lifecycle": reconciliation_difference,
+            "koszt_niewykorzystanej_pojemnosci_rocznie": max(
+                expected_reconciliation_difference, 0.0
             ),
         },
         "walidacja": {
@@ -817,8 +937,8 @@ def porownaj_obsade(
                 "Backlog po horyzoncie (h)": result["podsumowanie"][
                     "backlog_koniec_godziny"
                 ],
-                "Miesięczny koszt zespołu": result["pojemnosc"][
-                    "miesieczny_koszt_zespolu"
+                "Miesięczny koszt operacji": result["pojemnosc"][
+                    "miesieczny_koszt_operacji"
                 ],
                 "Pierwszy dodatni miesiąc": (
                     f"Miesiąc {first_positive}" if first_positive is not None else "Brak"
