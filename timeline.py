@@ -1,14 +1,16 @@
-"""Czasowy rozkład ekonomii lifecycle portfela.
+"""Ciągły, pojemnościowy model ekonomii operacyjnej w czasie.
 
-Moduł nie definiuje osobnej ekonomii spraw. Pobiera skład portfela,
-wynagrodzenia, udziały ścieżek oraz koszt godziny z ``oblicz_model`` i
-wyłącznie przypisuje te wartości do miesięcy.
+``oblicz_model`` pozostaje jedynym źródłem ekonomii lifecycle kohorty
+referencyjnej. Ten moduł tworzy co miesiąc proporcjonalną kohortę, układa jej
+pracę w kolejce FIFO i pobiera pełny koszt dostarczonej obsady. Koszt okresowy
+nie jest zatem uzgadniany z kosztem pracy zużytej przez pojedynczą kohortę.
 """
 
-from collections import defaultdict
-from math import isclose
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from math import ceil, isclose
 
-from model import MINUTY_DNIA_PRACY, oblicz_model
+from model import MINUTY_DNIA_PRACY, domyslne_parametry, oblicz_model
 
 
 SCIEZKI_UGODOWE = ("automatyczne_ramy", "zawarte_poza_ramami")
@@ -17,88 +19,92 @@ SCIEZKI_BEZ_UGODY = (
     "brak_szans",
     "brak_ugody_poza_ramami",
 )
+TOLERANCJA = 1e-8
+
+
+@dataclass
+class WorkPacket:
+    """Porcja bezpośredniej pracy dostępna w kolejce od wskazanego miesiąca."""
+
+    due_month: int
+    cohort_month: int
+    path: str
+    stage: str
+    minutes_remaining: float
+    completion_id: int
+
+
+@dataclass
+class Completion:
+    """Oczekiwany wynik ścieżki i zależny od wykonania pracy przychód."""
+
+    cohort_month: int
+    path: str
+    outcome: str
+    nominal_month: int
+    cases: float
+    revenue: float
+    remaining_minutes: float = 0.0
+    completed: bool = False
+    actual_month: int | None = None
 
 
 def domyslne_parametry_czasowe() -> dict:
-    """Zwraca edytowalne, testowe założenia kalendarza miesięcznego."""
+    """Zwraca testowe założenia procesu dla ciągłej symulacji."""
     return {
-        "tryb_naplywu": "równomiernie",
-        "okres_naplywu_miesiace": 12,
         "miesiace_do_ugody": 6,
         "miesiace_do_wyroku_i": 9,
         "miesiace_wyrok_i_do_ii": 6,
         "opoznienie_platnosci_miesiace": 0,
-        "horyzont_miesiace": 36,
+        "horyzont_miesiace": 60,
     }
-
-
-def _znormalizuj_tryb(tryb: str) -> str:
-    if not isinstance(tryb, str):
-        raise ValueError("Sposób napływu spraw musi być tekstem.")
-    wartosc = tryb.strip().casefold().replace("_", " ")
-    if wartosc == "równomiernie":
-        return "równomiernie"
-    if wartosc in {"wszystkie na początku", "wszystkie na poczatku"}:
-        return "wszystkie na początku"
-    raise ValueError(
-        "Sposób napływu musi mieć wartość 'równomiernie' "
-        "albo 'wszystkie na początku'."
-    )
 
 
 def _parametry_czasowe(parametry_czasowe: dict | None) -> dict:
     wynik = domyslne_parametry_czasowe()
     if parametry_czasowe:
+        nieznane = set(parametry_czasowe) - set(wynik)
+        if nieznane:
+            raise ValueError(
+                "Nieznane parametry czasowe: " + ", ".join(sorted(nieznane))
+            )
         wynik.update(parametry_czasowe)
-    wynik["tryb_naplywu"] = _znormalizuj_tryb(wynik["tryb_naplywu"])
-
-    nieujemne = (
-        "miesiace_do_ugody",
-        "miesiace_do_wyroku_i",
-        "miesiace_wyrok_i_do_ii",
-        "opoznienie_platnosci_miesiace",
-    )
-    for nazwa in nieujemne:
-        if not isinstance(wynik[nazwa], int) or isinstance(wynik[nazwa], bool):
+    for nazwa, wartosc in wynik.items():
+        if not isinstance(wartosc, int) or isinstance(wartosc, bool):
             raise ValueError(f"Parametr {nazwa} musi być liczbą całkowitą.")
-        if wynik[nazwa] < 0:
-            raise ValueError(f"Parametr {nazwa} nie może być ujemny.")
-    for nazwa in ("okres_naplywu_miesiace", "horyzont_miesiace"):
-        if not isinstance(wynik[nazwa], int) or isinstance(wynik[nazwa], bool):
-            raise ValueError(f"Parametr {nazwa} musi być liczbą całkowitą.")
-        if wynik[nazwa] < 1:
-            raise ValueError(f"Parametr {nazwa} musi wynosić co najmniej 1.")
+        minimum = 1 if nazwa == "horyzont_miesiace" else 0
+        if wartosc < minimum:
+            raise ValueError(f"Parametr {nazwa} musi wynosić co najmniej {minimum}.")
     return wynik
 
 
-def rozloz_naplyw(liczba_spraw: float, tryb: str, okres_miesiace: int) -> list[float]:
-    """Rozkłada istniejący wolumen portfela na miesiące wpływu."""
-    if liczba_spraw < 0:
-        raise ValueError("Liczba spraw nie może być ujemna.")
-    if not isinstance(okres_miesiace, int) or okres_miesiace < 1:
-        raise ValueError("Okres napływu musi być dodatnią liczbą całkowitą.")
-    tryb = _znormalizuj_tryb(tryb)
-    if tryb == "wszystkie na początku":
-        return [float(liczba_spraw)]
-    miesiecznie = liczba_spraw / okres_miesiace
-    return [miesiecznie] * okres_miesiace
+def miesieczny_naplyw(liczba_spraw_rocznie: float) -> float:
+    """Zwraca stały oczekiwany napływ w każdym miesiącu."""
+    if liczba_spraw_rocznie < 0:
+        raise ValueError("Roczny napływ spraw nie może być ujemny.")
+    return liczba_spraw_rocznie / 12
 
 
 def wyznacz_break_even(
     wyniki_skumulowane: list[float], miesiace: list[int] | None = None
 ) -> dict:
-    """Wyznacza pierwsze wyjście z deficytu, ignorując początkowe zero."""
+    """Wskazuje pierwszy powrót z deficytu do co najmniej zera."""
     if miesiace is None:
-        miesiace = list(range(len(wyniki_skumulowane)))
+        miesiace = list(range(1, len(wyniki_skumulowane) + 1))
     if len(miesiace) != len(wyniki_skumulowane):
         raise ValueError("Lista miesięcy musi odpowiadać liście wyników.")
-
     byl_deficyt = False
     for miesiac, wynik in zip(miesiace, wyniki_skumulowane):
-        if wynik < -1e-9:
+        if miesiac <= 0:
+            continue
+        if wynik < -TOLERANCJA:
             byl_deficyt = True
-        elif byl_deficyt and wynik >= -1e-9:
-            return {"status": "osiagniety", "miesiac": miesiac, "etykieta": f"Miesiąc {miesiac}"}
+        elif byl_deficyt and wynik >= -TOLERANCJA:
+            return {
+                "status": "osiagniety",
+                "miesiac": miesiac,
+                "etykieta": f"Miesiąc {miesiac}",
+            }
     if byl_deficyt:
         return {
             "status": "nie_osiagnieto",
@@ -108,335 +114,606 @@ def wyznacz_break_even(
     return {"status": "od_poczatku", "miesiac": None, "etykieta": "Od początku"}
 
 
-def _dodaj(zdarzenia: dict, miesiac: int, nazwa: str, wartosc: float) -> None:
-    zdarzenia[miesiac][nazwa] += wartosc
+def oblicz_pojemnosc_miesieczna(
+    parametry: dict, lifecycle: dict | None = None
+) -> dict:
+    """Oblicza dostarczoną pojemność, koszt i stabilność systemu."""
+    if lifecycle is None:
+        lifecycle = oblicz_model(parametry)
+    pracownicy = parametry["liczba_pracownikow"]
+    dni_rocznie = parametry["liczba_dni_pracy_w_roku"]
+    dzienne_na_pracownika = sum(parametry["codzienne_czynnosci"].values())
+    brutto_minuty = pracownicy * dni_rocznie * MINUTY_DNIA_PRACY / 12
+    dzienne_minuty = pracownicy * dni_rocznie * dzienne_na_pracownika / 12
+    netto_minuty = max(brutto_minuty - dzienne_minuty, 0.0)
+    popyt_minuty = lifecycle["bezposrednie_minuty_spraw"] / 12
+    koszt_godziny = lifecycle["koszt_godziny"]
+    koszt_zespolu = brutto_minuty / 60 * koszt_godziny
+    tolerancja = max(TOLERANCJA, popyt_minuty * 1e-9)
+    if popyt_minuty < netto_minuty - tolerancja:
+        status = "Stabilna"
+    elif abs(popyt_minuty - netto_minuty) <= tolerancja:
+        status = "Na granicy"
+    else:
+        status = "Niewystarczająca"
+    return {
+        "pojemnosc_brutto_minuty": brutto_minuty,
+        "czynnosci_dzienne_minuty": dzienne_minuty,
+        "pojemnosc_na_sprawy_minuty": netto_minuty,
+        "miesieczny_popyt_minuty": popyt_minuty,
+        "koszt_godziny": koszt_godziny,
+        "miesieczny_koszt_zespolu": koszt_zespolu,
+        "status_pojemnosci": status,
+        "brak_pojemnosci_na_sprawy": dzienne_minuty >= brutto_minuty - TOLERANCJA,
+    }
 
 
-def _rozloz_rowno(
-    zdarzenia: dict, poczatek: int, koniec: int, nazwa: str, wartosc: float
+def minimalna_liczba_pracownikow_dla_stabilnosci(
+    parametry: dict, lifecycle: dict | None = None
+) -> int | None:
+    """Zwraca najmniejszą całkowitą obsadę bez strukturalnego deficytu mocy."""
+    if lifecycle is None:
+        lifecycle = oblicz_model(parametry)
+    popyt = lifecycle["bezposrednie_minuty_spraw"] / 12
+    if popyt <= TOLERANCJA:
+        return 0
+    dni = parametry["liczba_dni_pracy_w_roku"]
+    dzienne = sum(parametry["codzienne_czynnosci"].values())
+    netto_na_pracownika = dni * (MINUTY_DNIA_PRACY - dzienne) / 12
+    if netto_na_pracownika <= TOLERANCJA:
+        return None
+    return max(1, ceil((popyt - TOLERANCJA) / netto_na_pracownika))
+
+
+def _dodaj_pakiet(
+    due_packets: dict[int, list[WorkPacket]],
+    completions: list[Completion],
+    completion_id: int,
+    due_month: int,
+    cohort_month: int,
+    path: str,
+    stage: str,
+    minutes_value: float,
+    cohort_stats: dict,
 ) -> None:
-    liczba_miesiecy = koniec - poczatek + 1
-    if liczba_miesiecy <= 0:
-        raise ValueError("Nieprawidłowy przedział alokacji czasu.")
-    czesc = wartosc / liczba_miesiecy
-    for miesiac in range(poczatek, koniec + 1):
-        _dodaj(zdarzenia, miesiac, nazwa, czesc)
+    if minutes_value <= TOLERANCJA:
+        return
+    packet = WorkPacket(
+        due_month=due_month,
+        cohort_month=cohort_month,
+        path=path,
+        stage=stage,
+        minutes_remaining=minutes_value,
+        completion_id=completion_id,
+    )
+    due_packets[due_month].append(packet)
+    completions[completion_id].remaining_minutes += minutes_value
+    cohort_stats["direct_minutes"] += minutes_value
 
 
-def _wiersze_miesieczne(
-    zdarzenia: dict, ostatni_miesiac: int, koszt_godziny: float, narzut_dzienny: float
-) -> list[dict]:
-    wiersze = []
-    skumulowany = 0.0
-    for miesiac in range(ostatni_miesiac + 1):
-        dane = zdarzenia[miesiac]
-        minuty_bezposrednie = dane["bezposrednie_minuty"]
-        minuty_dzienne = minuty_bezposrednie / MINUTY_DNIA_PRACY * narzut_dzienny
-        koszt = (minuty_bezposrednie + minuty_dzienne) / 60 * koszt_godziny
-        przychod_ugody = dane["przychod_ugody"]
-        przychod_wyroki = dane["przychod_wyroki"]
-        przychod = przychod_ugody + przychod_wyroki
-        wynik = przychod - koszt
-        skumulowany += wynik
-        wiersze.append(
-            {
-                "Miesiąc": miesiac,
-                "Nowe sprawy": dane["nowe_sprawy"],
-                "Ugody": dane["ugody"],
-                "Zakończenia po I instancji": dane["zakonczenia_i"],
-                "Zakończenia po II instancji": dane["zakonczenia_ii"],
-                "Przychód z ugód": przychod_ugody,
-                "Przychód z wyroków": przychod_wyroki,
-                "Przychód razem": przychod,
-                "Bezpośrednie minuty pracy": minuty_bezposrednie,
-                "Minuty czynności dziennych": minuty_dzienne,
-                "Bezpośrednie godziny pracy": minuty_bezposrednie / 60,
-                "Godziny czynności dziennych": minuty_dzienne / 60,
-                "Koszt": koszt,
-                "Wynik miesięczny": wynik,
-                "Wynik skumulowany": skumulowany,
-            }
+def _rozloz_pakiet(
+    due_packets: dict[int, list[WorkPacket]],
+    completions: list[Completion],
+    completion_id: int,
+    start_month: int,
+    end_month: int,
+    cohort_month: int,
+    path: str,
+    stage: str,
+    minutes_value: float,
+    cohort_stats: dict,
+) -> None:
+    number_of_months = end_month - start_month + 1
+    if number_of_months <= 0:
+        raise ValueError("Nieprawidłowy przedział alokacji pracy.")
+    part = minutes_value / number_of_months
+    for due_month in range(start_month, end_month + 1):
+        _dodaj_pakiet(
+            due_packets,
+            completions,
+            completion_id,
+            due_month,
+            cohort_month,
+            path,
+            stage,
+            part,
+            cohort_stats,
         )
-    return wiersze
 
 
-def _suma(wiersze: list[dict], klucz: str) -> float:
-    return sum(wiersz[klucz] for wiersz in wiersze)
+def _dodaj_kohorte(
+    cohort_month: int,
+    lifecycle: dict,
+    parametry: dict,
+    czas: dict,
+    due_packets: dict[int, list[WorkPacket]],
+    completions: list[Completion],
+) -> dict:
+    """Tworzy miesięczną kohortę jako 1/12 kohorty referencyjnej."""
+    shares = lifecycle["udzialy_ugod"]
+    second_instance_share = parametry["udzial_ii_instancji_percent"] / 100
+    common_minutes = sum(parametry["wspolne_czynnosci"].values())
+    process_minutes = sum(parametry["procesowe_czynnosci"].values())
+    settlement_analysis_minutes = parametry["analiza_mozliwosci_ugody"]
+    settlement_minutes = sum(parametry["ugodowe_czynnosci"].values())
+    failed_offer_minutes = (
+        parametry["ugodowe_czynnosci"].get("Oferta ugody", 0)
+        + parametry["ugodowe_czynnosci"].get("Projekt ugody", 0)
+    )
+    second_instance_minutes = parametry["obsluga_ii_instancji_minuty"]
+    cohort_stats = {"direct_minutes": 0.0, "revenue": 0.0, "cases": 0.0}
 
-
-def _sprawdz_uzgodnienie(nazwa: str, czasowe: float, lifecycle: float) -> None:
-    if not isclose(czasowe, lifecycle, rel_tol=1e-10, abs_tol=1e-6):
-        raise RuntimeError(
-            f"Model czasowy nie uzgadnia {nazwa}: {czasowe} zamiast {lifecycle}."
+    def new_completion(
+        path: str,
+        outcome: str,
+        nominal_month: int,
+        cases: float,
+        revenue: float,
+    ) -> int:
+        completion_id = len(completions)
+        completions.append(
+            Completion(
+                cohort_month=cohort_month,
+                path=path,
+                outcome=outcome,
+                nominal_month=nominal_month,
+                cases=cases,
+                revenue=revenue,
+            )
         )
+        cohort_stats["revenue"] += revenue
+        cohort_stats["cases"] += cases
+        return completion_id
+
+    for group in lifecycle["grupy"]:
+        group_cases = group["liczba"] / 12
+        extra_minutes = parametry["dodatkowe_minuty"][group["rodzaj"]]
+        for path in SCIEZKI_UGODOWE:
+            cases = group_cases * shares[path] / 100
+            if cases <= TOLERANCJA:
+                continue
+            nominal = cohort_month + czas["miesiace_do_ugody"]
+            completion_id = new_completion(
+                path,
+                "ugoda",
+                nominal,
+                cases,
+                cases * group["wynagrodzenie_ugoda"],
+            )
+            _dodaj_pakiet(
+                due_packets, completions, completion_id, cohort_month,
+                cohort_month, path, "przyjecie", cases * common_minutes, cohort_stats,
+            )
+            if path == "zawarte_poza_ramami":
+                _dodaj_pakiet(
+                    due_packets, completions, completion_id, cohort_month,
+                    cohort_month, path, "analiza_ugody",
+                    cases * settlement_analysis_minutes, cohort_stats,
+                )
+            _dodaj_pakiet(
+                due_packets, completions, completion_id, nominal,
+                cohort_month, path, "zawarcie_ugody",
+                cases * settlement_minutes, cohort_stats,
+            )
+            _rozloz_pakiet(
+                due_packets, completions, completion_id, cohort_month, nominal,
+                cohort_month, path, "praca_dodatkowa_p",
+                cases * extra_minutes, cohort_stats,
+            )
+
+        for path in SCIEZKI_BEZ_UGODY:
+            path_cases = group_cases * shares[path] / 100
+            for second_instance, cases in (
+                (False, path_cases * (1 - second_instance_share)),
+                (True, path_cases * second_instance_share),
+            ):
+                if cases <= TOLERANCJA:
+                    continue
+                first_judgment = cohort_month + czas["miesiace_do_wyroku_i"]
+                nominal = first_judgment + (
+                    czas["miesiace_wyrok_i_do_ii"] if second_instance else 0
+                )
+                outcome = "ii" if second_instance else "i"
+                branch_path = f"{path}:{outcome}"
+                completion_id = new_completion(
+                    branch_path,
+                    outcome,
+                    nominal,
+                    cases,
+                    cases * group["wynagrodzenie_wyrok"],
+                )
+                _dodaj_pakiet(
+                    due_packets, completions, completion_id, cohort_month,
+                    cohort_month, branch_path, "przyjecie",
+                    cases * common_minutes, cohort_stats,
+                )
+                if path in {"brak_szans", "brak_ugody_poza_ramami"}:
+                    _dodaj_pakiet(
+                        due_packets, completions, completion_id, cohort_month,
+                        cohort_month, branch_path, "analiza_ugody",
+                        cases * settlement_analysis_minutes, cohort_stats,
+                    )
+                if path == "brak_ugody_poza_ramami":
+                    attempt_month = min(
+                        cohort_month + czas["miesiace_do_ugody"], first_judgment
+                    )
+                    _dodaj_pakiet(
+                        due_packets, completions, completion_id, attempt_month,
+                        cohort_month, branch_path, "nieudana_proba_ugody",
+                        cases * failed_offer_minutes, cohort_stats,
+                    )
+                process_start = (
+                    cohort_month + 1
+                    if czas["miesiace_do_wyroku_i"] > 0
+                    else first_judgment
+                )
+                _rozloz_pakiet(
+                    due_packets, completions, completion_id, process_start,
+                    first_judgment, cohort_month, branch_path, "proces",
+                    cases * process_minutes, cohort_stats,
+                )
+                _rozloz_pakiet(
+                    due_packets, completions, completion_id, cohort_month, nominal,
+                    cohort_month, branch_path, "praca_dodatkowa_p",
+                    cases * extra_minutes, cohort_stats,
+                )
+                if second_instance:
+                    second_start = (
+                        first_judgment + 1
+                        if czas["miesiace_wyrok_i_do_ii"] > 0
+                        else first_judgment
+                    )
+                    _rozloz_pakiet(
+                        due_packets, completions, completion_id, second_start,
+                        nominal, cohort_month, branch_path, "ii_instancja",
+                        cases * second_instance_minutes, cohort_stats,
+                    )
+    return cohort_stats
+
+
+def _status_break_even(
+    break_even: dict, capacity_status: str, steady_monthly_result: float | None
+) -> str:
+    if break_even["status"] == "nie_osiagnieto":
+        return "Nie osiągnięto"
+    sustainable = (
+        capacity_status == "Stabilna"
+        and steady_monthly_result is not None
+        and steady_monthly_result > TOLERANCJA
+    )
+    if break_even["status"] == "od_poczatku":
+        return "Rentowna od początku" if sustainable else "Wynik nietrwały"
+    return "Break-even trwały" if sustainable else "Przecięcie nietrwałe"
 
 
 def oblicz_model_czasowy(
     parametry: dict | None = None, parametry_czasowe: dict | None = None
 ) -> dict:
-    """Rozkłada kanoniczną ekonomię lifecycle na miesiące.
-
-    Pełny harmonogram służy do obowiązkowych uzgodnień, natomiast
-    ``tabela_miesieczna`` jest przycięta lub dopełniona do horyzontu UI.
-    Podatek i payroll nie są elementem tego rozkładu.
-    """
+    """Symuluje ciągły napływ, kolejkę pracy, przychody i koszt obsady."""
+    if parametry is None:
+        parametry = domyslne_parametry()
     czas = _parametry_czasowe(parametry_czasowe)
     lifecycle = oblicz_model(parametry)
-    if parametry is None:
-        # oblicz_model użył swoich aktualnych wartości domyślnych; parametry
-        # potrzebne niżej są dostępne w wynikach lub strukturze grup.
-        from model import domyslne_parametry
-
-        parametry = domyslne_parametry()
-
-    liczba_spraw = lifecycle["ogolem"]["liczba_spraw"]
-    naplyw = rozloz_naplyw(
-        liczba_spraw, czas["tryb_naplywu"], czas["okres_naplywu_miesiace"]
+    capacity = oblicz_pojemnosc_miesieczna(parametry, lifecycle)
+    minimum_staff = minimalna_liczba_pracownikow_dla_stabilnosci(
+        parametry, lifecycle
     )
-    udzialy_sciezek = lifecycle["udzialy_ugod"]
-    udzial_ii = parametry["udzial_ii_instancji_percent"] / 100
-    wspolne_minuty = sum(parametry["wspolne_czynnosci"].values())
-    procesowe_minuty = sum(parametry["procesowe_czynnosci"].values())
-    analiza_minuty = parametry["analiza_mozliwosci_ugody"]
-    ugodowe_minuty = sum(parametry["ugodowe_czynnosci"].values())
-    przygotowanie_ugody_minuty = (
-        parametry["ugodowe_czynnosci"].get("Oferta ugody", 0)
-        + parametry["ugodowe_czynnosci"].get("Projekt ugody", 0)
+    horizon = czas["horyzont_miesiace"]
+    monthly_inflow = miesieczny_naplyw(lifecycle["ogolem"]["liczba_spraw"])
+    due_packets: dict[int, list[WorkPacket]] = defaultdict(list)
+    completions: list[Completion] = []
+    queue: deque[WorkPacket] = deque()
+    payments: dict[int, dict[str, float]] = defaultdict(
+        lambda: {"ugoda": 0.0, "wyrok": 0.0}
     )
-    minuty_ii = parametry["obsluga_ii_instancji_minuty"]
+    cohort_validations = []
+    rows = []
+    cumulative_inflow = 0.0
+    cumulative_completed = 0.0
+    cumulative_result = 0.0
+    completed_delay_weight = 0.0
+    completed_cases_for_delay = 0.0
+    maximum_capacity_delay = 0
+    total_due_minutes = 0.0
+    total_executed_minutes = 0.0
 
-    zdarzenia = defaultdict(lambda: defaultdict(float))
-    przychod_rodzaje = defaultdict(float)
-    przychod_wps = defaultdict(float)
-    ostatni_miesiac = 0
-
-    for miesiac_wplywu, nowe_sprawy in enumerate(naplyw):
-        _dodaj(zdarzenia, miesiac_wplywu, "nowe_sprawy", nowe_sprawy)
-        if liczba_spraw == 0:
-            continue
-        udzial_kohorty = nowe_sprawy / liczba_spraw
-        for grupa in lifecycle["grupy"]:
-            liczba_grupy = grupa["liczba"] * udzial_kohorty
-            minuty_p = parametry["dodatkowe_minuty"][grupa["rodzaj"]]
-
-            for sciezka in SCIEZKI_UGODOWE:
-                liczba = liczba_grupy * udzialy_sciezek[sciezka] / 100
-                koniec = miesiac_wplywu + czas["miesiace_do_ugody"]
-                platnosc = koniec + czas["opoznienie_platnosci_miesiace"]
-                _dodaj(zdarzenia, koniec, "ugody", liczba)
-                przychod = liczba * grupa["wynagrodzenie_ugoda"]
-                _dodaj(zdarzenia, platnosc, "przychod_ugody", przychod)
-                przychod_rodzaje[grupa["rodzaj"]] += przychod
-                przychod_wps[grupa["grupa_wps"]] += przychod
-                _dodaj(
-                    zdarzenia,
-                    miesiac_wplywu,
-                    "bezposrednie_minuty",
-                    liczba * wspolne_minuty,
-                )
-                if sciezka == "zawarte_poza_ramami":
-                    _dodaj(
-                        zdarzenia,
-                        miesiac_wplywu,
-                        "bezposrednie_minuty",
-                        liczba * analiza_minuty,
-                    )
-                _dodaj(
-                    zdarzenia, koniec, "bezposrednie_minuty", liczba * ugodowe_minuty
-                )
-                _rozloz_rowno(
-                    zdarzenia,
-                    miesiac_wplywu,
-                    koniec,
-                    "bezposrednie_minuty",
-                    liczba * minuty_p,
-                )
-                ostatni_miesiac = max(ostatni_miesiac, koniec, platnosc)
-
-            for sciezka in SCIEZKI_BEZ_UGODY:
-                liczba_sciezki = liczba_grupy * udzialy_sciezek[sciezka] / 100
-                for czy_ii, liczba in (
-                    (False, liczba_sciezki * (1 - udzial_ii)),
-                    (True, liczba_sciezki * udzial_ii),
-                ):
-                    wyrok_i = miesiac_wplywu + czas["miesiace_do_wyroku_i"]
-                    koniec = wyrok_i + (czas["miesiace_wyrok_i_do_ii"] if czy_ii else 0)
-                    platnosc = koniec + czas["opoznienie_platnosci_miesiace"]
-                    _dodaj(
-                        zdarzenia,
-                        koniec,
-                        "zakonczenia_ii" if czy_ii else "zakonczenia_i",
-                        liczba,
-                    )
-                    przychod = liczba * grupa["wynagrodzenie_wyrok"]
-                    _dodaj(zdarzenia, platnosc, "przychod_wyroki", przychod)
-                    przychod_rodzaje[grupa["rodzaj"]] += przychod
-                    przychod_wps[grupa["grupa_wps"]] += przychod
-
-                    _dodaj(
-                        zdarzenia,
-                        miesiac_wplywu,
-                        "bezposrednie_minuty",
-                        liczba * wspolne_minuty,
-                    )
-                    if sciezka in {"brak_szans", "brak_ugody_poza_ramami"}:
-                        _dodaj(
-                            zdarzenia,
-                            miesiac_wplywu,
-                            "bezposrednie_minuty",
-                            liczba * analiza_minuty,
-                        )
-                    if sciezka == "brak_ugody_poza_ramami":
-                        proba_ugody = min(
-                            miesiac_wplywu + czas["miesiace_do_ugody"], wyrok_i
-                        )
-                        _dodaj(
-                            zdarzenia,
-                            proba_ugody,
-                            "bezposrednie_minuty",
-                            liczba * przygotowanie_ugody_minuty,
-                        )
-                    if czas["miesiace_do_wyroku_i"] > 0:
-                        proces_od = miesiac_wplywu + 1
-                    else:
-                        proces_od = wyrok_i
-                    _rozloz_rowno(
-                        zdarzenia,
-                        proces_od,
-                        wyrok_i,
-                        "bezposrednie_minuty",
-                        liczba * procesowe_minuty,
-                    )
-                    _rozloz_rowno(
-                        zdarzenia,
-                        miesiac_wplywu,
-                        koniec,
-                        "bezposrednie_minuty",
-                        liczba * minuty_p,
-                    )
-                    if czy_ii:
-                        ii_od = wyrok_i + 1 if czas["miesiace_wyrok_i_do_ii"] > 0 else wyrok_i
-                        _rozloz_rowno(
-                            zdarzenia,
-                            ii_od,
-                            koniec,
-                            "bezposrednie_minuty",
-                            liczba * minuty_ii,
-                        )
-                    ostatni_miesiac = max(ostatni_miesiac, koniec, platnosc)
-
-    narzut_dzienny = sum(parametry["codzienne_czynnosci"].values())
-    pelna_tabela = _wiersze_miesieczne(
-        zdarzenia, ostatni_miesiac, lifecycle["koszt_godziny"], narzut_dzienny
-    )
-    tabela_w_horyzoncie = _wiersze_miesieczne(
-        zdarzenia,
-        czas["horyzont_miesiace"] - 1,
-        lifecycle["koszt_godziny"],
-        narzut_dzienny,
-    )
-
-    pelny_przychod = _suma(pelna_tabela, "Przychód razem")
-    pelny_koszt = _suma(pelna_tabela, "Koszt")
-    pelne_minuty = _suma(pelna_tabela, "Bezpośrednie minuty pracy")
-    pelne_minuty_dzienne = _suma(pelna_tabela, "Minuty czynności dziennych")
-    liczba_ugod = _suma(pelna_tabela, "Ugody")
-    liczba_i = _suma(pelna_tabela, "Zakończenia po I instancji")
-    liczba_ii = _suma(pelna_tabela, "Zakończenia po II instancji")
-
-    _sprawdz_uzgodnienie("przychodu", pelny_przychod, lifecycle["ogolem"]["przychod"])
-    _sprawdz_uzgodnienie(
-        "przychodu z ugód",
-        _suma(pelna_tabela, "Przychód z ugód"),
-        lifecycle["ogolem"]["przychod_ugody"],
-    )
-    _sprawdz_uzgodnienie(
-        "przychodu z wyroków",
-        _suma(pelna_tabela, "Przychód z wyroków"),
-        lifecycle["ogolem"]["przychod_wyroki"],
-    )
-    _sprawdz_uzgodnienie("czasu bezpośredniego", pelne_minuty, lifecycle["bezposrednie_minuty_spraw"])
-    _sprawdz_uzgodnienie(
-        "czasu czynności dziennych",
-        pelne_minuty_dzienne,
-        lifecycle["czynnosci_dzienne_lifecycle_minuty"],
-    )
-    _sprawdz_uzgodnienie("kosztu", pelny_koszt, lifecycle["ogolem"]["koszt"])
-    _sprawdz_uzgodnienie("liczby zakończeń", liczba_ugod + liczba_i + liczba_ii, liczba_spraw)
-    _sprawdz_uzgodnienie(
-        "liczby spraw w II instancji",
-        liczba_ii,
-        lifecycle["oczekiwana_liczba_spraw_ii_instancji"],
-    )
-    for rodzaj, podsumowanie in lifecycle["rodzaje"].items():
-        _sprawdz_uzgodnienie(
-            f"przychodu {rodzaj}", przychod_rodzaje[rodzaj], podsumowanie["przychod"]
+    for month in range(1, horizon + 1):
+        cohort_stats = _dodaj_kohorte(
+            month, lifecycle, parametry, czas, due_packets, completions
         )
-    for grupa_wps, klucz in (("niski_wps", "wps_niski"), ("wysoki_wps", "wps_wysoki")):
-        _sprawdz_uzgodnienie(
-            f"przychodu {grupa_wps}", przychod_wps[grupa_wps], lifecycle[klucz]["przychod"]
+        cohort_validations.append(cohort_stats)
+        cumulative_inflow += monthly_inflow
+
+        new_packets = due_packets.pop(month, [])
+        work_demand_minutes = sum(packet.minutes_remaining for packet in new_packets)
+        total_due_minutes += work_demand_minutes
+        queue.extend(new_packets)
+        direct_capacity = capacity["pojemnosc_na_sprawy_minuty"]
+        remaining_capacity = direct_capacity
+        executed_minutes = 0.0
+        while queue and remaining_capacity > TOLERANCJA:
+            packet = queue[0]
+            executed = min(packet.minutes_remaining, remaining_capacity)
+            packet.minutes_remaining -= executed
+            completions[packet.completion_id].remaining_minutes -= executed
+            executed_minutes += executed
+            remaining_capacity -= executed
+            if packet.minutes_remaining <= TOLERANCJA:
+                queue.popleft()
+            else:
+                break
+        total_executed_minutes += executed_minutes
+
+        settlements = 0.0
+        first_instance_endings = 0.0
+        second_instance_endings = 0.0
+        for completion in completions:
+            if (
+                not completion.completed
+                and completion.nominal_month <= month
+                and completion.remaining_minutes <= TOLERANCJA
+            ):
+                completion.completed = True
+                completion.actual_month = month
+                cumulative_completed += completion.cases
+                capacity_delay = month - completion.nominal_month
+                completed_delay_weight += capacity_delay * completion.cases
+                completed_cases_for_delay += completion.cases
+                maximum_capacity_delay = max(maximum_capacity_delay, capacity_delay)
+                if completion.outcome == "ugoda":
+                    settlements += completion.cases
+                    revenue_type = "ugoda"
+                elif completion.outcome == "i":
+                    first_instance_endings += completion.cases
+                    revenue_type = "wyrok"
+                else:
+                    second_instance_endings += completion.cases
+                    revenue_type = "wyrok"
+                payment_month = month + czas["opoznienie_platnosci_miesiace"]
+                payments[payment_month][revenue_type] += completion.revenue
+
+        settlement_revenue = payments[month]["ugoda"]
+        judgment_revenue = payments[month]["wyrok"]
+        revenue = settlement_revenue + judgment_revenue
+        team_cost = capacity["miesieczny_koszt_zespolu"]
+        monthly_result = revenue - team_cost
+        cumulative_result += monthly_result
+        backlog_minutes = sum(packet.minutes_remaining for packet in queue)
+        used_minutes = capacity["czynnosci_dzienne_minuty"] + executed_minutes
+        unused_minutes = max(capacity["pojemnosc_brutto_minuty"] - used_minutes, 0.0)
+        active_cases = max(cumulative_inflow - cumulative_completed, 0.0)
+        rows.append(
+            {
+                "Miesiąc": month,
+                "Nowe sprawy": monthly_inflow,
+                "Aktywne sprawy": active_cases,
+                "Ugody zakończone": settlements,
+                "Zakończenia po I instancji": first_instance_endings,
+                "Zakończenia po II instancji": second_instance_endings,
+                "Przychód z ugód": settlement_revenue,
+                "Przychód z wyroków": judgment_revenue,
+                "Przychód razem": revenue,
+                "Pojemność brutto (h)": capacity["pojemnosc_brutto_minuty"] / 60,
+                "Czynności dzienne (h)": capacity["czynnosci_dzienne_minuty"] / 60,
+                "Dostępna pojemność na sprawy (h)": direct_capacity / 60,
+                "Zapotrzebowanie na pracę (h)": work_demand_minutes / 60,
+                "Wykonana praca bezpośrednia (h)": executed_minutes / 60,
+                "Backlog pracy (h)": backlog_minutes / 60,
+                "Niewykorzystana pojemność (h)": unused_minutes / 60,
+                "Koszt niewykorzystanej pojemności": (
+                    unused_minutes / 60 * capacity["koszt_godziny"]
+                ),
+                "Koszt zespołu": team_cost,
+                "Wynik miesięczny przed podatkiem": monthly_result,
+                "Wynik skumulowany przed podatkiem": cumulative_result,
+            }
         )
 
-    przychod_w_horyzoncie = _suma(tabela_w_horyzoncie, "Przychód razem")
-    koszt_w_horyzoncie = _suma(tabela_w_horyzoncie, "Koszt")
-    pozostaly_przychod = pelny_przychod - przychod_w_horyzoncie
-    pozostaly_koszt = pelny_koszt - koszt_w_horyzoncie
-    udzial_przychodu = (
-        przychod_w_horyzoncie / pelny_przychod * 100 if pelny_przychod else 100.0
-    )
+    backlog_end_minutes = rows[-1]["Backlog pracy (h)"] * 60
+    if not isclose(
+        total_executed_minutes + backlog_end_minutes,
+        total_due_minutes,
+        rel_tol=1e-10,
+        abs_tol=1e-6,
+    ):
+        raise RuntimeError("Kolejka pracy nie zachowuje wszystkich należnych minut.")
+
+    cohort_reference = {
+        "przychod": lifecycle["ogolem"]["przychod"] / 12,
+        "bezposrednie_minuty": lifecycle["bezposrednie_minuty_spraw"] / 12,
+        "liczba_spraw": lifecycle["ogolem"]["liczba_spraw"] / 12,
+    }
+    if cohort_validations:
+        first_cohort = cohort_validations[0]
+        for name, built_key in (
+            ("przychod", "revenue"),
+            ("bezposrednie_minuty", "direct_minutes"),
+            ("liczba_spraw", "cases"),
+        ):
+            if not isclose(
+                first_cohort[built_key],
+                cohort_reference[name],
+                rel_tol=1e-10,
+                abs_tol=1e-6,
+            ):
+                raise RuntimeError(f"Miesięczna kohorta nie uzgadnia pola {name}.")
+
     break_even = wyznacz_break_even(
-        [wiersz["Wynik skumulowany"] for wiersz in tabela_w_horyzoncie],
-        [wiersz["Miesiąc"] for wiersz in tabela_w_horyzoncie],
+        [row["Wynik skumulowany przed podatkiem"] for row in rows],
+        [row["Miesiąc"] for row in rows],
     )
-    dodatni = next(
-        (wiersz["Miesiąc"] for wiersz in tabela_w_horyzoncie if wiersz["Wynik miesięczny"] > 1e-9),
+    first_positive = next(
+        (
+            row["Miesiąc"]
+            for row in rows
+            if row["Wynik miesięczny przed podatkiem"] > TOLERANCJA
+        ),
         None,
     )
-    najglebszy = min(tabela_w_horyzoncie, key=lambda wiersz: wiersz["Wynik skumulowany"])
-    koncowy = tabela_w_horyzoncie[-1]["Wynik skumulowany"]
-    pelny_w_horyzoncie = isclose(pozostaly_przychod, 0.0, abs_tol=1e-6) and isclose(
-        pozostaly_koszt, 0.0, abs_tol=1e-6
+    deepest = min(rows, key=lambda row: row["Wynik skumulowany przed podatkiem"])
+    nominal_maturity_month = (
+        1
+        + max(
+            czas["miesiace_do_ugody"],
+            czas["miesiace_do_wyroku_i"],
+            czas["miesiace_do_wyroku_i"] + czas["miesiace_wyrok_i_do_ii"],
+        )
+        + czas["opoznienie_platnosci_miesiace"]
+    )
+    target_monthly_revenue = lifecycle["ogolem"]["przychod"] / 12
+    target_monthly_demand = lifecycle["bezposrednie_minuty_spraw"] / 12
+    last_twelve = rows[-12:] if len(rows) >= 12 else []
+    mature_revenue = (
+        sum(row["Przychód razem"] for row in last_twelve) / 12
+        if last_twelve else None
+    )
+    mature_demand = (
+        sum(row["Zapotrzebowanie na pracę (h)"] * 60 for row in last_twelve) / 12
+        if last_twelve else None
+    )
+    maturity_reached = (
+        capacity["status_pojemnosci"] != "Niewystarczająca"
+        and horizon >= nominal_maturity_month + 11
+        and mature_revenue is not None
+        and mature_demand is not None
+        and isclose(mature_revenue, target_monthly_revenue, rel_tol=1e-9, abs_tol=1e-6)
+        and isclose(mature_demand, target_monthly_demand, rel_tol=1e-9, abs_tol=1e-6)
+    )
+    steady_monthly_result = (
+        mature_revenue - capacity["miesieczny_koszt_zespolu"]
+        if maturity_reached and mature_revenue is not None
+        else None
+    )
+    gross_minutes = capacity["pojemnosc_brutto_minuty"]
+    average_utilization = (
+        sum(
+            row["Czynności dzienne (h)"] + row["Wykonana praca bezpośrednia (h)"]
+            for row in rows
+        )
+        / len(rows)
+        / (gross_minutes / 60)
+        * 100
+        if gross_minutes > TOLERANCJA
+        else None
+    )
+    backlog_months = (
+        backlog_end_minutes / capacity["pojemnosc_na_sprawy_minuty"]
+        if capacity["pojemnosc_na_sprawy_minuty"] > TOLERANCJA
+        else (0.0 if backlog_end_minutes <= TOLERANCJA else None)
+    )
+    average_capacity_delay = (
+        completed_delay_weight / completed_cases_for_delay
+        if completed_cases_for_delay > TOLERANCJA
+        else 0.0
+    )
+    break_even_sustainability = _status_break_even(
+        break_even, capacity["status_pojemnosci"], steady_monthly_result
     )
 
     return {
         "parametry_czasowe": czas,
-        "tabela_miesieczna": tabela_w_horyzoncie,
-        "pelna_tabela_miesieczna": pelna_tabela,
-        "ostatni_miesiac_pelnego_cyklu": ostatni_miesiac,
+        "tabela_miesieczna": rows,
+        "pojemnosc": {
+            **capacity,
+            "minimalna_liczba_pracownikow_dla_stabilnosci": minimum_staff,
+            "srednie_wykorzystanie_percent": average_utilization,
+        },
         "kpi": {
             "break_even_skumulowany": break_even["etykieta"],
             "break_even_status": break_even["status"],
             "break_even_miesiac": break_even["miesiac"],
-            "pierwszy_dodatni_miesiac": dodatni,
-            "najglebszy_deficyt_skumulowany": najglebszy["Wynik skumulowany"],
-            "miesiac_najglebszego_deficytu": najglebszy["Miesiąc"],
-            "wynik_skumulowany_na_koniec_horyzontu": koncowy,
-            "udzial_przychodu_lifecycle_w_horyzoncie": udzial_przychodu,
+            "status_break_even": break_even_sustainability,
+            "pierwszy_dodatni_miesiac": first_positive,
+            "najglebszy_deficyt_skumulowany": deepest[
+                "Wynik skumulowany przed podatkiem"
+            ],
+            "miesiac_najglebszego_deficytu": deepest["Miesiąc"],
+            "wynik_skumulowany_na_koniec_horyzontu": rows[-1][
+                "Wynik skumulowany przed podatkiem"
+            ],
+            "wynik_miesieczny_w_stanie_stabilnym": steady_monthly_result,
+            "wynik_roczny_w_stanie_stabilnym": (
+                steady_monthly_result * 12
+                if steady_monthly_result is not None else None
+            ),
         },
         "podsumowanie": {
-            "przychod_pelny": pelny_przychod,
-            "koszt_pelny": pelny_koszt,
-            "przychod_w_horyzoncie": przychod_w_horyzoncie,
-            "koszt_w_horyzoncie": koszt_w_horyzoncie,
-            "pozostaly_przychod": pozostaly_przychod,
-            "pozostaly_koszt": pozostaly_koszt,
-            "pelny_cykl_w_horyzoncie": pelny_w_horyzoncie,
-            "liczba_ugod": liczba_ugod,
-            "liczba_zakonczen_i": liczba_i,
-            "liczba_zakonczen_ii": liczba_ii,
+            "roczny_naplyw": lifecycle["ogolem"]["liczba_spraw"],
+            "sredni_naplyw_miesieczny": monthly_inflow,
+            "laczny_naplyw": monthly_inflow * horizon,
+            "aktywne_sprawy": rows[-1]["Aktywne sprawy"],
+            "backlog_koniec_godziny": rows[-1]["Backlog pracy (h)"],
+            "maksymalny_backlog_godziny": max(row["Backlog pracy (h)"] for row in rows),
+            "miesiace_backlogu": backlog_months,
+            "srednie_opoznienie_pojemnosci_miesiace": average_capacity_delay,
+            "maksymalne_opoznienie_pojemnosci_miesiace": maximum_capacity_delay,
+            "dojrzalosc_osiagnieta": maturity_reached,
+            "nominalny_miesiac_dojrzalosci": nominal_maturity_month,
+            "sredni_dojrzaly_przychod_miesieczny": mature_revenue if maturity_reached else None,
+            "sredni_dojrzaly_popyt_minuty": mature_demand if maturity_reached else None,
         },
-        "uzgodnienie": {
-            "przychod_czasowy": pelny_przychod,
-            "przychod_lifecycle": lifecycle["ogolem"]["przychod"],
-            "przychod_ugody_czasowy": _suma(pelna_tabela, "Przychód z ugód"),
-            "przychod_wyroki_czasowy": _suma(pelna_tabela, "Przychód z wyroków"),
-            "bezposrednie_minuty_czasowe": pelne_minuty,
-            "bezposrednie_minuty_lifecycle": lifecycle["bezposrednie_minuty_spraw"],
-            "czynnosci_dzienne_minuty_czasowe": pelne_minuty_dzienne,
-            "czynnosci_dzienne_minuty_lifecycle": lifecycle["czynnosci_dzienne_lifecycle_minuty"],
-            "koszt_czasowy": pelny_koszt,
-            "koszt_lifecycle": lifecycle["ogolem"]["koszt"],
-            "przychod_wedlug_rodzaju": dict(przychod_rodzaje),
-            "przychod_wedlug_wps": dict(przychod_wps),
+        "walidacja": {
+            "kohorta_miesieczna": cohort_reference,
+            "kohorta_zbudowana": cohort_validations[0] if cohort_validations else {},
+            "roczny_przychod_lifecycle": lifecycle["ogolem"]["przychod"],
+            "roczne_minuty_bezposrednie_lifecycle": lifecycle["bezposrednie_minuty_spraw"],
+            "dojrzaly_przychod_roczny": (
+                mature_revenue * 12 if maturity_reached and mature_revenue is not None else None
+            ),
+            "dojrzaly_popyt_roczny_minuty": (
+                mature_demand * 12 if maturity_reached and mature_demand is not None else None
+            ),
+            "praca_nalezna_do_horyzontu_minuty": total_due_minutes,
+            "praca_wykonana_minuty": total_executed_minutes,
+            "backlog_minuty": backlog_end_minutes,
         },
     }
+
+
+def porownaj_obsade(
+    parametry: dict,
+    parametry_czasowe: dict | None = None,
+    maksymalna_liczba_pracownikow: int | None = None,
+) -> list[dict]:
+    """Porównuje warianty obsady bez automatycznego wyboru najlepszego."""
+    czas = _parametry_czasowe(parametry_czasowe)
+    lifecycle = oblicz_model(parametry)
+    minimum = minimalna_liczba_pracownikow_dla_stabilnosci(parametry, lifecycle)
+    if maksymalna_liczba_pracownikow is None:
+        maksymalna_liczba_pracownikow = max(
+            parametry["liczba_pracownikow"] + 3,
+            (minimum + 2) if minimum is not None else 5,
+            1,
+        )
+    maksymalna_liczba_pracownikow = min(max(maksymalna_liczba_pracownikow, 1), 20)
+    rows = []
+    for employees in range(1, maksymalna_liczba_pracownikow + 1):
+        scenario_parameters = {**parametry, "liczba_pracownikow": employees}
+        result = oblicz_model_czasowy(scenario_parameters, czas)
+        first_positive = result["kpi"]["pierwszy_dodatni_miesiac"]
+        rows.append(
+            {
+                "Liczba pracowników": employees,
+                "Pojemność netto (h/mies.)": result["pojemnosc"][
+                    "pojemnosc_na_sprawy_minuty"
+                ] / 60,
+                "Status pojemności": result["pojemnosc"]["status_pojemnosci"],
+                "Średnie wykorzystanie": result["pojemnosc"][
+                    "srednie_wykorzystanie_percent"
+                ],
+                "Backlog po horyzoncie (h)": result["podsumowanie"][
+                    "backlog_koniec_godziny"
+                ],
+                "Miesięczny koszt zespołu": result["pojemnosc"][
+                    "miesieczny_koszt_zespolu"
+                ],
+                "Pierwszy dodatni miesiąc": (
+                    f"Miesiąc {first_positive}" if first_positive is not None else "Brak"
+                ),
+                "Break-even skumulowany": result["kpi"]["break_even_skumulowany"],
+                "Wynik miesięczny w stanie stabilnym": result["kpi"][
+                    "wynik_miesieczny_w_stanie_stabilnym"
+                ],
+            }
+        )
+    return rows

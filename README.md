@@ -182,14 +182,30 @@ Linux and macOS:
 
 ---
 
-## Model „W czasie”
+## Ekonomia kohorty i model „W czasie”
 
-Zakładka **W czasie** jest testowym modelem ekonomicznego rozkładu portfela na
-miesiące. Korzysta z tych samych przychodów, ścieżek spraw, nakładu pracy i
-kosztów co główny model lifecycle, a następnie pokazuje moment ich wystąpienia,
-wynik skumulowany oraz czasowy break-even przed podatkiem.
+Aplikacja pokazuje dwa powiązane, ale odrębne ujęcia ekonomiczne:
 
-To nie jest jeszcze pełny model przepływów pieniężnych. Obecna wersja nie
-uwzględnia miesięcznego payrollu ani kosztu niewykorzystanej obsady, terminów
-zapłaty podatku dochodowego, historycznych rozkładów przeżycia spraw ani
-rzeczywistych dat kalendarzowych.
+- główny model cyklu życia wycenia pełną ekonomię referencyjnej rocznej
+  kohorty spraw: przychód, pracę zużytą przez sprawy, koszt i wynik całego
+  cyklu;
+- sekcja **W czasie** symuluje ciągłe działanie firmy przy stałym napływie.
+  Wartość „Roczny napływ spraw” jest dzielona przez 12 i taka oczekiwana
+  kohorta pojawia się w każdym miesiącu horyzontu.
+
+Model czasowy nalicza co miesiąc pełny koszt dostarczonej obsady. Liczba
+pracowników wyznacza pojemność brutto, a czynności dzienne zużywają jej część
+bez tworzenia drugiego kosztu. Bezpośrednia praca nad sprawami trafia do kolejki
+FIFO. Jeżeli pojemność jest za mała, backlog narasta, zakończenia spraw się
+opóźniają, a przychód czeka na wykonanie wymaganej pracy. Niewykorzystana
+pojemność jest pokazywana zarządczo, ale jej koszt nadal pozostaje częścią
+pełnego kosztu zespołu.
+
+Break-even skumulowany oznacza pierwszy miesiąc po początkowym deficycie, w
+którym skumulowany wynik przed podatkiem wraca do co najmniej zera. Przecięcie
+nie jest oznaczane jako trwałe, jeżeli pojemność jest niewystarczająca albo
+dojrzały wynik miesięczny pozostaje ujemny.
+
+Obecna wersja nie modeluje terminów płatności podatku, podwyżek wynagrodzeń i
+inflacji, sezonowości napływu, rzeczywistych historycznych rozkładów czasu,
+świąt ani zmiennej długości miesięcy oraz zróżnicowanych ról pracowników.

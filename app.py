@@ -21,7 +21,7 @@ from model import (
     oblicz_udzialy_ugod,
     oblicz_wskazniki_ii_instancji,
 )
-from timeline import domyslne_parametry_czasowe, oblicz_model_czasowy
+from ui_timeline import renderuj_widok_czasowy
 
 
 st.set_page_config(page_title="Analiza rentowności", layout="wide")
@@ -89,7 +89,10 @@ def karta_podsumowania(etykieta: str, wartosc: str) -> None:
 
 def tabela_podsumowania(podsumowanie: dict) -> pd.DataFrame:
     dane = [
-        ("Liczba spraw", f"{podsumowanie['liczba_spraw']:,}".replace(",", " ")),
+        (
+            "Sprawy w kohorcie referencyjnej",
+            f"{podsumowanie['liczba_spraw']:,}".replace(",", " "),
+        ),
         ("Przychód", kwota(podsumowanie["przychod"])),
         ("Koszt", kwota(podsumowanie["koszt"])),
         ("Wynik przed podatkiem", kwota(podsumowanie["wynik"])),
@@ -177,13 +180,26 @@ def pokaz_kluczowa_granice(
 domyslne = domyslne_parametry()
 st.title("Analiza rentowności dla spraw EH")
 st.caption("Interaktywny model kosztów, przychodów i rentowności.")
+st.caption(
+    "Główna analiza pokazuje ekonomię referencyjnej rocznej kohorty. "
+    "Przepływ wyników w czasie znajduje się w sekcji „W czasie”."
+)
 st.write("")
 
 with st.sidebar:
     st.header("Założenia")
 
-    with st.expander("Portfel", expanded=True):
-        liczba_spraw = st.number_input("Liczba spraw w portfelu", min_value=0, value=domyslne["liczba_spraw"], step=1)
+    with st.expander("Kohorta referencyjna", expanded=True):
+        liczba_spraw = st.number_input(
+            "Roczny napływ spraw",
+            min_value=0,
+            value=domyslne["liczba_spraw"],
+            step=1,
+            help=(
+                "Liczba nowych spraw w roku. W głównym modelu tworzy kohortę "
+                "referencyjną, a w analizie czasowej napływa stale po 1/12 miesięcznie."
+            ),
+        )
         prog_wps = st.number_input("Próg WPS", min_value=0.0, value=float(domyslne["prog_wps"]), step=500.0)
         srednia_kwota_ugody_percent = st.number_input(
             "Średnia kwota ugody (% WPS)", min_value=0.0, max_value=100.0,
@@ -225,8 +241,8 @@ with st.sidebar:
                 liczba_spraw, udzialy_do_podsumowania, udzial_ii_instancji_percent,
                 domyslne["obsluga_ii_instancji_minuty"],
             )
-            karta_podsumowania("Sprawy bez ugody", f"{procent(udzialy_do_podsumowania['bez_ugody'])} całego portfela")
-            karta_podsumowania("Sprawy w II instancji", f"{procent(wskazniki_ii_sidebar['udzial_ii_instancji_w_portfelu'])} całego portfela")
+            karta_podsumowania("Sprawy bez ugody", f"{procent(udzialy_do_podsumowania['bez_ugody'])} kohorty")
+            karta_podsumowania("Sprawy w II instancji", f"{procent(wskazniki_ii_sidebar['udzial_ii_instancji_w_portfelu'])} kohorty")
             karta_podsumowania("Oczekiwana liczba spraw w II instancji", liczba(wskazniki_ii_sidebar["oczekiwana_liczba_spraw_ii_instancji"], 1))
 
     with st.expander("Ugody"):
@@ -272,19 +288,19 @@ with st.sidebar:
         st.caption("W tym:")
         st.write(
             "Szansa na ugodę poza ramami: "
-            f"**{procent(udzialy_ugod['szansa_poza_ramami'])} całego portfela**"
+            f"**{procent(udzialy_ugod['szansa_poza_ramami'])} kohorty**"
         )
         st.write(
             "Brak szans na ugodę: "
-            f"**{procent(udzialy_ugod['brak_szans'])} całego portfela**"
+            f"**{procent(udzialy_ugod['brak_szans'])} kohorty**"
         )
         st.write(
             "Szansa poza ramami → zawarte ugody: "
-            f"**{procent(udzialy_ugod['zawarte_poza_ramami'])} całego portfela**"
+            f"**{procent(udzialy_ugod['zawarte_poza_ramami'])} kohorty**"
         )
         st.write(
             "Szansa poza ramami → brak ugody: "
-            f"**{procent(udzialy_ugod['brak_ugody_poza_ramami'])} całego portfela**"
+            f"**{procent(udzialy_ugod['brak_ugody_poza_ramami'])} kohorty**"
         )
         karta_podsumowania(
             "Łączny udział spraw zakończonych ugodą",
@@ -297,7 +313,10 @@ with st.sidebar:
     with st.expander("Koszt pracy"):
         koszt_staly = st.number_input("Koszt stały na godzinę", min_value=0.0, value=domyslne["koszt_staly_na_godzine"], step=1.0)
         wynagrodzenie_pracownika = st.number_input("Wynagrodzenie pracownika na godzinę", min_value=0.0, value=domyslne["wynagrodzenie_pracownika_na_godzine"], step=1.0)
-        st.caption("Poniższe parametry dotyczą wyłącznie rocznej pojemności operacyjnej, a nie kosztu pełnego cyklu kohorty.")
+        st.caption(
+            "Obsada nie zmienia kosztu cyklu kohorty referencyjnej. W analizie "
+            "„W czasie” wyznacza jednak miesięczną pojemność i pełny koszt zespołu."
+        )
         liczba_pracownikow = st.number_input(
             "Liczba pracowników", min_value=0,
             value=int(domyslne["liczba_pracownikow"]), step=1,
@@ -346,7 +365,7 @@ with st.sidebar:
         )
         karta_podsumowania(
             "Oczekiwany dodatkowy czas II instancji",
-            f"{liczba(wskazniki_ii_czas['ii_instancja_minuty_na_sprawe_portfela'], 2)} min na sprawę portfela",
+            f"{liczba(wskazniki_ii_czas['ii_instancja_minuty_na_sprawe_portfela'], 2)} min na sprawę kohorty",
         )
         st.divider()
         st.caption("Dodatkowy czas według rodzaju sprawy")
@@ -456,7 +475,7 @@ podzial_tabela = pd.DataFrame([
     {"Rodzaj": rodzaj, "Liczba spraw": sum(wartosci.values()), "WPS od progu wzwyż": wartosci["wysoki_wps"], "WPS poniżej progu": wartosci["niski_wps"]}
     for rodzaj, wartosci in wyniki["podzial_spraw"].items()
 ])
-with st.expander("Wyliczony podział portfela"):
+with st.expander("Wyliczony podział kohorty referencyjnej"):
     st.dataframe(podzial_tabela, hide_index=True, width="stretch")
     st.caption(f"Łącznie: {ogolem['liczba_spraw']} spraw · WPS od progu wzwyż: {wyniki['wps_wysoki']['liczba_spraw']} · WPS poniżej progu: {wyniki['wps_niski']['liczba_spraw']}")
 
@@ -467,7 +486,7 @@ def wiersz_laczny(rodzaj: str, dane: dict) -> dict:
         "Zakres WPS": "Łącznie",
         "Opis": KATEGORIE_SPRAW[rodzaj],
         "Liczba spraw": liczba,
-        "Udział w portfelu": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
+        "Udział w kohorcie": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
         "Bezpośredni czas jednej sprawy (h)": (wyniki["srednie_minuty_sciezki_ugody"] + dodatkowe[rodzaj]) / 60,
         "Koszt jednej sprawy": dane["sredni_koszt"],
         "Łączny przychód": dane["przychod"],
@@ -484,7 +503,7 @@ def wiersz_grupy(grupa: dict, zakres_wps: str) -> dict:
         "Zakres WPS": zakres_wps,
         "Opis": "",
         "Liczba spraw": liczba,
-        "Udział w portfelu": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
+        "Udział w kohorcie": liczba / ogolem["liczba_spraw"] * 100 if ogolem["liczba_spraw"] else 0.0,
         "Bezpośredni czas jednej sprawy (h)": grupa["laczne_minuty"] / 60,
         "Koszt jednej sprawy": grupa["koszt"],
         "Łączny przychód": grupa["laczny_przychod"],
@@ -514,7 +533,7 @@ else:
 st.dataframe(
     tabela_rodzaje, hide_index=True, width="stretch",
     column_config={
-        "Udział w portfelu": st.column_config.NumberColumn(format="%.1f%%"),
+        "Udział w kohorcie": st.column_config.NumberColumn(format="%.1f%%"),
         "Bezpośredni czas jednej sprawy (h)": st.column_config.NumberColumn(format="%.2f"),
         "Koszt jednej sprawy": st.column_config.NumberColumn(format="%.2f zł"),
         "Łączny przychód": st.column_config.NumberColumn(format="%.2f zł"),
@@ -539,11 +558,23 @@ st.bar_chart(pd.DataFrame({"Średni wynik przed podatkiem": [wyniki["wps_niski"]
 st.divider()
 st.header("Centrum rentowności i decyzji")
 st.caption("Analiza wpływu parametrów, granic rentowności i możliwości poprawy wyniku.")
-tab_prog, tab_wrazliwosc, tab_ugody, tab_portfel, tab_symulator, tab_rekomendacje, tab_czas = st.tabs([
-    "Próg i bufor", "Wrażliwość", "Ugody", "Portfel i pojemność", "Symulator", "Rekomendacje", "W czasie",
-])
+sekcje_decyzyjne = (
+    "Próg i bufor",
+    "Wrażliwość",
+    "Ugody",
+    "Portfel i pojemność",
+    "W czasie",
+    "Symulator",
+    "Rekomendacje",
+)
+wybrana_sekcja = st.segmented_control(
+    "Wybierz analizę",
+    sekcje_decyzyjne,
+    default="Próg i bufor",
+    width="stretch",
+)
 
-with tab_prog:
+if wybrana_sekcja == "Próg i bufor":
     stan, cel, status_celu = st.columns([1, 1.25, 1], gap="large")
     stan.metric("Obecna marża po podatku", procent(ogolem["marza"]))
     with cel:
@@ -616,7 +647,7 @@ with tab_prog:
             "Sama zmiana skuteczności ugód nie wystarczy do osiągnięcia celu.",
         )
         st.write(
-            "Łączny udział całego portfela zakończony ugodą: "
+            "Łączny udział kohorty referencyjnej zakończony ugodą: "
             f"**{procent(wyniki['udzialy_ugod']['zakonczone_ugoda'])}**"
         )
 
@@ -629,10 +660,10 @@ with tab_prog:
 
     st.subheader("Pełna analiza granic")
     if analiza_progow["cel_spelniony"]:
-        st.success(f"Portfel utrzymuje co najmniej {procent(docelowa_marza)} marży. Granice pokazują, jak daleko mogą pogorszyć się pojedyncze parametry.")
+        st.success(f"Kohorta utrzymuje co najmniej {procent(docelowa_marza)} marży. Granice pokazują, jak daleko mogą pogorszyć się pojedyncze parametry.")
         kolumna_zmiany = "Dostępny bufor"
     else:
-        st.warning("Portfel nie posiada obecnie bufora dla wybranego poziomu marży. Poniżej pokazano zmianę wymaganą do osiągnięcia celu.")
+        st.warning("Kohorta nie posiada obecnie bufora dla wybranego poziomu marży. Poniżej pokazano zmianę wymaganą do osiągnięcia celu.")
         kolumna_zmiany = "Wymagana zmiana"
     tabela_progow = []
     for pozycja in analiza_progow["pozycje"]:
@@ -662,7 +693,7 @@ with tab_prog:
     else:
         st.write("Brak pojedynczych zmian spełniających cel finansowy w badanym zakresie.")
 
-with tab_wrazliwosc:
+if wybrana_sekcja == "Wrażliwość":
     st.subheader("Analiza wrażliwości")
     zmiana_wrazliwosci = st.number_input(
         "Zmiana analizowanego parametru (%)",
@@ -725,7 +756,7 @@ with tab_wrazliwosc:
         "Wpływ skrócenia o 10 min": st.column_config.NumberColumn(format="%.2f zł"),
     })
 
-with tab_ugody:
+if wybrana_sekcja == "Ugody":
     st.subheader("Ekonomika ugód")
     ekonomika = ekonomika_ugod(parametry)
     st.subheader("Przychód według sposobu zakończenia")
@@ -741,8 +772,11 @@ with tab_ugody:
     )
     st.subheader("Czas ścieżek zakończenia")
     st.caption("Czasy ścieżek nie obejmują dodatkowego czasu P1/P2/P3 ani czynności dziennych pracowników.")
-    st.dataframe(pd.DataFrame(ekonomika["sciezki"]), hide_index=True, width="stretch", column_config={
-        "Efektywny udział portfela": st.column_config.NumberColumn(format="%.2f%%"),
+    tabela_sciezek = pd.DataFrame(ekonomika["sciezki"]).rename(columns={
+        "Efektywny udział portfela": "Efektywny udział kohorty",
+    })
+    st.dataframe(tabela_sciezek, hide_index=True, width="stretch", column_config={
+        "Efektywny udział kohorty": st.column_config.NumberColumn(format="%.2f%%"),
         "Czas podstawowy ścieżki": st.column_config.NumberColumn(format="%.1f min"),
         "Oczekiwany czas II instancji": st.column_config.NumberColumn(format="%.1f min"),
         "Łączny oczekiwany czas ścieżki": st.column_config.NumberColumn(format="%.1f min"),
@@ -750,12 +784,12 @@ with tab_ugody:
     })
     st.subheader("Porównanie czasu i kosztu obsługi ścieżek")
     tabela_porownan_ugod = pd.DataFrame(ekonomika["porownania"]).rename(columns={
-        "Wpływ roczny przy obecnym udziale": "Wpływ dla portfela przy obecnym udziale",
+        "Wpływ roczny przy obecnym udziale": "Wpływ dla kohorty przy obecnym udziale",
     })
     st.dataframe(tabela_porownan_ugod, hide_index=True, width="stretch", column_config={
         "Różnica minut na sprawę": st.column_config.NumberColumn(format="%.1f min"),
         "Różnica PLN na sprawę": st.column_config.NumberColumn(format="%.2f zł"),
-        "Wpływ dla portfela przy obecnym udziale": st.column_config.NumberColumn(format="%.2f zł"),
+        "Wpływ dla kohorty przy obecnym udziale": st.column_config.NumberColumn(format="%.2f zł"),
     })
     st.subheader("Opłacalność prób ugodowych poza ramami")
     u1, u2, u3 = st.columns(3)
@@ -765,20 +799,20 @@ with tab_ugody:
     st.subheader("Wartość poprawy skuteczności")
     st.dataframe(pd.DataFrame([{
         "Zmiana": f"+{x['Zmiana']:.1f} p.p.".replace(".", ","),
-        "Wpływ na wynik portfela": x["Wpływ na wynik roczny"],
+        "Wpływ na wynik kohorty": x["Wpływ na wynik roczny"],
     } for x in ekonomika["wartosc_poprawy"]]), hide_index=True, width="stretch", column_config={
-        "Wpływ na wynik portfela": st.column_config.NumberColumn(format="%.2f zł"),
+        "Wpływ na wynik kohorty": st.column_config.NumberColumn(format="%.2f zł"),
     })
     s1, s2 = st.columns(2)
     s1.metric("Wpływ obecnej strategii prób ugodowych", kwota(ekonomika["strategia_wplyw_pln"]))
     s2.metric("Wpływ strategii na czas", f"{ekonomika['strategia_wplyw_godzin']:+.1f} h".replace(".", ","))
 
-with tab_portfel:
+if wybrana_sekcja == "Portfel i pojemność":
     st.subheader("Portfel i pojemność zespołu")
     st.caption(
-        "Pojemność jest analizą operacyjną i nie ogranicza obliczeń rentowności portfela. "
-        "Parametry liczby pracowników i dni pracy dotyczą wyłącznie pojemności operacyjnej "
-        "w roku i nie ograniczają rentowności całego cyklu kohorty."
+        "W tym widoku pojemność nie ogranicza obliczeń ekonomii cyklu życia "
+        "kohorty referencyjnej. W sekcji „W czasie” ta sama obsada wyznacza "
+        "miesięczną pojemność, backlog i pełny koszt zespołu."
     )
     pojemnosc_analiza = analiza_pojemnosci(parametry)
     p1, p2, p3, p4 = st.columns(4)
@@ -791,7 +825,7 @@ with tab_portfel:
     p6.metric("Wymagane godziny obsługi", liczba(pojemnosc_analiza["godziny_wymagane"], 1))
     p7.metric("Wykorzystanie pojemności", procent(pojemnosc_analiza["wykorzystanie"]) if pojemnosc_analiza["wykorzystanie"] is not None else "Brak pojemności")
     p8.metric("Wolna pojemność", f"{liczba(pojemnosc_analiza['wolne_godziny'], 1)} h")
-    st.write(f"Minimalna liczba pracowników dla obecnego portfela: **{pojemnosc_analiza['minimalni_pracownicy'] if pojemnosc_analiza['minimalni_pracownicy'] is not None else 'powyżej badanego zakresu'}**")
+    st.write(f"Minimalna liczba pracowników dla kohorty referencyjnej: **{pojemnosc_analiza['minimalni_pracownicy'] if pojemnosc_analiza['minimalni_pracownicy'] is not None else 'powyżej badanego zakresu'}**")
     if pojemnosc_analiza["maksymalne_sprawy"] is None:
         powod = pojemnosc_analiza["powod_braku_maksimum"]
         if powod == "brak_pojemnosci":
@@ -831,7 +865,10 @@ with tab_portfel:
         st.write(f"Najbardziej rentowny segment: **{pojemnosc_analiza['segmenty'][0]['Segment']}**")
         st.write(f"Najmniej rentowny segment: **{pojemnosc_analiza['segmenty'][-1]['Segment']}**")
 
-with tab_symulator:
+if wybrana_sekcja == "W czasie":
+    renderuj_widok_czasowy(parametry)
+
+if wybrana_sekcja == "Symulator":
     st.subheader("Symulator pojedynczej zmiany")
     st.caption("Pozostałe parametry pozostają bez zmian. Symulator nie zmienia wartości w panelu bocznym.")
     definicje = definicje_parametrow(parametry)
@@ -861,8 +898,15 @@ with tab_symulator:
         tabela_symulacji.append({"Wskaźnik": nazwa, "Obecnie": formatuj(obecna), "Scenariusz": formatuj(scenariuszowa), "Różnica": formatuj(roznica)})
     st.dataframe(pd.DataFrame(tabela_symulacji), hide_index=True, width="stretch")
 
-with tab_rekomendacje:
+if wybrana_sekcja == "Rekomendacje":
     st.subheader("Rekomendacje wynikające z modelu")
+    zmiana_wrazliwosci = 10
+    with st.spinner("Obliczanie rekomendacji dla bieżących założeń..."):
+        wrazliwosc = analiza_wrazliwosci(
+            parametry, zmiana_percent=float(zmiana_wrazliwosci)
+        )
+        analiza_progow = analizuj_progi(parametry, 0.0)
+        ekonomika = ekonomika_ugod(parametry)
     wplyw_wzgledny = wrazliwosc
     rekomendacje = rekomendacje_deterministyczne(wrazliwosc, analiza_progow, ekonomika)
 
@@ -936,7 +980,7 @@ with tab_rekomendacje:
     if ekonomika["minimalna_skutecznosc"] is None:
         st.write("Próby ugodowe poza ramami nie osiągają przewagi czasowej w badanym zakresie skuteczności.")
     else:
-        st.write(f"Obecna skuteczność: **{procent(ekonomika['obecna_skutecznosc'])}**; minimalna opłacalna: **{procent(ekonomika['minimalna_skutecznosc'])}**; wpływ strategii: **{kwota(ekonomika['strategia_wplyw_pln'])} dla portfela**.")
+        st.write(f"Obecna skuteczność: **{procent(ekonomika['obecna_skutecznosc'])}**; minimalna opłacalna: **{procent(ekonomika['minimalna_skutecznosc'])}**; wpływ strategii: **{kwota(ekonomika['strategia_wplyw_pln'])} dla kohorty**.")
     if analiza_progow["cel_spelniony"]:
         st.markdown("#### Najmniejsze bufory rentowności")
         progi_rekomendacji = rekomendacje["najmniejsze_bufory"]
@@ -948,184 +992,3 @@ with tab_rekomendacje:
             st.write(f"**{pozycja['parametr']}**: granica {formatuj_parametr(pozycja['granica'], pozycja['jednostka'])}, zmiana {formatuj_zmiane(pozycja['zmiana'], pozycja['jednostka'])}")
     else:
         st.write("Brak pojedynczych zmian dla wybranego celu marży w badanym zakresie.")
-
-with tab_czas:
-    st.subheader("Kiedy zaczniemy zarabiać?")
-    st.caption(
-        "Model czasowy rozkłada obecną ekonomię portfela na miesiące. "
-        "Nie zmienia łącznego przychodu ani kosztu lifecycle. W tej wersji nie "
-        "modeluje miesięcznego payrollu ani momentu zapłaty podatku dochodowego."
-    )
-
-    czas_domyslny = domyslne_parametry_czasowe()
-    with st.expander("Założenia modelu czasowego", expanded=True):
-        tryb_naplywu_etykieta = st.radio(
-            "Sposób napływu spraw",
-            ("Równomiernie", "Wszystkie na początku"),
-            horizontal=True,
-            help=(
-                "Miesiąc 0 oznacza moment przejęcia sprawy do obsługi przez "
-                "kancelarię, a nie formalną datę wniesienia pozwu."
-            ),
-        )
-        okres_naplywu_miesiace = czas_domyslny["okres_naplywu_miesiace"]
-        if tryb_naplywu_etykieta == "Równomiernie":
-            okres_naplywu_miesiace = st.number_input(
-                "Okres napływu spraw (miesiące)",
-                min_value=1,
-                max_value=60,
-                value=czas_domyslny["okres_naplywu_miesiace"],
-                step=1,
-                help="Portfel jest dzielony na równe oczekiwane kohorty miesięczne.",
-            )
-        czas_1, czas_2, czas_3 = st.columns(3)
-        with czas_1:
-            miesiace_do_ugody = st.number_input(
-                "Od wpływu sprawy do ugody (miesiące)",
-                min_value=0,
-                max_value=120,
-                value=czas_domyslny["miesiace_do_ugody"],
-                step=1,
-                help="Oczekiwany miesiąc zakończenia sprawy ugodą.",
-            )
-        with czas_2:
-            miesiace_do_wyroku_i = st.number_input(
-                "Od wpływu sprawy do wyroku I instancji (miesiące)",
-                min_value=0,
-                max_value=120,
-                value=czas_domyslny["miesiace_do_wyroku_i"],
-                step=1,
-                help="Okres aktywnej obsługi procesu w I instancji.",
-            )
-        with czas_3:
-            miesiace_wyrok_i_do_ii = st.number_input(
-                "Od wyroku I do wyroku II instancji (miesiące)",
-                min_value=0,
-                max_value=120,
-                value=czas_domyslny["miesiace_wyrok_i_do_ii"],
-                step=1,
-                help="Dotyczy oczekiwanego odsetka spraw przechodzących do II instancji.",
-            )
-        czas_4, czas_5 = st.columns(2)
-        with czas_4:
-            opoznienie_platnosci_miesiace = st.number_input(
-                "Opóźnienie płatności klienta (miesiące)",
-                min_value=0,
-                max_value=120,
-                value=czas_domyslny["opoznienie_platnosci_miesiace"],
-                step=1,
-                help="Przesuwa przychód po zakończeniu sprawy, bez zmiany jego kwoty.",
-            )
-        with czas_5:
-            horyzont_miesiace = st.number_input(
-                "Horyzont analizy (miesiące)",
-                min_value=6,
-                max_value=120,
-                value=czas_domyslny["horyzont_miesiace"],
-                step=1,
-                help="Zakres widocznej tabeli i wykresów; pełny cykl nadal jest uzgadniany.",
-            )
-
-    parametry_czasowe = {
-        "tryb_naplywu": tryb_naplywu_etykieta,
-        "okres_naplywu_miesiace": int(okres_naplywu_miesiace),
-        "miesiace_do_ugody": int(miesiace_do_ugody),
-        "miesiace_do_wyroku_i": int(miesiace_do_wyroku_i),
-        "miesiace_wyrok_i_do_ii": int(miesiace_wyrok_i_do_ii),
-        "opoznienie_platnosci_miesiace": int(opoznienie_platnosci_miesiace),
-        "horyzont_miesiace": int(horyzont_miesiace),
-    }
-    czasowy = oblicz_model_czasowy(parametry, parametry_czasowe)
-    kpi_czas = czasowy["kpi"]
-
-    czas_kpi_1, czas_kpi_2, czas_kpi_3 = st.columns(3)
-    czas_kpi_1.metric(
-        "Break-even skumulowany", kpi_czas["break_even_skumulowany"]
-    )
-    czas_kpi_2.metric(
-        "Pierwszy miesiąc dodatniego wyniku miesięcznego",
-        (
-            f"Miesiąc {kpi_czas['pierwszy_dodatni_miesiac']}"
-            if kpi_czas["pierwszy_dodatni_miesiac"] is not None
-            else "Nie osiągnięto w horyzoncie"
-        ),
-    )
-    czas_kpi_3.metric(
-        "Najgłębszy deficyt skumulowany",
-        kwota(kpi_czas["najglebszy_deficyt_skumulowany"]),
-        f"miesiąc {kpi_czas['miesiac_najglebszego_deficytu']}",
-    )
-    czas_kpi_4, czas_kpi_5 = st.columns(2)
-    czas_kpi_4.metric(
-        "Wynik skumulowany na końcu horyzontu",
-        kwota(kpi_czas["wynik_skumulowany_na_koniec_horyzontu"]),
-    )
-    czas_kpi_5.metric(
-        "Udział przychodu lifecycle zrealizowany w horyzoncie",
-        procent(kpi_czas["udzial_przychodu_lifecycle_w_horyzoncie"]),
-    )
-    st.caption(
-        "Najgłębszy deficyt jest modelowanym wynikiem ekonomicznym, a nie "
-        "rzeczywistym zapotrzebowaniem na finansowanie. Payroll i termin zapłaty "
-        "podatku nie są tu uwzględnione."
-    )
-    st.caption(
-        "Podatek dochodowy nie jest w tej wersji rozkładany w czasie. "
-        "Próg czasowy dotyczy wyniku ekonomicznego przed podatkiem."
-    )
-
-    if not czasowy["podsumowanie"]["pelny_cykl_w_horyzoncie"]:
-        st.warning("Horyzont nie obejmuje pełnego cyklu portfela.")
-        st.caption(
-            f"Po horyzoncie pozostaje {kwota(czasowy['podsumowanie']['pozostaly_przychod'])} "
-            f"przychodu i {kwota(czasowy['podsumowanie']['pozostaly_koszt'])} kosztu."
-        )
-
-    tabela_czasowa = pd.DataFrame(czasowy["tabela_miesieczna"])
-    st.subheader("Przychód, koszt i wynik miesięczny")
-    st.line_chart(
-        tabela_czasowa.set_index("Miesiąc")[
-            ["Przychód razem", "Koszt", "Wynik miesięczny"]
-        ],
-        height=340,
-    )
-    st.subheader("Skumulowany wynik przed podatkiem")
-    wykres_skumulowany = tabela_czasowa.set_index("Miesiąc")[["Wynik skumulowany"]].copy()
-    wykres_skumulowany["Poziom zero"] = 0.0
-    st.line_chart(wykres_skumulowany, height=340)
-
-    with st.expander("Szczegółowa tabela miesięczna"):
-        kolumny_tabeli = [
-            "Miesiąc",
-            "Nowe sprawy",
-            "Ugody",
-            "Zakończenia po I instancji",
-            "Zakończenia po II instancji",
-            "Przychód z ugód",
-            "Przychód z wyroków",
-            "Przychód razem",
-            "Bezpośrednie godziny pracy",
-            "Godziny czynności dziennych",
-            "Koszt",
-            "Wynik miesięczny",
-            "Wynik skumulowany",
-        ]
-        st.dataframe(
-            tabela_czasowa[kolumny_tabeli],
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "Nowe sprawy": st.column_config.NumberColumn(format="%.2f"),
-                "Ugody": st.column_config.NumberColumn(format="%.2f"),
-                "Zakończenia po I instancji": st.column_config.NumberColumn(format="%.2f"),
-                "Zakończenia po II instancji": st.column_config.NumberColumn(format="%.2f"),
-                "Przychód z ugód": st.column_config.NumberColumn(format="%.2f zł"),
-                "Przychód z wyroków": st.column_config.NumberColumn(format="%.2f zł"),
-                "Przychód razem": st.column_config.NumberColumn(format="%.2f zł"),
-                "Bezpośrednie godziny pracy": st.column_config.NumberColumn(format="%.2f h"),
-                "Godziny czynności dziennych": st.column_config.NumberColumn(format="%.2f h"),
-                "Koszt": st.column_config.NumberColumn(format="%.2f zł"),
-                "Wynik miesięczny": st.column_config.NumberColumn(format="%.2f zł"),
-                "Wynik skumulowany": st.column_config.NumberColumn(format="%.2f zł"),
-            },
-        )
