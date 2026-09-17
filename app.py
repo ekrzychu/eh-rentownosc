@@ -37,7 +37,13 @@ st.markdown(
         [data-testid="stSidebar"] [data-testid="stExpander"] {margin-bottom: 0.65rem;}
         [data-testid="stSidebar"] [data-testid="stNumberInput"] {margin-bottom: 0.5rem;}
         [data-testid="stMetric"] {padding-top: 0.3rem;}
-        [data-testid="stMetricValue"] {white-space: nowrap;}
+        [data-testid="stMetricValue"] {
+            white-space: normal;
+            overflow: visible;
+            text-overflow: clip;
+            overflow-wrap: anywhere;
+            line-height: 1.15;
+        }
 
         @media (max-width: 1600px) {
             [data-testid="stMetricValue"] {
@@ -425,7 +431,11 @@ parametry = {
     "udzial_ii_instancji_percent": udzial_ii_instancji_percent,
     "obsluga_ii_instancji_minuty": obsluga_ii_instancji_minuty,
 }
-wyniki = oblicz_model(parametry)
+try:
+    wyniki = oblicz_model(parametry)
+except ValueError as error:
+    st.error(str(error))
+    st.stop()
 ogolem = wyniki["ogolem"]
 
 kpi = st.columns(4, gap="medium")
@@ -439,8 +449,8 @@ podatek_1.metric("Wynik przed podatkiem", kwota(ogolem["wynik_przed_podatkiem"])
 podatek_2.metric("Podatek dochodowy", kwota(ogolem["podatek_dochodowy"]))
 
 st.caption(
-    "Czynności dzienne są naliczane proporcjonalnie do liczby osobodni potrzebnych "
-    "do obsługi całej kohorty. Nie są ograniczane liczbą dni pracy w jednym roku."
+    "Każda osobodniówka ma 480 płatnych minut. Czynności dzienne mieszczą się "
+    "w tym czasie i zmniejszają część dnia dostępną na bezpośrednią obsługę spraw."
 )
 cykl_1, cykl_2 = st.columns(2)
 cykl_1.metric(

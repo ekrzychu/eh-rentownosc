@@ -101,7 +101,7 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
     def test_brak_pracy_bezposredniej_nie_usuwa_kosztu_zespolu(self):
         wynik = oblicz_model_czasowy({**self.parametry, "liczba_spraw": 0})
         wiersz = wynik["tabela_miesieczna"][0]
-        self.assertEqual(wiersz["Wykonana praca bezpośrednia (h)"], 0.0)
+        self.assertEqual(wiersz["Wykonana praca (h)"], 0.0)
         self.assertAlmostEqual(
             wiersz["Niewykorzystana pojemność (h)"],
             wiersz["Pojemność brutto (h)"] - wiersz["Czynności dzienne (h)"],
@@ -141,10 +141,26 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             **self.parametry,
             "codzienne_czynnosci": {"Czynności dzienne": MINUTY_DNIA_PRACY},
         }
-        wynik = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 12})
-        self.assertEqual(wynik["pojemnosc"]["pojemnosc_na_sprawy_minuty"], 0.0)
-        self.assertTrue(wynik["pojemnosc"]["brak_pojemnosci_na_sprawy"])
-        self.assertGreater(wynik["podsumowanie"]["backlog_koniec_godziny"], 0.0)
+        with self.assertRaisesRegex(ValueError, "zużywają cały dzień pracy"):
+            oblicz_model_czasowy(parametry, {"horyzont_miesiace": 12})
+
+    def test_lifecycle_i_timeline_maja_wspolna_fizyke_pojemnosci(self):
+        lifecycle = oblicz_model(self.parametry)
+        pojemnosc = oblicz_pojemnosc_miesieczna(
+            {**self.parametry, "liczba_pracownikow": 1}, lifecycle
+        )
+        dzienne = sum(self.parametry["codzienne_czynnosci"].values())
+        self.assertAlmostEqual(
+            pojemnosc["pojemnosc_na_sprawy_minuty"] * 12,
+            self.parametry["liczba_dni_pracy_w_roku"]
+            * (MINUTY_DNIA_PRACY - dzienne),
+        )
+        self.assertAlmostEqual(
+            lifecycle["laczne_minuty"],
+            lifecycle["bezposrednie_minuty_spraw"]
+            * MINUTY_DNIA_PRACY
+            / (MINUTY_DNIA_PRACY - dzienne),
+        )
 
 
 class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
@@ -157,8 +173,8 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
         )
         self.assertEqual(wynik["pojemnosc"]["status_pojemnosci"], "Niewystarczająca")
         self.assertGreater(
-            wynik["tabela_miesieczna"][-1]["Backlog pracy (h)"],
-            wynik["tabela_miesieczna"][29]["Backlog pracy (h)"],
+            wynik["tabela_miesieczna"][-1]["Backlog na koniec (h)"],
+            wynik["tabela_miesieczna"][29]["Backlog na koniec (h)"],
         )
         walidacja = wynik["walidacja"]
         self.assertAlmostEqual(
@@ -217,8 +233,8 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
             opozniony["pojemnosc"]["pojemnosc_na_sprawy_minuty"],
         )
         self.assertEqual(
-            [w["Zapotrzebowanie na pracę (h)"] for w in bez["tabela_miesieczna"]],
-            [w["Zapotrzebowanie na pracę (h)"] for w in opozniony["tabela_miesieczna"]],
+            [w["Nowa praca (h)"] for w in bez["tabela_miesieczna"]],
+            [w["Nowa praca (h)"] for w in opozniony["tabela_miesieczna"]],
         )
         self.assertAlmostEqual(
             bez["walidacja"]["dojrzaly_przychod_roczny"],
@@ -289,8 +305,105 @@ class TestStabilnoscIDojrzalosc(unittest.TestCase):
         niedobor = oblicz_model_czasowy({**tanio, "liczba_pracownikow": 1})
         stabilny = oblicz_model_czasowy({**tanio, "liczba_pracownikow": 3})
         self.assertEqual(niedobor["kpi"]["break_even_status"], "osiagniety")
-        self.assertEqual(niedobor["kpi"]["status_break_even"], "Przecięcie nietrwałe")
+        self.assertEqual(
+            niedobor["kpi"]["status_break_even"],
+            "Brak trwałego break-even przy obecnej obsadzie",
+        )
         self.assertEqual(stabilny["kpi"]["status_break_even"], "Break-even trwały")
+
+    def test_niedobor_ma_kontekstowy_status_i_biezace_pelne_wykorzystanie(self):
+        wynik = oblicz_model_czasowy(
+            {**self.parametry, "liczba_pracownikow": 1}
+        )
+        self.assertEqual(
+            wynik["podsumowanie"]["status_stanu_stabilnego"],
+            "Nieosiągalny przy obecnej obsadzie",
+        )
+        self.assertNotIn(
+            "Poza horyzontem", wynik["podsumowanie"]["status_stanu_stabilnego"]
+        )
+        self.assertAlmostEqual(
+            wynik["pojemnosc"]["biezace_wykorzystanie_percent"], 100.0
+        )
+        self.assertAlmostEqual(
+            wynik["pojemnosc"]["ostatnie_12_miesiecy_wykorzystanie_percent"],
+            100.0,
+        )
+        self.assertLess(
+            wynik["pojemnosc"]["srednie_wykorzystanie_percent"], 100.0
+        )
+
+    def test_dodatnia_ekonomia_lifecycle_i_dobrana_obsada_sa_spojne(self):
+        tanio = {
+            **self.parametry,
+            "koszt_staly_na_godzine": 10.0,
+            "wynagrodzenie_pracownika_na_godzine": 10.0,
+            "liczba_pracownikow": 3,
+        }
+        lifecycle = oblicz_model(tanio)
+        temporal = oblicz_model_czasowy(tanio, {"horyzont_miesiace": 120})
+        self.assertGreater(lifecycle["ogolem"]["wynik_przed_podatkiem"], 0.0)
+        self.assertEqual(temporal["pojemnosc"]["status_pojemnosci"], "Stabilna")
+        self.assertGreater(
+            temporal["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 0.0
+        )
+
+    def test_nadmiar_obsady_moze_dac_strate_mimo_dodatniej_marzy_lifecycle(self):
+        tanio = {
+            **self.parametry,
+            "koszt_staly_na_godzine": 10.0,
+            "wynagrodzenie_pracownika_na_godzine": 10.0,
+            "liczba_pracownikow": 20,
+        }
+        lifecycle = oblicz_model(tanio)
+        temporal = oblicz_model_czasowy(tanio, {"horyzont_miesiace": 120})
+        self.assertGreater(lifecycle["ogolem"]["wynik_przed_podatkiem"], 0.0)
+        self.assertLess(
+            temporal["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 0.0
+        )
+        self.assertGreater(
+            temporal["diagnoza"]["koszt_niewykorzystanej_pojemnosci_horyzont"],
+            0.0,
+        )
+
+    def test_niedobor_opoznia_przychod_a_minimalna_obsada_ma_dodatnia_ekonomie(self):
+        tanio = {
+            **self.parametry,
+            "koszt_staly_na_godzine": 10.0,
+            "wynagrodzenie_pracownika_na_godzine": 10.0,
+            "liczba_pracownikow": 1,
+        }
+        temporal = oblicz_model_czasowy(tanio, {"horyzont_miesiace": 120})
+        self.assertTrue(temporal["diagnoza"]["strukturalny_niedobor_pojemnosci"])
+        self.assertGreater(temporal["podsumowanie"]["backlog_koniec_godziny"], 0.0)
+        self.assertGreater(
+            temporal["diagnoza"]["wynik_miesieczny_przy_minimalnej_obsadzie"],
+            0.0,
+        )
+
+    def test_miesieczne_rozliczenie_backlogu_i_aktywnych_spraw(self):
+        wynik = oblicz_model_czasowy(self.parametry)
+        for row in wynik["tabela_miesieczna"]:
+            self.assertAlmostEqual(
+                row["Praca oczekująca (h)"],
+                row["Backlog na początku (h)"] + row["Nowa praca (h)"],
+            )
+            self.assertAlmostEqual(
+                row["Backlog na koniec (h)"],
+                row["Praca oczekująca (h)"] - row["Wykonana praca (h)"],
+            )
+        walidacja = wynik["walidacja"]
+        self.assertAlmostEqual(
+            walidacja["laczny_naplyw_spraw"]
+            - walidacja["laczne_zakonczenia_spraw"],
+            walidacja["aktywne_sprawy"],
+        )
+
+    def test_miesiace_danych_zaczynaja_sie_od_jednego(self):
+        wynik = oblicz_model_czasowy(self.parametry)
+        miesiace = [row["Miesiąc"] for row in wynik["tabela_miesieczna"]]
+        self.assertEqual(miesiace[0], 1)
+        self.assertTrue(all(month >= 1 for month in miesiace))
 
     def test_porownanie_obsady_nie_wybiera_najlepszego_wiersza(self):
         rows = porownaj_obsade(

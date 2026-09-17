@@ -201,6 +201,20 @@ opóźniają, a przychód czeka na wykonanie wymaganej pracy. Niewykorzystana
 pojemność jest pokazywana zarządczo, ale jej koszt nadal pozostaje częścią
 pełnego kosztu zespołu.
 
+Oba widoki stosują tę samą fizyczną definicję dnia pracy: pracownik ma 480
+płatnych minut, w których mieszczą się zarówno czynności dzienne, jak i praca
+nad sprawami. Jeśli czynności dzienne zajmują `D` minut, jedna osobodniówka
+dostarcza `480 - D` minut pracy nad sprawami. Koszt zasobu przypisany do kohorty
+jest więc oparty na czasie `bezpośrednie minuty × 480 / (480 - D)`. Model
+czasowy stosuje tę samą relację przy wyznaczaniu pojemności, lecz nalicza pełny
+koszt faktycznie utrzymywanej obsady, także jej niewykorzystanego czasu.
+
+Widok **W czasie** rozdziela nową pracę przypadającą na miesiąc, pracę już
+oczekującą, pracę wykonaną oraz backlog na koniec. Osobno pokazuje deficyt
+rozruchowy, koszt niewykorzystanej pojemności i strukturalny niedobór obsady.
+Dlatego dodatnia marża kohorty lifecycle może współistnieć ze stratą czasową,
+jeśli zespół jest nadmiarowy, albo z rosnącym backlogiem, jeśli jest za mały.
+
 Break-even skumulowany oznacza pierwszy miesiąc po początkowym deficycie, w
 którym skumulowany wynik przed podatkiem wraca do co najmniej zera. Przecięcie
 nie jest oznaczane jako trwałe, jeżeli pojemność jest niewystarczająca albo

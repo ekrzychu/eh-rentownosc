@@ -219,17 +219,27 @@ class TestDrugaInstancja(unittest.TestCase):
 class TestCzasDziennyIPojemnosc(unittest.TestCase):
     def test_wzor_lifecycle_dla_1600_godzin(self):
         metryki = oblicz_czynnosci_dzienne_lifecycle(1_600 * 60, {"Dzienna": 90})
-        self.assertEqual(metryki["ekwiwalent_osobodni_kohorty"], 200.0)
-        self.assertEqual(metryki["czynnosci_dzienne_lifecycle_minuty"], 18_000.0)
-        self.assertEqual(metryki["czynnosci_dzienne_lifecycle_godziny"], 300.0)
-        self.assertEqual(1_600 + metryki["czynnosci_dzienne_lifecycle_godziny"], 1_900.0)
+        self.assertAlmostEqual(metryki["ekwiwalent_osobodni_kohorty"], 1600 / 6.5)
+        self.assertAlmostEqual(
+            metryki["czynnosci_dzienne_lifecycle_minuty"], 1600 / 6.5 * 90
+        )
+        self.assertAlmostEqual(
+            metryki["czynnosci_dzienne_lifecycle_godziny"], 369.2307692307692
+        )
+        self.assertAlmostEqual(
+            1_600 + metryki["czynnosci_dzienne_lifecycle_godziny"],
+            1_969.2307692307693,
+        )
+        self.assertEqual(metryki["produktywne_minuty_na_osobodzien"], 390)
 
     def test_lifecycle_nie_ma_rocznego_limitu_i_zachowuje_ulamki(self):
         ponad_rok = oblicz_czynnosci_dzienne_lifecycle(3_200 * 60, {"Dzienna": 90})
         ulamkowe = oblicz_czynnosci_dzienne_lifecycle(1_604 * 60, {"Dzienna": 90})
-        self.assertEqual(ponad_rok["ekwiwalent_osobodni_kohorty"], 400.0)
-        self.assertEqual(ponad_rok["czynnosci_dzienne_lifecycle_godziny"], 600.0)
-        self.assertEqual(ulamkowe["ekwiwalent_osobodni_kohorty"], 200.5)
+        self.assertAlmostEqual(ponad_rok["ekwiwalent_osobodni_kohorty"], 3200 / 6.5)
+        self.assertAlmostEqual(
+            ponad_rok["czynnosci_dzienne_lifecycle_godziny"], 3200 / 6.5 * 1.5
+        )
+        self.assertAlmostEqual(ulamkowe["ekwiwalent_osobodni_kohorty"], 1604 / 6.5)
 
     def test_ekonomia_kohorty_nie_zalezy_od_obsady_ani_dni_pracy(self):
         porownywane = [
@@ -269,7 +279,8 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
             },
         }
         po_zmianie = oblicz_model(zmienione)
-        oczekiwane_minuty = bazowy["ekwiwalent_osobodni_kohorty"] * 10
+        bezposrednie = bazowy["bezposrednie_minuty_spraw"]
+        oczekiwane_minuty = bezposrednie * 100 / 380 - bezposrednie * 90 / 390
         self.assertAlmostEqual(
             po_zmianie["czynnosci_dzienne_lifecycle_minuty"]
             - bazowy["czynnosci_dzienne_lifecycle_minuty"],
@@ -373,9 +384,27 @@ class TestCzasDziennyIPojemnosc(unittest.TestCase):
     def test_brak_czasu_na_sprawy_jest_wykrywany(self):
         parametry = domyslne_parametry()
         parametry["codzienne_czynnosci"] = {"Czynności dzienne": MINUTY_DNIA_PRACY}
+        with self.assertRaisesRegex(ValueError, "zużywają cały dzień pracy"):
+            oblicz_model(parametry)
+
+    def test_lifecycle_i_pojemnosc_uzywaja_tego_samego_dnia_480_minut(self):
+        parametry = domyslne_parametry()
         wynik = oblicz_model(parametry)
-        self.assertTrue(wynik["pojemnosc"]["brak_czasu_na_sprawy"])
-        self.assertTrue(wynik["pojemnosc"]["przekroczona"])
+        dzienne = sum(parametry["codzienne_czynnosci"].values())
+        oczekiwane_minuty_zasobu = (
+            wynik["bezposrednie_minuty_spraw"]
+            * MINUTY_DNIA_PRACY
+            / (MINUTY_DNIA_PRACY - dzienne)
+        )
+        self.assertAlmostEqual(wynik["laczne_minuty"], oczekiwane_minuty_zasobu)
+        pelne_osobodni = (
+            wynik["bezposrednie_minuty_spraw"]
+            / (MINUTY_DNIA_PRACY - dzienne)
+        )
+        self.assertAlmostEqual(
+            pelne_osobodni * MINUTY_DNIA_PRACY,
+            wynik["laczne_minuty"],
+        )
 
 
 class TestModelFinansowy(unittest.TestCase):
@@ -405,8 +434,8 @@ class TestModelFinansowy(unittest.TestCase):
         self.assertAlmostEqual(wynik["srednie_minuty_podstawowej_sciezki_ugody"], 216.0)
         self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 239.625)
         self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 233_955)
-        self.assertAlmostEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 43_866.5625)
-        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 443_958.856875)
+        self.assertAlmostEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 53_989.61538461538)
+        self.assertAlmostEqual(wynik["ogolem"]["koszt"], 460_135.49538461544)
 
     def test_przychod_wedlug_zakonczenia_i_grup_uzgadnia_sie(self):
         wynik = oblicz_model()

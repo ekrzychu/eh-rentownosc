@@ -374,7 +374,8 @@ class TestUgodyIPojemnosc(unittest.TestCase):
                 oczekiwana_roznica_minut
                 / 60
                 * model["koszt_godziny"]
-                * (1 + sum(parametry["codzienne_czynnosci"].values()) / 480)
+                * 480
+                / (480 - sum(parametry["codzienne_czynnosci"].values()))
             )
             oczekiwany_wplyw_portfela = (
                 oczekiwana_roznica_pln
@@ -448,8 +449,10 @@ class TestUgodyIPojemnosc(unittest.TestCase):
     def test_brak_pojemnosci_nie_jest_raportowany_jako_zero_spraw(self):
         parametry = domyslne_parametry()
         parametry["codzienne_czynnosci"] = {"Czynności dzienne": 600}
-        self.assertIsNone(maksymalna_liczba_spraw(parametry))
-        self.assertEqual(analiza_pojemnosci(parametry)["powod_braku_maksimum"], "brak_pojemnosci")
+        with self.assertRaisesRegex(ValueError, "zużywają cały dzień pracy"):
+            maksymalna_liczba_spraw(parametry)
+        with self.assertRaisesRegex(ValueError, "zużywają cały dzień pracy"):
+            analiza_pojemnosci(parametry)
 
     def test_analiza_pojemnosci_ma_szesc_segmentow(self):
         self.assertEqual(len(analiza_pojemnosci(domyslne_parametry())["segmenty"]), 6)

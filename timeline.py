@@ -374,8 +374,10 @@ def _dodaj_kohorte(
 def _status_break_even(
     break_even: dict, capacity_status: str, steady_monthly_result: float | None
 ) -> str:
+    if capacity_status == "Niewystarczająca":
+        return "Brak trwałego break-even przy obecnej obsadzie"
     if break_even["status"] == "nie_osiagnieto":
-        return "Nie osiągnięto"
+        return "Nie osiągnięto w horyzoncie"
     sustainable = (
         capacity_status == "Stabilna"
         and steady_monthly_result is not None
@@ -425,8 +427,10 @@ def oblicz_model_czasowy(
         cumulative_inflow += monthly_inflow
 
         new_packets = due_packets.pop(month, [])
-        work_demand_minutes = sum(packet.minutes_remaining for packet in new_packets)
-        total_due_minutes += work_demand_minutes
+        backlog_start_minutes = sum(packet.minutes_remaining for packet in queue)
+        new_due_minutes = sum(packet.minutes_remaining for packet in new_packets)
+        total_available_work_minutes = backlog_start_minutes + new_due_minutes
+        total_due_minutes += new_due_minutes
         queue.extend(new_packets)
         direct_capacity = capacity["pojemnosc_na_sprawy_minuty"]
         remaining_capacity = direct_capacity
@@ -478,9 +482,23 @@ def oblicz_model_czasowy(
         team_cost = capacity["miesieczny_koszt_zespolu"]
         monthly_result = revenue - team_cost
         cumulative_result += monthly_result
-        backlog_minutes = sum(packet.minutes_remaining for packet in queue)
+        backlog_end_minutes_month = sum(
+            packet.minutes_remaining for packet in queue
+        )
+        if not isclose(
+            backlog_start_minutes + new_due_minutes - executed_minutes,
+            backlog_end_minutes_month,
+            rel_tol=1e-10,
+            abs_tol=1e-6,
+        ):
+            raise RuntimeError("Miesięczne rozliczenie backlogu nie jest domknięte.")
         used_minutes = capacity["czynnosci_dzienne_minuty"] + executed_minutes
         unused_minutes = max(capacity["pojemnosc_brutto_minuty"] - used_minutes, 0.0)
+        utilization = (
+            used_minutes / capacity["pojemnosc_brutto_minuty"] * 100
+            if capacity["pojemnosc_brutto_minuty"] > TOLERANCJA
+            else None
+        )
         active_cases = max(cumulative_inflow - cumulative_completed, 0.0)
         rows.append(
             {
@@ -496,9 +514,12 @@ def oblicz_model_czasowy(
                 "Pojemność brutto (h)": capacity["pojemnosc_brutto_minuty"] / 60,
                 "Czynności dzienne (h)": capacity["czynnosci_dzienne_minuty"] / 60,
                 "Dostępna pojemność na sprawy (h)": direct_capacity / 60,
-                "Zapotrzebowanie na pracę (h)": work_demand_minutes / 60,
-                "Wykonana praca bezpośrednia (h)": executed_minutes / 60,
-                "Backlog pracy (h)": backlog_minutes / 60,
+                "Backlog na początku (h)": backlog_start_minutes / 60,
+                "Nowa praca (h)": new_due_minutes / 60,
+                "Praca oczekująca (h)": total_available_work_minutes / 60,
+                "Wykonana praca (h)": executed_minutes / 60,
+                "Backlog na koniec (h)": backlog_end_minutes_month / 60,
+                "Wykorzystanie pojemności (%)": utilization,
                 "Niewykorzystana pojemność (h)": unused_minutes / 60,
                 "Koszt niewykorzystanej pojemności": (
                     unused_minutes / 60 * capacity["koszt_godziny"]
@@ -509,7 +530,7 @@ def oblicz_model_czasowy(
             }
         )
 
-    backlog_end_minutes = rows[-1]["Backlog pracy (h)"] * 60
+    backlog_end_minutes = rows[-1]["Backlog na koniec (h)"] * 60
     if not isclose(
         total_executed_minutes + backlog_end_minutes,
         total_due_minutes,
@@ -517,6 +538,13 @@ def oblicz_model_czasowy(
         abs_tol=1e-6,
     ):
         raise RuntimeError("Kolejka pracy nie zachowuje wszystkich należnych minut.")
+    if not isclose(
+        cumulative_inflow - cumulative_completed,
+        rows[-1]["Aktywne sprawy"],
+        rel_tol=1e-10,
+        abs_tol=1e-6,
+    ):
+        raise RuntimeError("Liczba aktywnych spraw nie uzgadnia się z przepływem.")
 
     cohort_reference = {
         "przychod": lifecycle["ogolem"]["przychod"] / 12,
@@ -568,7 +596,7 @@ def oblicz_model_czasowy(
         if last_twelve else None
     )
     mature_demand = (
-        sum(row["Zapotrzebowanie na pracę (h)"] * 60 for row in last_twelve) / 12
+        sum(row["Nowa praca (h)"] * 60 for row in last_twelve) / 12
         if last_twelve else None
     )
     maturity_reached = (
@@ -587,13 +615,25 @@ def oblicz_model_czasowy(
     gross_minutes = capacity["pojemnosc_brutto_minuty"]
     average_utilization = (
         sum(
-            row["Czynności dzienne (h)"] + row["Wykonana praca bezpośrednia (h)"]
+            row["Czynności dzienne (h)"] + row["Wykonana praca (h)"]
             for row in rows
         )
         / len(rows)
         / (gross_minutes / 60)
         * 100
         if gross_minutes > TOLERANCJA
+        else None
+    )
+    current_utilization = rows[-1]["Wykorzystanie pojemności (%)"]
+    recent_rows = rows[-12:]
+    recent_utilization = (
+        sum(row["Wykorzystanie pojemności (%)"] for row in recent_rows)
+        / len(recent_rows)
+        if recent_rows
+        and all(
+            row["Wykorzystanie pojemności (%)"] is not None
+            for row in recent_rows
+        )
         else None
     )
     backlog_months = (
@@ -609,6 +649,51 @@ def oblicz_model_czasowy(
     break_even_sustainability = _status_break_even(
         break_even, capacity["status_pojemnosci"], steady_monthly_result
     )
+    if capacity["status_pojemnosci"] == "Niewystarczająca":
+        maturity_status = "Nieosiągalny przy obecnej obsadzie"
+    elif maturity_reached:
+        maturity_status = "Osiągnięty"
+    else:
+        maturity_status = "Nie osiągnięto w horyzoncie"
+    minimum_confirmed = deepest["Miesiąc"] < horizon and any(
+        row["Wynik skumulowany przed podatkiem"]
+        > deepest["Wynik skumulowany przed podatkiem"] + TOLERANCJA
+        for row in rows[deepest["Miesiąc"] :]
+    )
+    cumulative_still_falling = (
+        capacity["status_pojemnosci"] == "Niewystarczająca"
+        and len(rows) >= 2
+        and rows[-1]["Wynik skumulowany przed podatkiem"]
+        < rows[-2]["Wynik skumulowany przed podatkiem"] - TOLERANCJA
+    )
+    current_capacity_delay = (
+        max(horizon - queue[0].due_month, 0) if queue else 0
+    )
+    lifecycle_resource_hours = lifecycle["laczne_godziny"]
+    supplied_annual_hours = capacity["pojemnosc_brutto_minuty"] / 60 * 12
+    annual_capacity_balance = supplied_annual_hours - lifecycle_resource_hours
+    minimum_team_monthly_cost = (
+        minimum_staff
+        * parametry["liczba_dni_pracy_w_roku"]
+        * MINUTY_DNIA_PRACY
+        / 12
+        / 60
+        * capacity["koszt_godziny"]
+        if minimum_staff is not None
+        else None
+    )
+    mature_result_at_minimum_staff = (
+        target_monthly_revenue - minimum_team_monthly_cost
+        if minimum_team_monthly_cost is not None
+        else None
+    )
+    unused_capacity_cost_total = sum(
+        row["Koszt niewykorzystanej pojemności"] for row in rows
+    )
+    startup_deficit = any(
+        row["Wynik skumulowany przed podatkiem"] < -TOLERANCJA
+        for row in rows[: min(nominal_maturity_month, len(rows))]
+    )
 
     return {
         "parametry_czasowe": czas,
@@ -617,6 +702,8 @@ def oblicz_model_czasowy(
             **capacity,
             "minimalna_liczba_pracownikow_dla_stabilnosci": minimum_staff,
             "srednie_wykorzystanie_percent": average_utilization,
+            "biezace_wykorzystanie_percent": current_utilization,
+            "ostatnie_12_miesiecy_wykorzystanie_percent": recent_utilization,
         },
         "kpi": {
             "break_even_skumulowany": break_even["etykieta"],
@@ -628,9 +715,11 @@ def oblicz_model_czasowy(
                 "Wynik skumulowany przed podatkiem"
             ],
             "miesiac_najglebszego_deficytu": deepest["Miesiąc"],
+            "najglebszy_deficyt_potwierdzony": minimum_confirmed,
             "wynik_skumulowany_na_koniec_horyzontu": rows[-1][
                 "Wynik skumulowany przed podatkiem"
             ],
+            "wynik_nadal_narasta": cumulative_still_falling,
             "wynik_miesieczny_w_stanie_stabilnym": steady_monthly_result,
             "wynik_roczny_w_stanie_stabilnym": (
                 steady_monthly_result * 12
@@ -642,15 +731,36 @@ def oblicz_model_czasowy(
             "sredni_naplyw_miesieczny": monthly_inflow,
             "laczny_naplyw": monthly_inflow * horizon,
             "aktywne_sprawy": rows[-1]["Aktywne sprawy"],
-            "backlog_koniec_godziny": rows[-1]["Backlog pracy (h)"],
-            "maksymalny_backlog_godziny": max(row["Backlog pracy (h)"] for row in rows),
+            "backlog_koniec_godziny": rows[-1]["Backlog na koniec (h)"],
+            "maksymalny_backlog_godziny": max(
+                row["Backlog na koniec (h)"] for row in rows
+            ),
             "miesiace_backlogu": backlog_months,
             "srednie_opoznienie_pojemnosci_miesiace": average_capacity_delay,
             "maksymalne_opoznienie_pojemnosci_miesiace": maximum_capacity_delay,
+            "biezace_opoznienie_pojemnosci_miesiace": current_capacity_delay,
             "dojrzalosc_osiagnieta": maturity_reached,
+            "status_stanu_stabilnego": maturity_status,
             "nominalny_miesiac_dojrzalosci": nominal_maturity_month,
             "sredni_dojrzaly_przychod_miesieczny": mature_revenue if maturity_reached else None,
             "sredni_dojrzaly_popyt_minuty": mature_demand if maturity_reached else None,
+        },
+        "diagnoza": {
+            "deficyt_rozruchowy": startup_deficit,
+            "koszt_niewykorzystanej_pojemnosci_horyzont": unused_capacity_cost_total,
+            "strukturalny_niedobor_pojemnosci": (
+                capacity["status_pojemnosci"] == "Niewystarczająca"
+            ),
+            "marza_lifecycle_przed_podatkiem": lifecycle["ogolem"][
+                "marza_przed_podatkiem"
+            ],
+            "roczny_przychod_lifecycle": lifecycle["ogolem"]["przychod"],
+            "roczne_wymagane_godziny_zasobu": lifecycle_resource_hours,
+            "dostarczane_godziny_zespolu_rocznie": supplied_annual_hours,
+            "bilans_pojemnosci_rocznie_godziny": annual_capacity_balance,
+            "wynik_miesieczny_przy_minimalnej_obsadzie": (
+                mature_result_at_minimum_staff
+            ),
         },
         "walidacja": {
             "kohorta_miesieczna": cohort_reference,
@@ -666,6 +776,9 @@ def oblicz_model_czasowy(
             "praca_nalezna_do_horyzontu_minuty": total_due_minutes,
             "praca_wykonana_minuty": total_executed_minutes,
             "backlog_minuty": backlog_end_minutes,
+            "laczny_naplyw_spraw": cumulative_inflow,
+            "laczne_zakonczenia_spraw": cumulative_completed,
+            "aktywne_sprawy": rows[-1]["Aktywne sprawy"],
         },
     }
 
@@ -699,7 +812,7 @@ def porownaj_obsade(
                 ] / 60,
                 "Status pojemności": result["pojemnosc"]["status_pojemnosci"],
                 "Średnie wykorzystanie": result["pojemnosc"][
-                    "srednie_wykorzystanie_percent"
+                    "ostatnie_12_miesiecy_wykorzystanie_percent"
                 ],
                 "Backlog po horyzoncie (h)": result["podsumowanie"][
                     "backlog_koniec_godziny"

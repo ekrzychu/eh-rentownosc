@@ -248,16 +248,37 @@ def oblicz_czynnosci_dzienne_lifecycle(
     bezposrednie_minuty_spraw: float,
     codzienne_czynnosci: dict[str, float],
 ) -> dict[str, float]:
-    """Wycenia czynności dzienne dla pełnego cyklu życia kohorty."""
+    """Wycenia pełny płatny czas zasobu dla cyklu życia kohorty.
+
+    Ośmiogodzinny dzień pracownika ma 480 płatnych minut. Czynności dzienne
+    mieszczą się w tym limicie, więc jedna osobodniówka dostarcza na sprawy
+    wyłącznie różnicę między 480 minutami a narzutem dziennym.
+    """
     if bezposrednie_minuty_spraw < 0:
         raise ValueError("Bezpośredni czas spraw nie może być ujemny.")
-    ekwiwalent_osobodni = bezposrednie_minuty_spraw / MINUTY_DNIA_PRACY
     minuty_na_osobodzien = sum(codzienne_czynnosci.values())
+    if minuty_na_osobodzien < 0:
+        raise ValueError("Czas czynności dziennych nie może być ujemny.")
+    produktywne_minuty = MINUTY_DNIA_PRACY - minuty_na_osobodzien
+    if bezposrednie_minuty_spraw > 0 and produktywne_minuty <= 0:
+        raise ValueError(
+            "Czynności dzienne zużywają cały dzień pracy; "
+            "nie można obsłużyć dodatniej pracy nad sprawami."
+        )
+    ekwiwalent_osobodni = (
+        bezposrednie_minuty_spraw / produktywne_minuty
+        if produktywne_minuty > 0
+        else 0.0
+    )
     minuty_lifecycle = ekwiwalent_osobodni * minuty_na_osobodzien
+    laczne_minuty_zasobu = bezposrednie_minuty_spraw + minuty_lifecycle
     return {
+        "produktywne_minuty_na_osobodzien": max(produktywne_minuty, 0.0),
         "ekwiwalent_osobodni_kohorty": ekwiwalent_osobodni,
         "czynnosci_dzienne_lifecycle_minuty": minuty_lifecycle,
         "czynnosci_dzienne_lifecycle_godziny": minuty_lifecycle / 60,
+        "laczne_minuty_zasobu_lifecycle": laczne_minuty_zasobu,
+        "laczne_godziny_zasobu_lifecycle": laczne_minuty_zasobu / 60,
     }
 
 
@@ -273,7 +294,7 @@ def oblicz_pojemnosc_zespolu(
     czynnosci_dzienne = oblicz_czas_czynnosci_dziennych(
         liczba_pracownikow, liczba_dni_pracy_w_roku, codzienne_czynnosci
     )
-    pojemnosc_spraw = pojemnosc_brutto - czynnosci_dzienne
+    pojemnosc_spraw = max(pojemnosc_brutto - czynnosci_dzienne, 0.0)
     return {
         "pojemnosc_brutto_minuty": pojemnosc_brutto,
         "czynnosci_dzienne_minuty": czynnosci_dzienne,

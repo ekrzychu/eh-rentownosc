@@ -440,10 +440,14 @@ def ekonomika_ugod(parametry: dict) -> dict:
     pelne_czasy_sciezek = wyniki["czasy_sciezek_z_ii_instancja"]
     liczba_spraw = parametry["liczba_spraw"]
     koszt_godziny = wyniki["koszt_godziny"]
-    mnoznik_kosztu_lifecycle = (
-        1
-        + sum(parametry["codzienne_czynnosci"].values()) / 480
-    )
+    dzienne_minuty = sum(parametry["codzienne_czynnosci"].values())
+    produktywne_minuty = 480 - dzienne_minuty
+    if produktywne_minuty <= 0:
+        raise ValueError(
+            "Czynności dzienne zużywają cały dzień pracy; "
+            "nie można wycenić oszczędności czasu spraw."
+        )
+    mnoznik_kosztu_lifecycle = 480 / produktywne_minuty
     nazwy = {
         "kategoryczna_odmowa": "Kategoryczna odmowa", "automatyczne_ramy": "Automatyczne ramy",
         "brak_szans": "Brak szans na ugodę", "zawarte_poza_ramami": "Szansa poza ramami → zawarte ugody",
@@ -539,7 +543,7 @@ def analiza_pojemnosci(parametry: dict) -> dict:
     pojemnosc = wyniki["pojemnosc"]
     maksimum = maksymalna_liczba_spraw(parametry)
     wynik_jednej_sprawy = oblicz_model(ustaw_parametr(parametry, "liczba_spraw", 1))
-    if pojemnosc["pojemnosc_spraw_minuty"] < 0:
+    if pojemnosc["brak_czasu_na_sprawy"]:
         powod_braku_maksimum = "brak_pojemnosci"
     elif wynik_jednej_sprawy["bezposrednie_minuty_spraw"] <= 0:
         powod_braku_maksimum = "zerowy_czas_sprawy"
