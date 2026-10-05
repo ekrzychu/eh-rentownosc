@@ -39,14 +39,17 @@ def _miesiac(value: int | None) -> str:
     return f"Miesiąc {value}" if value is not None else "Brak"
 
 
-def _break_even_value(kpi: dict, capacity: dict) -> tuple[str, str]:
-    if "status_break_even" not in kpi and capacity["status_pojemnosci"] == "Niewystarczająca":
-        return "Brak", "Brak trwałego break-even przy obecnej obsadzie."
-    if kpi["break_even_status"] == "osiagniety":
-        return f"Miesiąc {kpi['break_even_miesiac']}", kpi["status_break_even"]
-    if kpi["break_even_status"] == "od_poczatku":
-        return "Od początku", kpi["status_break_even"]
-    return "Brak", kpi["status_break_even"]
+def _financial_break_even_value(kpi: dict) -> tuple[str, str]:
+    """Formatuje surowe odzyskanie deficytu, bez warunku pojemności."""
+    status = kpi["pierwsze_przeciecie_status"]
+    if status == "osiagniety":
+        return (
+            f"Miesiąc {kpi['pierwsze_przeciecie_miesiac']}",
+            "Pierwszy powrót wyniku skumulowanego z deficytu do co najmniej zera.",
+        )
+    if status == "od_poczatku":
+        return "Od początku", "W horyzoncie nie wystąpił początkowy deficyt."
+    return "Brak", "Deficyt nie został odzyskany w analizowanym horyzoncie."
 
 
 def _x_axis(horizon: int) -> alt.X:
@@ -175,7 +178,7 @@ def _capacity_charts(table: pd.DataFrame, horizon: int):
 
 def renderuj_widok_czasowy(parametry: dict) -> None:
     """Renderuje wyłącznie wybraną analizę czasu i pojemności."""
-    st.subheader("Kiedy zaczniemy zarabiać?")
+    st.header("Kontrakt w czasie")
     st.caption(
         "Ciągły model operacyjny łączy koszt utrzymywanej obsady z kolejką pracy, "
         "terminami zakończeń i wpływem przychodów."
@@ -245,37 +248,64 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
     diagnosis = result["diagnoza"]
 
     if capacity["status_pojemnosci"] == "Niewystarczająca":
-        st.warning(
-            "Przy obecnym napływie portfel narasta szybciej, niż zespół może go "
-            "obsłużyć. Backlog będzie rosnąć w długim okresie."
-        )
+        if kpi["pierwsze_przeciecie_status"] == "osiagniety":
+            st.warning(
+                "Finansowy break-even został osiągnięty, ale portfel narasta "
+                "szybciej, niż zespół może go obsłużyć. Backlog nadal rośnie."
+            )
+        else:
+            st.warning(
+                "Przy obecnym napływie portfel narasta szybciej, niż zespół może "
+                "go obsłużyć. Backlog będzie rosnąć w długim okresie."
+            )
 
-    break_even_value, break_even_help = _break_even_value(kpi, capacity)
+    break_even_value, break_even_help = _financial_break_even_value(kpi)
     minimum_staff = capacity["minimalna_liczba_pracownikow_dla_stabilnosci"]
     primary_top = st.columns(2, gap="large", wrap=True)
-    primary_top[0].metric("Break-even", break_even_value, help=break_even_help)
-    primary_top[1].metric(
+    primary_top[0].metric("Status kontraktu", kpi["status_kontraktu"])
+    primary_top[1].metric("Break-even finansowy", break_even_value, help=break_even_help)
+    primary_bottom = st.columns(2, gap="large", wrap=True)
+    primary_bottom[0].metric(
+        "Największy deficyt",
+        _kwota_skrocona(kpi["najglebszy_deficyt_skumulowany"]),
+        help=_kwota(kpi["najglebszy_deficyt_skumulowany"]),
+    )
+    primary_bottom[1].metric(
         f"Wynik po {horizon} mies.",
         _kwota_skrocona(kpi["wynik_skumulowany_na_koniec_horyzontu"]),
         help=_kwota(kpi["wynik_skumulowany_na_koniec_horyzontu"]),
     )
     if kpi["wynik_nadal_narasta"]:
-        primary_top[1].caption("Skumulowany wynik ma trwały trend spadkowy.")
-    primary_bottom = st.columns(2, gap="large", wrap=True)
-    primary_bottom[0].metric(
+        primary_bottom[1].caption("Skumulowany wynik ma trwały trend spadkowy.")
+
+    operations = st.columns(3, gap="large", wrap=True)
+    operations[0].metric(
+        "Obsada",
+        f"{parametry['liczba_pracownikow']} os.",
+        help=f"Minimalna stabilna obsada: {minimum_staff} os." if minimum_staff is not None else None,
+    )
+    operations[1].metric(
         "Backlog",
         f"{_liczba(summary['backlog_koniec_godziny'], 0)} h",
         help=f"Dokładnie {_liczba(summary['backlog_koniec_godziny'], 2)} h.",
     )
-    primary_bottom[1].metric("Pojemność", capacity["status_pojemnosci"])
+    operations[2].metric("Status operacyjny", capacity["status_pojemnosci"])
     if capacity["status_pojemnosci"] == "Na granicy":
-        primary_bottom[1].caption("Wykonalna operacyjnie, ale bez bufora pojemności.")
+        operations[2].caption("Wykonalna operacyjnie, ale bez bufora pojemności.")
     else:
-        primary_bottom[1].caption(
+        operations[2].caption(
             f"{parametry['liczba_pracownikow']} os. → potrzeba min. {minimum_staff}"
             if minimum_staff is not None
             else "Brak możliwej stabilnej obsady przy tych założeniach."
         )
+
+    components = kpi["status_kontraktu_skladniki"]
+    st.caption(
+        "Składniki statusu · ekonomika sprawy: "
+        f"{'dodatnia' if components['ekonomika_sprawy_dodatnia'] else 'niedodatnia'} · "
+        f"pojemność: {components['status_pojemnosci'].lower()} · "
+        f"docelowy wynik bieżącej obsady: {_kwota(components['wynik_miesieczny_docelowy'])}/mies."
+    )
 
     loss_reasons = [
         "rozruch: koszt przed dojrzeniem przychodów"
@@ -315,7 +345,7 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
     table = pd.DataFrame(result["tabela_miesieczna"])
     st.subheader("Skumulowany wynik przed podatkiem")
     st.altair_chart(
-        _cumulative_chart(table, int(horizon), kpi["break_even_miesiac"]),
+        _cumulative_chart(table, int(horizon), kpi["pierwsze_przeciecie_miesiac"]),
         width="stretch",
     )
 
@@ -344,6 +374,15 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
         capacity_metrics[2].metric(
             "Pojemność na sprawy",
             f"{_liczba(capacity['pojemnosc_na_sprawy_minuty'] / 60, 1)} h/mies.",
+        )
+        workload_metrics = st.columns(2, wrap=True)
+        workload_metrics[0].metric(
+            "Wymagana praca nad sprawami",
+            f"{_liczba(capacity['miesieczny_popyt_minuty'] / 60, 1)} h/mies.",
+        )
+        workload_metrics[1].metric(
+            "Bilans pojemności",
+            f"{_liczba((capacity['pojemnosc_na_sprawy_minuty'] - capacity['miesieczny_popyt_minuty']) / 60, 1)} h/mies.",
         )
         koszt_metrics = st.columns(4, wrap=True)
         koszt_metrics[0].metric(
@@ -390,16 +429,11 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             else "Historyczne minimum przypada na koniec horyzontu i nie jest "
             "skończonym maksymalnym zapotrzebowaniem na finansowanie."
         )
-        przeciecie_nietrwale = (
-            " — nietrwałe"
-            if kpi["pierwsze_przeciecie_status"] == "osiagniety"
-            and kpi["break_even_status"] != "osiagniety"
-            else ""
-        )
         st.write(
-            "Pierwsze surowe przecięcie zera wyniku skumulowanego: "
-            f"**{kpi['pierwsze_przeciecie_skumulowane']}{przeciecie_nietrwale}**. "
-            "Główny KPI pokazuje wyłącznie trwały break-even."
+            "Break-even finansowy: "
+            f"**{kpi['pierwsze_przeciecie_skumulowane']}**. "
+            "Ocena trwałości: "
+            f"**{kpi['status_break_even']}**."
         )
         detail_2 = st.columns(3, wrap=True)
         detail_2[0].metric(
@@ -422,6 +456,10 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             st.write(
                 f"Wynik w stanie stabilnym: **{summary['status_stanu_stabilnego']}**"
             )
+        st.write(
+            "Docelowy wynik miesięczny bieżącej obsady: "
+            f"**{_kwota(kpi['wynik_miesieczny_docelowy'])}/mies.**"
+        )
 
         balance = diagnosis["bilans_pojemnosci_rocznie_godziny"]
         balance_label = (

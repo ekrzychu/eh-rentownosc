@@ -8,6 +8,7 @@ from model import (
 )
 from timeline import (
     domyslne_parametry_czasowe,
+    klasyfikuj_status_kontraktu,
     minimalna_liczba_pracownikow_dla_stabilnosci,
     oblicz_model_czasowy,
     oblicz_pojemnosc_miesieczna,
@@ -211,7 +212,7 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             / MINUTY_DNIA_PRACY,
         )
         self.assertAlmostEqual(
-            lifecycle["laczne_minuty"],
+            lifecycle["laczne_minuty_zasobu_lifecycle"],
             lifecycle["bezposrednie_minuty_spraw"]
             * MINUTY_DNIA_PRACY
             / (MINUTY_DNIA_PRACY - dzienne),
@@ -568,6 +569,44 @@ class TestDefinicjaBreakEven(unittest.TestCase):
             [-1.0, 1.0], [1, 2], "Na granicy", 1.0
         )
         self.assertEqual(wynik["status"], "osiagniety")
+
+
+class TestStatusKontraktu(unittest.TestCase):
+    def test_cztery_statusy_wynikaja_z_jawnych_przeslanek(self):
+        przypadki = (
+            ((10.0, "Stabilna", 100.0, "osiagniety"), "Rentowny i stabilny"),
+            (
+                (10.0, "Niewystarczająca", 100.0, "osiagniety"),
+                "Rentowny finansowo, ale operacyjnie niestabilny",
+            ),
+            ((10.0, "Stabilna", -1.0, "nie_osiagnieto"), "Stabilny, ale nierentowny"),
+            (
+                (-1.0, "Niewystarczająca", -1.0, "nie_osiagnieto"),
+                "Nierentowny i niestabilny",
+            ),
+        )
+        for argumenty, oczekiwany in przypadki:
+            with self.subTest(oczekiwany=oczekiwany):
+                self.assertEqual(
+                    klasyfikuj_status_kontraktu(*argumenty)["etykieta"],
+                    oczekiwany,
+                )
+
+    def test_surowy_break_even_pozostaje_widoczny_przy_braku_pojemnosci(self):
+        parametry = {
+            **domyslne_parametry(),
+            "koszt_staly_na_godzine": 1.0,
+            "wynagrodzenie_pracownika_na_godzine": 1.0,
+            "liczba_pracownikow": 1,
+        }
+        wynik = oblicz_model_czasowy(parametry)
+        self.assertEqual(wynik["pojemnosc"]["status_pojemnosci"], "Niewystarczająca")
+        self.assertEqual(wynik["kpi"]["pierwsze_przeciecie_status"], "osiagniety")
+        self.assertIsNotNone(wynik["kpi"]["pierwsze_przeciecie_miesiac"])
+        self.assertEqual(
+            wynik["kpi"]["status_kontraktu"],
+            "Rentowny finansowo, ale operacyjnie niestabilny",
+        )
 
 
 class TestPrzypadkiBrzegowe(unittest.TestCase):

@@ -474,6 +474,59 @@ def _status_break_even(
     return "Break-even trwały" if sustainable else "Przecięcie nietrwałe"
 
 
+def klasyfikuj_status_kontraktu(
+    wynik_jednostkowy_przed_podatkiem: float,
+    status_pojemnosci: str,
+    wynik_miesieczny_docelowy: float,
+    status_break_even_finansowego: str,
+) -> dict:
+    """Klasyfikuje kontrakt z jawnych przesłanek ekonomicznych i operacyjnych.
+
+    Surowe przecięcie zera pozostaje faktem finansowym, niezależnym od tego,
+    czy obsada potrafi trwale obsłużyć napływ. Wynik docelowy porównuje pełny
+    miesięczny koszt bieżącej obsady z dojrzałym miesięcznym przychodem.
+    """
+    if status_pojemnosci not in {"Stabilna", "Na granicy", "Niewystarczająca"}:
+        raise ValueError("Nieznany status pojemności.")
+    if status_break_even_finansowego not in {
+        "osiagniety",
+        "od_poczatku",
+        "nie_osiagnieto",
+    }:
+        raise ValueError("Nieznany status finansowego break-even.")
+
+    ekonomika_sprawy_dodatnia = wynik_jednostkowy_przed_podatkiem > TOLERANCJA
+    wynik_docelowy_dodatni = wynik_miesieczny_docelowy > TOLERANCJA
+    stabilny_operacyjnie = status_pojemnosci in {"Stabilna", "Na granicy"}
+    break_even_osiagniety = status_break_even_finansowego in {
+        "osiagniety",
+        "od_poczatku",
+    }
+
+    if stabilny_operacyjnie:
+        rentowny = ekonomika_sprawy_dodatnia and wynik_docelowy_dodatni
+        etykieta = "Rentowny i stabilny" if rentowny else "Stabilny, ale nierentowny"
+    else:
+        rentowny = (
+            break_even_osiagniety
+            and ekonomika_sprawy_dodatnia
+            and wynik_docelowy_dodatni
+        )
+        etykieta = (
+            "Rentowny finansowo, ale operacyjnie niestabilny"
+            if rentowny
+            else "Nierentowny i niestabilny"
+        )
+
+    return {
+        "etykieta": etykieta,
+        "ekonomika_sprawy_dodatnia": ekonomika_sprawy_dodatnia,
+        "status_pojemnosci": status_pojemnosci,
+        "wynik_miesieczny_docelowy": wynik_miesieczny_docelowy,
+        "break_even_finansowy_osiagniety": break_even_osiagniety,
+    }
+
+
 def oblicz_model_czasowy(
     parametry: dict | None = None, parametry_czasowe: dict | None = None
 ) -> dict:
@@ -685,6 +738,21 @@ def oblicz_model_czasowy(
     )
     target_monthly_revenue = lifecycle["ogolem"]["przychod"] / 12
     target_monthly_demand = lifecycle["bezposrednie_minuty_spraw"] / 12
+    target_monthly_result = (
+        target_monthly_revenue - capacity["miesieczny_koszt_obsady"]
+    )
+    case_count = lifecycle["ogolem"]["liczba_spraw"]
+    unit_result = (
+        lifecycle["ogolem"]["wynik_przed_podatkiem"] / case_count
+        if case_count
+        else 0.0
+    )
+    contract_status = klasyfikuj_status_kontraktu(
+        unit_result,
+        capacity["status_pojemnosci"],
+        target_monthly_result,
+        pierwsze_przeciecie["status"],
+    )
     last_twelve = rows[-12:] if len(rows) >= 12 else []
     mature_revenue = (
         sum(row["Przychód razem"] for row in last_twelve) / 12
@@ -801,7 +869,7 @@ def oblicz_model_czasowy(
         row["Wynik skumulowany przed podatkiem"] < -TOLERANCJA
         for row in rows[: min(nominal_maturity_month, len(rows))]
     )
-    lifecycle_total_cost = lifecycle["koszt_calkowity_lifecycle"]
+    lifecycle_total_cost = lifecycle["koszt_lifecycle_razem"]
     temporal_annual_cost = capacity["miesieczny_koszt_obsady"] * 12
     reconciliation_difference = temporal_annual_cost - lifecycle_total_cost
     expected_reconciliation_difference = (
@@ -826,6 +894,9 @@ def oblicz_model_czasowy(
             "ostatnie_12_miesiecy_wykorzystanie_percent": recent_utilization,
         },
         "kpi": {
+            "status_kontraktu": contract_status["etykieta"],
+            "status_kontraktu_skladniki": contract_status,
+            "wynik_miesieczny_docelowy": target_monthly_result,
             "break_even_skumulowany": trwaly_break_even["etykieta"],
             "break_even_status": trwaly_break_even["status"],
             "break_even_miesiac": trwaly_break_even["miesiac"],

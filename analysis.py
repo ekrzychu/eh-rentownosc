@@ -2,7 +2,7 @@
 
 from math import ceil, floor
 
-from model import GODZINY_ETATU_MIESIECZNIE, oblicz_model
+from model import oblicz_model
 
 
 KOPIOWANE_SLOWNIKI = (
@@ -211,20 +211,6 @@ def spelnia_cel(wyniki: dict, docelowa_marza: float) -> bool:
     )
 
 
-def wykorzystanie_pojemnosci(wyniki: dict) -> float | None:
-    dostepne = wyniki["pojemnosc"]["pojemnosc_spraw_minuty"]
-    if dostepne <= 0:
-        return None
-    return wyniki["bezposrednie_minuty_spraw"] / dostepne * 100
-
-
-def status_operacyjny(wyniki: dict) -> dict:
-    return {
-        "wykonalne": not wyniki["pojemnosc"]["przekroczona"],
-        "wykorzystanie": wykorzystanie_pojemnosci(wyniki),
-    }
-
-
 def _wynik_dla(parametry: dict, identyfikator: str, wartosc: float) -> dict | None:
     try:
         return oblicz_model(ustaw_parametr(parametry, identyfikator, wartosc))
@@ -413,13 +399,6 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
     )
 
 
-def analiza_wplywu_wzglednego(
-    parametry: dict, zmiana_wzgledna: float = 0.10
-) -> list[dict]:
-    """Zgodnościowy interfejs wspólnego silnika; 0,10 oznacza zmianę o 10%."""
-    return analiza_wrazliwosci(parametry, zmiana_percent=zmiana_wzgledna * 100)
-
-
 def wartosc_skrocenia_czynnosci(parametry: dict) -> list[dict]:
     bazowy = oblicz_model(parametry)["ogolem"]["wynik_po_podatku"]
     wiersze = []
@@ -516,101 +495,24 @@ def ekonomika_ugod(parametry: dict) -> dict:
         {"Sposób zakończenia": "Sprawy zakończone wyrokiem", "Oczekiwany udział": udzialy["bez_ugody"], "Oczekiwana liczba spraw": liczba_spraw * udzialy["bez_ugody"] / 100, "Oczekiwany przychód": wyniki["ogolem"]["przychod_wyroki"]},
         {"Sposób zakończenia": "Razem", "Oczekiwany udział": 100.0, "Oczekiwana liczba spraw": liczba_spraw, "Oczekiwany przychód": wyniki["ogolem"]["przychod"]},
     ]
-    return {"sciezki": sciezki, "porownania": porownania, "przychod_wedlug_zakonczenia": przychod_wedlug_zakonczenia, "minimalna_skutecznosc": minimalna_skutecznosc, "obecna_skutecznosc": parametry["zawarte_ugody_percent"], "bufor_skutecznosci": None if minimalna_skutecznosc is None else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc, "wartosc_poprawy": wartosc_poprawy, "strategia_wplyw_pln": bazowy_wynik - wynik_bez_prob, "strategia_wplyw_godzin": bez_prob["laczne_godziny"] - wyniki["laczne_godziny"]}
-
-
-def minimalna_liczba_pracownikow(parametry: dict, limit: int = 1000) -> int | None:
-    for liczba in range(limit + 1):
-        wynik = oblicz_model(ustaw_parametr(parametry, "liczba_pracownikow", liczba))
-        if not wynik["pojemnosc"]["przekroczona"]:
-            return liczba
-    return None
-
-
-def maksymalna_liczba_spraw(parametry: dict, limit: int = 1_000_000) -> int | None:
-    """Zwraca największy całkowity napływ przy liniowym popycie oczekiwanym."""
-    bazowy = oblicz_model(parametry)
-    pojemnosc = bazowy["pojemnosc"]["pojemnosc_spraw_minuty"]
-    czasy = {
-        rodzaj: bazowy["srednie_minuty_sciezki_ugody"]
-        + parametry["dodatkowe_minuty"][rodzaj]
-        for rodzaj in parametry["udzialy_rodzajow"]
-    }
-    sredni_czas = sum(
-        parametry["udzialy_rodzajow"][rodzaj] / 100 * czas
-        for rodzaj, czas in czasy.items()
-    )
-    if sredni_czas <= 0:
-        return None
-
-    maksimum = min(limit, max(0, floor((pojemnosc + 1e-9) / sredni_czas)))
-    if maksimum == limit:
-        return None
-    return maksimum
-
-
-def analiza_pojemnosci(parametry: dict) -> dict:
-    wyniki = oblicz_model(parametry)
-    pojemnosc = wyniki["pojemnosc"]
-    maksimum = maksymalna_liczba_spraw(parametry)
-    wynik_jednej_sprawy = oblicz_model(ustaw_parametr(parametry, "liczba_spraw", 1))
-    if pojemnosc["brak_czasu_na_sprawy"]:
-        powod_braku_maksimum = "brak_pojemnosci"
-    elif wynik_jednej_sprawy["bezposrednie_minuty_spraw"] <= 0:
-        powod_braku_maksimum = "zerowy_czas_sprawy"
-    elif maksimum is None:
-        powod_braku_maksimum = "poza_zakresem"
-    else:
-        powod_braku_maksimum = None
-    punkty = {max(0, int(round(parametry["liczba_spraw"] * mnoznik))) for mnoznik in (0.5, 0.75, 1.0, 1.25, 1.5)}
-    if maksimum is not None:
-        punkty.add(maksimum)
-    wolumeny = []
-    for liczba_spraw in sorted(punkty):
-        wynik = oblicz_model(ustaw_parametr(parametry, "liczba_spraw", liczba_spraw))
-        wolumeny.append({"Roczny napływ spraw": liczba_spraw, "Przychód": wynik["ogolem"]["przychod"], "Koszt": wynik["ogolem"]["koszt_calkowity"], "Wynik po podatku": wynik["ogolem"]["wynik_po_podatku"], "Marża po podatku": wynik["ogolem"]["marza_po_podatku"], "Wykorzystanie pojemności": wykorzystanie_pojemnosci(wynik)})
-
-    rentowne = []
-    if maksimum is not None:
-        wynik_na_sprawe = wynik_jednej_sprawy["ogolem"]["wynik_przed_podatkiem"]
-        if wynik_na_sprawe >= -1e-7:
-            rentowne = list(range(maksimum + 1))
-    segmenty = []
-    for grupa in wyniki["grupy"]:
-        przychod = grupa["oczekiwane_wynagrodzenie"]
-        wynik_jednostkowy = grupa["wynik_jednostkowy_przed_podatkiem"]
-        segmenty.append({"Segment": f"{grupa['rodzaj']} / {'WPS poniżej progu' if grupa['grupa_wps'] == 'niski_wps' else 'WPS od progu wzwyż'}", "Liczba spraw": grupa["liczba"], "Przychód na sprawę": przychod, "Koszt wynagrodzenia na sprawę": grupa["koszt_wynagrodzenia"], "Narzut kosztów ogólnych na sprawę": grupa["koszt_narzutu_ogolnego"], "Koszt na sprawę": grupa["koszt_calkowity"], "Wynik przed podatkiem na sprawę": wynik_jednostkowy, "Marża przed podatkiem": wynik_jednostkowy / przychod * 100 if przychod else 0.0, "Łączny wynik przed podatkiem": grupa["laczny_wynik_przed_podatkiem"]})
-    segmenty.sort(key=lambda x: x["Wynik przed podatkiem na sprawę"], reverse=True)
     return {
-        "liczba_pracownikow": parametry["liczba_pracownikow"], "godziny_etatu_miesiecznie": GODZINY_ETATU_MIESIECZNIE,
-        "godziny_brutto": pojemnosc["pojemnosc_brutto_minuty"] / 60, "godziny_dzienne": pojemnosc["czynnosci_dzienne_minuty"] / 60,
-        "godziny_na_sprawy": max(0.0, pojemnosc["pojemnosc_spraw_minuty"]) / 60, "godziny_wymagane": pojemnosc["bezposrednie_minuty_spraw"] / 60,
-        "wykorzystanie": wykorzystanie_pojemnosci(wyniki), "wolne_godziny": max(0.0, pojemnosc["pojemnosc_spraw_minuty"] - pojemnosc["bezposrednie_minuty_spraw"]) / 60,
-        "minimalni_pracownicy": minimalna_liczba_pracownikow(parametry), "maksymalne_sprawy": maksimum,
-        "powod_braku_maksimum": powod_braku_maksimum,
-        "dodatkowe_sprawy": max(0, maksimum - parametry["liczba_spraw"]) if maksimum is not None else None,
-        "wolumeny": wolumeny, "minimalny_rentowny_wolumen": min(rentowne) if rentowne else None,
-        "maksymalny_rentowny_wolumen": max(rentowne) if rentowne else None, "segmenty": segmenty,
+        "sciezki": sciezki,
+        "porownania": porownania,
+        "przychod_wedlug_zakonczenia": przychod_wedlug_zakonczenia,
+        "minimalna_skutecznosc": minimalna_skutecznosc,
+        "obecna_skutecznosc": parametry["zawarte_ugody_percent"],
+        "bufor_skutecznosci": (
+            None
+            if minimalna_skutecznosc is None
+            else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc
+        ),
+        "wartosc_poprawy": wartosc_poprawy,
+        "strategia_wplyw_pln": bazowy_wynik - wynik_bez_prob,
+        "strategia_wplyw_godzin": (
+            bez_prob["laczne_godziny_zasobu_lifecycle"]
+            - wyniki["laczne_godziny_zasobu_lifecycle"]
+        ),
     }
-
-
-def symuluj_pojedyncza_zmiane(parametry: dict, identyfikator: str, nowa_wartosc: float) -> dict:
-    bazowe = oblicz_model(parametry)
-    zmienione_parametry = ustaw_parametr(parametry, identyfikator, nowa_wartosc)
-    scenariusz = oblicz_model(zmienione_parametry)
-    def metryki(wynik: dict) -> dict:
-        return {
-            "Przychód": wynik["ogolem"]["przychod"],
-            "Koszt": wynik["ogolem"]["koszt_calkowity"],
-            "Wynik przed podatkiem": wynik["ogolem"]["wynik_przed_podatkiem"],
-            "Podatek dochodowy": wynik["ogolem"]["podatek_dochodowy"],
-            "Wynik po podatku": wynik["ogolem"]["wynik_po_podatku"],
-            "Marża po podatku": wynik["ogolem"]["marza_po_podatku"],
-            "Godziny pracy": wynik["laczne_godziny"],
-        }
-    obecnie, po_zmianie = metryki(bazowe), metryki(scenariusz)
-    roznica = {nazwa: po_zmianie[nazwa] - obecnie[nazwa] for nazwa in obecnie}
-    return {"parametry": zmienione_parametry, "obecnie": obecnie, "scenariusz": po_zmianie, "roznica": roznica, "wyniki": scenariusz}
 
 
 def ranking_progow(
@@ -631,28 +533,3 @@ def ranking_progow(
             "zmiana_wzgledna": abs(pozycja["zmiana"]) / abs(pozycja["obecnie"]),
         })
     return sorted(pozycje, key=lambda x: x["zmiana_wzgledna"])[:limit]
-
-
-def rekomendacje_deterministyczne(wrazliwosc: list[dict], progi: dict, ugody: dict, pojemnosc: dict | None = None) -> dict:
-    """Buduje rekomendacje wyłącznie z parametrów sterowalnych."""
-    korzystne = [
-        wiersz for wiersz in wrazliwosc
-        if wiersz["Wpływ na wynik roczny"] > 0
-        and czy_parametr_sterowalny(wiersz["Id"])
-    ]
-    top = sorted(
-        korzystne, key=lambda x: abs(x["Wpływ na wynik roczny"]), reverse=True
-    )[:5]
-    segmenty = pojemnosc.get("segmenty", []) if pojemnosc else []
-    bufory = ranking_progow(progi, "bufor", tylko_sterowalne=True)
-    drogi_do_celu = ranking_progow(
-        progi, "wymagana_zmiana", tylko_sterowalne=True
-    )
-    return {
-        "najwiekszy_wplyw": top,
-        "najsilniejszy_segment": segmenty[0] if segmenty else None,
-        "najslabszy_segment": segmenty[-1] if segmenty else None,
-        "ugody": ugody,
-        "najmniejsze_bufory": bufory,
-        "najkrotsze_drogi": drogi_do_celu,
-    }

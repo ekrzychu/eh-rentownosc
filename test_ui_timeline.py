@@ -3,9 +3,9 @@ import unittest
 import pandas as pd
 
 from ui_timeline import (
-    _break_even_value,
     _capacity_charts,
     _cumulative_chart,
+    _financial_break_even_value,
     _kwota_skrocona,
 )
 
@@ -45,13 +45,25 @@ class TestWidokCzasowy(unittest.TestCase):
         ]
         self.assertTrue(all(domain == [1, 60] for domain in utilization_domains))
 
-    def test_niewystarczajaca_pojemnosc_ma_krotki_kpi_i_pelne_wyjasnienie(self):
-        value, help_text = _break_even_value(
-            {"break_even_status": "nie_osiagnieto", "break_even_miesiac": None},
-            {"status_pojemnosci": "Niewystarczająca"},
+    def test_finansowy_break_even_nie_zalezy_od_pojemnosci(self):
+        value, help_text = _financial_break_even_value(
+            {
+                "pierwsze_przeciecie_status": "osiagniety",
+                "pierwsze_przeciecie_miesiac": 17,
+            }
+        )
+        self.assertEqual(value, "Miesiąc 17")
+        self.assertIn("Pierwszy powrót", help_text)
+
+    def test_brak_finansowego_break_even_ma_jasne_wyjasnienie(self):
+        value, help_text = _financial_break_even_value(
+            {
+                "pierwsze_przeciecie_status": "nie_osiagnieto",
+                "pierwsze_przeciecie_miesiac": None,
+            }
         )
         self.assertEqual(value, "Brak")
-        self.assertIn("Brak trwałego break-even", help_text)
+        self.assertIn("nie został odzyskany", help_text)
 
     def test_duze_kwoty_sa_formatowane_kompaktowo(self):
         self.assertEqual(_kwota_skrocona(339_364.8), "339,4 tys. zł")

@@ -182,17 +182,19 @@ Linux and macOS:
 
 ---
 
-## Ekonomia kohorty i model „W czasie”
+## Dwa widoki modelu
 
-Aplikacja pokazuje dwa powiązane, ale odrębne ujęcia ekonomiczne:
+Aplikacja odpowiada na dwa powiązane, ale odrębne pytania:
 
-- główny model cyklu życia wycenia pełną ekonomię referencyjnej rocznej
-  kohorty spraw jako koszt faktycznie wymaganego zasobu pracowników;
-- sekcja **W czasie** symuluje ciągłe działanie firmy przy stałym napływie.
+- **Ekonomika sprawy** pokazuje przychód, koszt i wynik oczekiwanej sprawy,
+  strukturę ekonomiki oraz sterowalne dźwignie. Wartości całej referencyjnej
+  kohorty i analizy zaawansowane pozostają dostępne jako szczegóły;
+- **Kontrakt w czasie** symuluje ciągłe działanie firmy przy stałym napływie,
+  pełnym koszcie obsady, kolejce pracy i terminach przychodów.
   Wartość „Roczny napływ spraw” jest dzielona przez 12 i taka oczekiwana
   kohorta pojawia się w każdym miesiącu horyzontu.
 
-Zachowany dla kompatybilności klucz `koszt_staly_na_godzine` oznacza **narzut
+Parametr `koszt_staly_na_godzine` oznacza **narzut
 kosztów ogólnych przypisany do jednej płatnej godziny pracownika**. Nie jest to
 jeden globalny koszt operacji. Narzut nie zawiera wynagrodzenia, które jest
 liczone osobno. Koszt płatnej godziny zasobu wynosi więc:
@@ -236,7 +238,7 @@ jest więc oparty na czasie `bezpośrednie minuty × 480 / (480 - D)`. Model
 czasowy zachowuje tę samą proporcję w ramach dokładnie 167 godzin miesięcznie
 i nalicza pełny koszt utrzymywanej obsady, także jej niewykorzystanego czasu.
 
-Widok **W czasie** rozdziela nową pracę przypadającą na miesiąc, pracę już
+Widok **Kontrakt w czasie** rozdziela nową pracę przypadającą na miesiąc, pracę już
 oczekującą, pracę wykonaną oraz backlog na koniec. Osobno pokazuje deficyt
 rozruchowy, koszt niewykorzystanej pojemności i strukturalny niedobór obsady.
 Dlatego dodatnia marża cyklu życia kohorty może współistnieć ze stratą czasową:
@@ -245,11 +247,12 @@ więcej płatnych godzin niż potrzeba. Różnica kosztów jest wtedy równa bil
 godzin razy pełna stawka 95,88 zł/h. Zbyt mała obsada powoduje z kolei rosnący
 backlog i opóźnienie przychodu.
 
-Główny KPI break-even pokazuje wyłącznie trwały break-even: wynik skumulowany
-wrócił do co najmniej zera, nie spadł później pod zero, pojemność jest wykonalna,
-a dojrzały wynik miesięczny jest dodatni. Pierwsze surowe przecięcie zera jest
-osobną diagnostyką i może być nietrwałe. Status „Na granicy” jest wykonalny,
-ale oznacza brak bufora pojemności.
+KPI **Break-even finansowy** pokazuje pierwszy powrót wyniku skumulowanego z
+deficytu do co najmniej zera. Nie znika, gdy pojemność jest niewystarczająca.
+Osobny, jawnie wyjaśniony **status kontraktu** łączy ekonomię sprawy, status
+pojemności i docelowy miesięczny wynik bieżącej obsady. Trwałość break-even
+pozostaje dostępna w diagnostyce. Status „Na granicy” jest wykonalny, ale
+oznacza brak bufora pojemności.
 
 Obecna wersja nie modeluje terminów płatności podatku, podwyżek wynagrodzeń i
 inflacji, sezonowości napływu, rzeczywistych historycznych rozkładów czasu,

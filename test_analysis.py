@@ -1,22 +1,15 @@
 import unittest
 
 from analysis import (
-    analiza_pojemnosci,
-    analiza_wplywu_wzglednego,
     analiza_wrazliwosci,
     analizuj_progi,
     czy_parametr_sterowalny,
     definicje_parametrow,
     ekonomika_ugod,
     kluczowe_progi,
-    maksymalna_liczba_spraw,
-    minimalna_liczba_pracownikow,
     przelicz_udzial_rodzaju,
     ranking_progow,
-    rekomendacje_deterministyczne,
     spelnia_cel,
-    status_operacyjny,
-    symuluj_pojedyncza_zmiane,
     ustaw_parametr,
     wartosc_skrocenia_czynnosci,
     znajdz_granice,
@@ -62,13 +55,11 @@ class TestSilnikProgow(unittest.TestCase):
             self.assertIn(identyfikator, progi)
             self.assertNotIn("wykonalne_operacyjnie", progi[identyfikator])
 
-    def test_progi_finansowe_nie_zaleza_od_statusu_rocznej_pojemnosci(self):
-        przeciazony = self.parametry
-        wykonalny = {**self.parametry, "liczba_pracownikow": 3}
-        self.assertTrue(oblicz_model(przeciazony)["pojemnosc"]["przekroczona"])
-        self.assertFalse(oblicz_model(wykonalny)["pojemnosc"]["przekroczona"])
-
-        for parametry in (przeciazony, wykonalny):
+    def test_progi_finansowe_nie_zaleza_od_obsady(self):
+        for parametry in (
+            self.parametry,
+            {**self.parametry, "liczba_pracownikow": 3},
+        ):
             definicja_kosztu_stalego = {
                 d["id"]: d for d in definicje_parametrow(parametry)
             }["koszt_staly"]
@@ -80,8 +71,7 @@ class TestSilnikProgow(unittest.TestCase):
             self.assertTrue(spelnia_cel(na_granicy, 40.0))
             self.assertAlmostEqual(na_granicy["ogolem"]["marza_po_podatku"], 40.0, places=6)
 
-    def test_ranking_progow_nie_filtruje_przekroczonej_pojemnosci(self):
-        self.assertTrue(oblicz_model(self.parametry)["pojemnosc"]["przekroczona"])
+    def test_ranking_progow_zawiera_bufory_finansowe(self):
         progi = analizuj_progi(self.parametry, 0.0)
         ranking = ranking_progow(progi, "bufor", limit=100)
         self.assertTrue(ranking)
@@ -220,9 +210,6 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
         self.assertIn("czas_ii_instancji", wrazliwosc)
         progi = {x["id"] for x in analizuj_progi(parametry, 40.0)["pozycje"]}
         self.assertTrue({"udzial_ii_instancji", "czas_ii_instancji"}.issubset(progi))
-        wplyw = {x["Id"] for x in analiza_wplywu_wzglednego(parametry)}
-        self.assertNotIn("udzial_ii_instancji", wplyw)
-        self.assertIn("czas_ii_instancji", wplyw)
 
     def test_wrazliwosc_wyklucza_zalozenia_zewnetrzne_i_skale(self):
         wykluczone = {
@@ -435,159 +422,6 @@ class TestUgodyIPojemnosc(unittest.TestCase):
         z_ii = ekonomika_ugod(parametry)
         self.assertLess(z_ii["minimalna_skutecznosc"], bez_ii["minimalna_skutecznosc"])
         self.assertGreater(z_ii["strategia_wplyw_pln"], bez_ii["strategia_wplyw_pln"])
-
-    def test_minimum_pracownikow_i_maksimum_spraw_sa_granicami(self):
-        parametry = domyslne_parametry()
-        minimum = minimalna_liczba_pracownikow(parametry)
-        self.assertIsNotNone(minimum)
-        assert minimum is not None
-        self.assertFalse(oblicz_model(ustaw_parametr(parametry, "liczba_pracownikow", minimum))["pojemnosc"]["przekroczona"])
-        self.assertTrue(oblicz_model(ustaw_parametr(parametry, "liczba_pracownikow", minimum - 1))["pojemnosc"]["przekroczona"])
-
-        maksimum = maksymalna_liczba_spraw(parametry)
-        self.assertIsNotNone(maksimum)
-        assert maksimum is not None
-        self.assertFalse(oblicz_model(ustaw_parametr(parametry, "liczba_spraw", maksimum))["pojemnosc"]["przekroczona"])
-        self.assertTrue(oblicz_model(ustaw_parametr(parametry, "liczba_spraw", maksimum + 1))["pojemnosc"]["przekroczona"])
-
-    def test_brak_pojemnosci_nie_jest_raportowany_jako_zero_spraw(self):
-        parametry = domyslne_parametry()
-        parametry["codzienne_czynnosci"] = {"Czynności dzienne": 600}
-        with self.assertRaisesRegex(ValueError, "480 minut"):
-            maksymalna_liczba_spraw(parametry)
-        with self.assertRaisesRegex(ValueError, "480 minut"):
-            analiza_pojemnosci(parametry)
-
-    def test_analiza_pojemnosci_ma_szesc_segmentow(self):
-        self.assertEqual(len(analiza_pojemnosci(domyslne_parametry())["segmenty"]), 6)
-
-    def test_rentowny_wolumen_jest_sprawdzany_dla_ekonomii_oczekiwanej(self):
-        parametry = domyslne_parametry()
-        analiza = analiza_pojemnosci(parametry)
-        rentowne = []
-        for naplyw in range(analiza["maksymalne_sprawy"] + 1):
-            wynik = oblicz_model({**parametry, "liczba_spraw": naplyw})
-            if (
-                not wynik["pojemnosc"]["przekroczona"]
-                and wynik["ogolem"]["wynik_po_podatku"] >= -1e-7
-            ):
-                rentowne.append(naplyw)
-        self.assertEqual(analiza["minimalny_rentowny_wolumen"], min(rentowne))
-        self.assertEqual(analiza["maksymalny_rentowny_wolumen"], max(rentowne))
-
-    def test_ii_instancja_zmniejsza_maksymalna_pojemnosc(self):
-        parametry = domyslne_parametry()
-        bez_ii = analiza_pojemnosci({**parametry, "udzial_ii_instancji_percent": 0.0})
-        z_ii = analiza_pojemnosci(parametry)
-        self.assertLess(z_ii["maksymalne_sprawy"], bez_ii["maksymalne_sprawy"])
-
-    def test_status_rozroznia_rentownosc_i_wykonalnosc(self):
-        przeciazony = domyslne_parametry()
-        wynik_przeciazony = oblicz_model(przeciazony)
-        self.assertFalse(status_operacyjny(wynik_przeciazony)["wykonalne"])
-
-        wykonalny = {**domyslne_parametry(), "liczba_pracownikow": 3}
-        wynik_wykonalny = oblicz_model(wykonalny)
-        self.assertEqual(
-            spelnia_cel(wynik_wykonalny, 0.0),
-            spelnia_cel(wynik_przeciazony, 0.0),
-        )
-        self.assertTrue(status_operacyjny(wynik_wykonalny)["wykonalne"])
-
-    def test_rekomendacje_nie_filtruja_przez_roczna_pojemnosc(self):
-        parametry = domyslne_parametry()
-        self.assertTrue(oblicz_model(parametry)["pojemnosc"]["przekroczona"])
-        wrazliwosc = analiza_wrazliwosci(parametry)
-        progi = analizuj_progi(parametry, 0.0)
-        ugody = ekonomika_ugod(parametry)
-        pojemnosc = analiza_pojemnosci(parametry)
-        rekomendacje = rekomendacje_deterministyczne(wrazliwosc, progi, ugody, pojemnosc)
-        wszystkie = rekomendacje["najwiekszy_wplyw"]
-        self.assertTrue(wszystkie)
-        self.assertTrue(all(x["Wpływ na wynik roczny"] > 0 for x in wszystkie))
-        self.assertTrue(all("Wykonalne operacyjnie" not in x for x in wszystkie))
-
-    def test_rekomendacje_sa_sterowalne_posortowane_i_reaguja_na_procent(self):
-        parametry = domyslne_parametry()
-        progi = analizuj_progi(parametry, 0.0)
-        ugody = ekonomika_ugod(parametry)
-        wyniki = {}
-        for procent in (10.0, 20.0):
-            wrazliwosc = analiza_wrazliwosci(parametry, procent)
-            rekomendacje = rekomendacje_deterministyczne(wrazliwosc, progi, ugody)
-            top = rekomendacje["najwiekszy_wplyw"]
-            self.assertTrue(all(czy_parametr_sterowalny(x["Id"]) for x in top))
-            self.assertEqual(
-                [x["Wpływ na wynik roczny"] for x in top],
-                sorted((x["Wpływ na wynik roczny"] for x in top), reverse=True),
-            )
-            wyniki[procent] = {x["Id"]: x["Wpływ na wynik roczny"] for x in top}
-        wspolne = set(wyniki[10.0]) & set(wyniki[20.0])
-        self.assertTrue(any(
-            abs(wyniki[10.0][x] - wyniki[20.0][x]) > 1e-6 for x in wspolne
-        ))
-
-    def test_rekomendacje_odrzucaja_zewnetrzny_wiersz_wejsciowy(self):
-        parametry = domyslne_parametry()
-        zewnetrzny = {
-            "Id": "udzial_ii_instancji", "Parametr": "Udział spraw w II instancji",
-            "Kategoria": "Operacyjne", "Wpływ na wynik roczny": 1_000_000.0,
-        }
-        rekomendacje = rekomendacje_deterministyczne(
-            [zewnetrzny] + analiza_wrazliwosci(parametry),
-            analizuj_progi(parametry, 0.0),
-            ekonomika_ugod(parametry),
-        )
-        self.assertNotIn(
-            "udzial_ii_instancji",
-            {x["Id"] for x in rekomendacje["najwiekszy_wplyw"]},
-        )
-
-    def test_rekomendacje_nie_zawieraja_kwoty_wyroku_ani_podatku(self):
-        parametry = domyslne_parametry()
-        rekomendacje = rekomendacje_deterministyczne(
-            analiza_wrazliwosci(parametry),
-            analizuj_progi(parametry, 0.0),
-            ekonomika_ugod(parametry),
-        )
-        identyfikatory = {x["Id"] for x in rekomendacje["najwiekszy_wplyw"]}
-        self.assertIn("srednia_kwota_ugody", {
-            x["Id"] for x in analiza_wrazliwosci(parametry)
-        })
-        self.assertNotIn("srednia_kwota_wyroku", identyfikatory)
-        self.assertNotIn("podatek_dochodowy", identyfikatory)
-        for klucz in ("najmniejsze_bufory", "najkrotsze_drogi"):
-            self.assertTrue(all(
-                czy_parametr_sterowalny(x["id"]) for x in rekomendacje[klucz]
-            ))
-
-
-class TestSymulator(unittest.TestCase):
-    def test_wynik_symulatora_jest_wynikiem_modelu(self):
-        parametry = domyslne_parametry()
-        symulacja = symuluj_pojedyncza_zmiane(parametry, "srednia_kwota_ugody", 60.0)
-        bezposrednio = oblicz_model(ustaw_parametr(parametry, "srednia_kwota_ugody", 60.0))
-        self.assertEqual(symulacja["wyniki"]["ogolem"], bezposrednio["ogolem"])
-
-    def test_symulator_nie_zwraca_oceny_rocznej_pojemnosci(self):
-        parametry = domyslne_parametry()
-        symulacja = symuluj_pojedyncza_zmiane(parametry, "srednia_kwota_ugody", 50.0)
-        self.assertNotIn("status_operacyjny", symulacja)
-        self.assertNotIn("Wykorzystanie pojemności", symulacja["scenariusz"])
-        self.assertEqual(
-            set(symulacja["scenariusz"]),
-            {"Przychód", "Koszt", "Wynik przed podatkiem", "Podatek dochodowy", "Wynik po podatku", "Marża po podatku", "Godziny pracy"},
-        )
-
-    def test_symulator_ii_instancji_jest_zgodny_z_modelem_i_nie_zmienia_przychodu(self):
-        parametry = domyslne_parametry()
-        for identyfikator, wartosc in (("udzial_ii_instancji", 75.0), ("czas_ii_instancji", 300.0)):
-            with self.subTest(identyfikator=identyfikator):
-                symulacja = symuluj_pojedyncza_zmiane(parametry, identyfikator, wartosc)
-                bezposrednio = oblicz_model(ustaw_parametr(parametry, identyfikator, wartosc))
-                self.assertEqual(symulacja["wyniki"]["ogolem"], bezposrednio["ogolem"])
-                self.assertEqual(symulacja["scenariusz"]["Przychód"], symulacja["obecnie"]["Przychód"])
-
 
 if __name__ == "__main__":
     unittest.main()
