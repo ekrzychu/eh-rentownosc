@@ -2,7 +2,7 @@
 
 from math import ceil, floor
 
-from model import oblicz_model, oblicz_podzial_spraw
+from model import GODZINY_ETATU_MIESIECZNIE, oblicz_model
 
 
 KOPIOWANE_SLOWNIKI = (
@@ -106,7 +106,7 @@ def przelicz_udzial_rodzaju(udzialy: dict[str, float], rodzaj: str, nowy_udzial:
 def definicje_parametrow(parametry: dict) -> list[dict]:
     """Buduje katalog dźwigni z aktualnych, a nie historycznych parametrów."""
     definicje = [
-        {"id": "koszt_staly", "nazwa": "Koszt stały operacji / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_staly_na_godzine"] * 10 + 100), "krok": 10.0},
+        {"id": "koszt_staly", "nazwa": "Narzut kosztów ogólnych / h pracownika", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_staly_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "wynagrodzenie", "nazwa": "Wynagrodzenie pracownika / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["wynagrodzenie_pracownika_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "srednia_kwota_ugody", "nazwa": "Średnia kwota ugody", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "srednia_kwota_wyroku", "nazwa": "Średnia kwota wyroku", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
@@ -442,7 +442,10 @@ def ekonomika_ugod(parametry: dict) -> dict:
     czasy_ii_instancji = wyniki["czasy_ii_instancji_sciezek"]
     pelne_czasy_sciezek = wyniki["czasy_sciezek_z_ii_instancja"]
     liczba_spraw = parametry["liczba_spraw"]
-    wynagrodzenie_godzinowe = parametry["wynagrodzenie_pracownika_na_godzine"]
+    koszt_zasobu_godzinowy = (
+        parametry["koszt_staly_na_godzine"]
+        + parametry["wynagrodzenie_pracownika_na_godzine"]
+    )
     dzienne_minuty = sum(parametry["codzienne_czynnosci"].values())
     produktywne_minuty = 480 - dzienne_minuty
     if produktywne_minuty <= 0:
@@ -471,7 +474,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
         oszczednosc_pln = (
             oszczednosc_minut
             / 60
-            * wynagrodzenie_godzinowe
+            * koszt_zasobu_godzinowy
             * mnoznik_kosztu_lifecycle
         )
         porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ roczny przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
@@ -525,7 +528,7 @@ def minimalna_liczba_pracownikow(parametry: dict, limit: int = 1000) -> int | No
 
 
 def maksymalna_liczba_spraw(parametry: dict, limit: int = 1_000_000) -> int | None:
-    """Zwraca największy wykonalny całkowity napływ bez założenia monotoniczności."""
+    """Zwraca największy całkowity napływ przy liniowym popycie oczekiwanym."""
     bazowy = oblicz_model(parametry)
     pojemnosc = bazowy["pojemnosc"]["pojemnosc_spraw_minuty"]
     czasy = {
@@ -540,25 +543,8 @@ def maksymalna_liczba_spraw(parametry: dict, limit: int = 1_000_000) -> int | No
     if sredni_czas <= 0:
         return None
 
-    # Alokacja największych reszt może lokalnie przesuwać sprawę między P1/P2/P3.
-    # Błąd względem udziałów dokładnych jest ograniczony przez jeden przypadek
-    # na kategorię, co daje bezpieczną skończoną granicę pełnego skanowania.
-    bezpieczna_gorna = floor((pojemnosc + sum(czasy.values())) / sredni_czas) + 2
-    gorna = min(limit, max(0, bezpieczna_gorna))
-    maksimum = 0
-    for liczba_spraw in range(gorna + 1):
-        podzial = oblicz_podzial_spraw(
-            liczba_spraw,
-            parametry["udzialy_rodzajow"],
-            parametry["wysoki_wps_procent"],
-        )
-        minuty = sum(
-            sum(podzial[rodzaj].values()) * czasy[rodzaj]
-            for rodzaj in podzial
-        )
-        if minuty <= pojemnosc + 1e-9:
-            maksimum = liczba_spraw
-    if gorna == limit and maksimum == limit:
+    maksimum = min(limit, max(0, floor((pojemnosc + 1e-9) / sredni_czas)))
+    if maksimum == limit:
         return None
     return maksimum
 
@@ -586,44 +572,17 @@ def analiza_pojemnosci(parametry: dict) -> dict:
 
     rentowne = []
     if maksimum is not None:
-        wzorce = {
-            (grupa["rodzaj"], grupa["grupa_wps"]): grupa
-            for grupa in wyniki["grupy"]
-        }
-        for liczba_spraw in range(0, maksimum + 1):
-            podzial = oblicz_podzial_spraw(
-                liczba_spraw,
-                parametry["udzialy_rodzajow"],
-                parametry["wysoki_wps_procent"],
-            )
-            bezposrednie_minuty = sum(
-                sum(grupy_wps.values())
-                * (
-                    wyniki["srednie_minuty_sciezki_ugody"]
-                    + parametry["dodatkowe_minuty"][rodzaj]
-                )
-                for rodzaj, grupy_wps in podzial.items()
-            )
-            if bezposrednie_minuty > wyniki["pojemnosc"]["pojemnosc_spraw_minuty"] + 1e-9:
-                continue
-            wynik_przed_podatkiem = -wyniki["koszt_staly_roczny"]
-            for rodzaj, grupy_wps in podzial.items():
-                for grupa_wps, liczba in grupy_wps.items():
-                    wzorzec = wzorce[(rodzaj, grupa_wps)]
-                    wynik_przed_podatkiem += liczba * (
-                        wzorzec["oczekiwane_wynagrodzenie"]
-                        - wzorzec["koszt_pracy_pracownika"]
-                    )
-            if wynik_przed_podatkiem >= -1e-7:
-                rentowne.append(liczba_spraw)
+        wynik_na_sprawe = wynik_jednej_sprawy["ogolem"]["wynik_przed_podatkiem"]
+        if wynik_na_sprawe >= -1e-7:
+            rentowne = list(range(maksimum + 1))
     segmenty = []
     for grupa in wyniki["grupy"]:
         przychod = grupa["oczekiwane_wynagrodzenie"]
         wynik_jednostkowy = grupa["wynik_jednostkowy_przed_podatkiem"]
-        segmenty.append({"Segment": f"{grupa['rodzaj']} / {'WPS poniżej progu' if grupa['grupa_wps'] == 'niski_wps' else 'WPS od progu wzwyż'}", "Liczba spraw": grupa["liczba"], "Przychód na sprawę": przychod, "Koszt pracy na sprawę": grupa["koszt_pracy_pracownika"], "Alokowany koszt stały na sprawę": grupa["alokowany_koszt_staly"], "Koszt na sprawę": grupa["koszt_calkowity"], "Wynik przed podatkiem na sprawę": wynik_jednostkowy, "Marża przed podatkiem": wynik_jednostkowy / przychod * 100 if przychod else 0.0, "Łączny wynik przed podatkiem": grupa["laczny_wynik_przed_podatkiem"]})
+        segmenty.append({"Segment": f"{grupa['rodzaj']} / {'WPS poniżej progu' if grupa['grupa_wps'] == 'niski_wps' else 'WPS od progu wzwyż'}", "Liczba spraw": grupa["liczba"], "Przychód na sprawę": przychod, "Koszt wynagrodzenia na sprawę": grupa["koszt_wynagrodzenia"], "Narzut kosztów ogólnych na sprawę": grupa["koszt_narzutu_ogolnego"], "Koszt na sprawę": grupa["koszt_calkowity"], "Wynik przed podatkiem na sprawę": wynik_jednostkowy, "Marża przed podatkiem": wynik_jednostkowy / przychod * 100 if przychod else 0.0, "Łączny wynik przed podatkiem": grupa["laczny_wynik_przed_podatkiem"]})
     segmenty.sort(key=lambda x: x["Wynik przed podatkiem na sprawę"], reverse=True)
     return {
-        "liczba_pracownikow": parametry["liczba_pracownikow"], "dni_pracy": parametry["liczba_dni_pracy_w_roku"],
+        "liczba_pracownikow": parametry["liczba_pracownikow"], "godziny_etatu_miesiecznie": GODZINY_ETATU_MIESIECZNIE,
         "godziny_brutto": pojemnosc["pojemnosc_brutto_minuty"] / 60, "godziny_dzienne": pojemnosc["czynnosci_dzienne_minuty"] / 60,
         "godziny_na_sprawy": max(0.0, pojemnosc["pojemnosc_spraw_minuty"]) / 60, "godziny_wymagane": pojemnosc["bezposrednie_minuty_spraw"] / 60,
         "wykorzystanie": wykorzystanie_pojemnosci(wyniki), "wolne_godziny": max(0.0, pojemnosc["pojemnosc_spraw_minuty"] - pojemnosc["bezposrednie_minuty_spraw"]) / 60,

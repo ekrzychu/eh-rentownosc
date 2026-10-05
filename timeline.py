@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from math import ceil, isclose
 
 from model import (
+    GODZINY_ETATU_MIESIECZNIE,
     MINUTY_DNIA_PRACY,
     domyslne_parametry,
     oblicz_model,
@@ -176,24 +177,29 @@ def oblicz_pojemnosc_miesieczna(
     if lifecycle is None:
         lifecycle = oblicz_model(parametry)
     pracownicy = parametry["liczba_pracownikow"]
-    dni_rocznie = parametry["liczba_dni_pracy_w_roku"]
     dzienne_na_pracownika = sum(parametry["codzienne_czynnosci"].values())
-    brutto_minuty = pracownicy * dni_rocznie * MINUTY_DNIA_PRACY / 12
-    dzienne_minuty = pracownicy * dni_rocznie * dzienne_na_pracownika / 12
+    brutto_godziny = pracownicy * GODZINY_ETATU_MIESIECZNIE
+    brutto_minuty = brutto_godziny * 60
+    ekwiwalent_dni_miesiecznie = GODZINY_ETATU_MIESIECZNIE / 8
+    dzienne_godziny_na_pracownika = (
+        ekwiwalent_dni_miesiecznie * dzienne_na_pracownika / 60
+    )
+    dzienne_minuty = (
+        pracownicy * dzienne_godziny_na_pracownika * 60
+    )
     netto_minuty = max(brutto_minuty - dzienne_minuty, 0.0)
     popyt_minuty = lifecycle["bezposrednie_minuty_spraw"] / 12
-    godziny_operacyjne_miesiecznie = dni_rocznie * 8 / 12
-    koszt_staly_miesiecznie = (
-        godziny_operacyjne_miesiecznie * parametry["koszt_staly_na_godzine"]
+    koszt_godziny_zasobu = (
+        parametry["koszt_staly_na_godzine"]
+        + parametry["wynagrodzenie_pracownika_na_godzine"]
     )
-    koszt_pracownikow_miesiecznie = (
-        brutto_minuty
-        / 60
-        * parametry["wynagrodzenie_pracownika_na_godzine"]
+    miesieczny_narzut_ogolny = (
+        brutto_godziny * parametry["koszt_staly_na_godzine"]
     )
-    koszt_operacji_miesiecznie = (
-        koszt_staly_miesiecznie + koszt_pracownikow_miesiecznie
+    miesieczne_wynagrodzenia = (
+        brutto_godziny * parametry["wynagrodzenie_pracownika_na_godzine"]
     )
+    miesieczny_koszt_obsady = miesieczny_narzut_ogolny + miesieczne_wynagrodzenia
     tolerancja = max(TOLERANCJA, popyt_minuty * 1e-9)
     if popyt_minuty < netto_minuty - tolerancja:
         status = "Stabilna"
@@ -206,11 +212,16 @@ def oblicz_pojemnosc_miesieczna(
         "czynnosci_dzienne_minuty": dzienne_minuty,
         "pojemnosc_na_sprawy_minuty": netto_minuty,
         "miesieczny_popyt_minuty": popyt_minuty,
-        "godziny_operacyjne_miesiecznie": godziny_operacyjne_miesiecznie,
-        "miesieczny_koszt_staly": koszt_staly_miesiecznie,
-        "miesieczny_koszt_pracownikow": koszt_pracownikow_miesiecznie,
-        "miesieczny_koszt_operacji": koszt_operacji_miesiecznie,
-        "miesieczny_koszt_zespolu": koszt_operacji_miesiecznie,
+        "godziny_etatu_miesiecznie": GODZINY_ETATU_MIESIECZNIE,
+        "ekwiwalent_dni_pracy_miesiecznie": ekwiwalent_dni_miesiecznie,
+        "czynnosci_dzienne_na_pracownika_godziny": dzienne_godziny_na_pracownika,
+        "koszt_zasobu_na_godzine": koszt_godziny_zasobu,
+        "koszt_jednego_fte_miesiecznie": (
+            GODZINY_ETATU_MIESIECZNIE * koszt_godziny_zasobu
+        ),
+        "miesieczny_narzut_kosztow_ogolnych": miesieczny_narzut_ogolny,
+        "miesieczny_koszt_wynagrodzen": miesieczne_wynagrodzenia,
+        "miesieczny_koszt_obsady": miesieczny_koszt_obsady,
         "status_pojemnosci": status,
         "brak_pojemnosci_na_sprawy": dzienne_minuty >= brutto_minuty - TOLERANCJA,
     }
@@ -226,9 +237,11 @@ def minimalna_liczba_pracownikow_dla_stabilnosci(
     popyt = lifecycle["bezposrednie_minuty_spraw"] / 12
     if popyt <= TOLERANCJA:
         return 0
-    dni = parametry["liczba_dni_pracy_w_roku"]
     dzienne = sum(parametry["codzienne_czynnosci"].values())
-    netto_na_pracownika = dni * (MINUTY_DNIA_PRACY - dzienne) / 12
+    netto_na_pracownika = (
+        GODZINY_ETATU_MIESIECZNIE * 60
+        - GODZINY_ETATU_MIESIECZNIE / 8 * dzienne
+    )
     if netto_na_pracownika <= TOLERANCJA:
         return None
     return max(1, ceil((popyt - TOLERANCJA) / netto_na_pracownika))
@@ -552,9 +565,9 @@ def oblicz_model_czasowy(
         settlement_revenue = payments[month]["ugoda"]
         judgment_revenue = payments[month]["wyrok"]
         revenue = settlement_revenue + judgment_revenue
-        fixed_cost = capacity["miesieczny_koszt_staly"]
-        employee_cost = capacity["miesieczny_koszt_pracownikow"]
-        operation_cost = capacity["miesieczny_koszt_operacji"]
+        overhead_cost = capacity["miesieczny_narzut_kosztow_ogolnych"]
+        wage_cost = capacity["miesieczny_koszt_wynagrodzen"]
+        operation_cost = capacity["miesieczny_koszt_obsady"]
         monthly_result = revenue - operation_cost
         cumulative_result += monthly_result
         backlog_end_minutes_month = sum(
@@ -568,6 +581,8 @@ def oblicz_model_czasowy(
         ):
             raise RuntimeError("Miesięczne rozliczenie backlogu nie jest domknięte.")
         used_minutes = capacity["czynnosci_dzienne_minuty"] + executed_minutes
+        if used_minutes > capacity["pojemnosc_brutto_minuty"] + TOLERANCJA:
+            raise RuntimeError("Wykonano pracę ponad twardy limit 167 h/FTE.")
         unused_minutes = max(capacity["pojemnosc_brutto_minuty"] - used_minutes, 0.0)
         utilization = (
             used_minutes / capacity["pojemnosc_brutto_minuty"] * 100
@@ -593,19 +608,18 @@ def oblicz_model_czasowy(
                 "Nowa praca (h)": new_due_minutes / 60,
                 "Praca oczekująca (h)": total_available_work_minutes / 60,
                 "Wykonana praca (h)": executed_minutes / 60,
+                "Wykorzystane płatne godziny": used_minutes / 60,
                 "Backlog na koniec (h)": backlog_end_minutes_month / 60,
                 "Wykorzystanie pojemności (%)": utilization,
                 "Niewykorzystana pojemność (h)": unused_minutes / 60,
                 "Koszt niewykorzystanej pojemności": (
                     unused_minutes
                     / 60
-                    * parametry["wynagrodzenie_pracownika_na_godzine"]
+                    * capacity["koszt_zasobu_na_godzine"]
                 ),
-                "Miesięczny koszt stały": fixed_cost,
-                "Miesięczny koszt pracowników": employee_cost,
-                "Miesięczny koszt operacji": operation_cost,
-                # Alias zgodnościowy; wszystkie nowe widoki używają rozbicia kosztów.
-                "Koszt zespołu": operation_cost,
+                "Miesięczny narzut kosztów ogólnych": overhead_cost,
+                "Miesięczny koszt wynagrodzeń": wage_cost,
+                "Miesięczny koszt obsady": operation_cost,
                 "Wynik miesięczny przed podatkiem": monthly_result,
                 "Wynik skumulowany przed podatkiem": cumulative_result,
             }
@@ -689,7 +703,7 @@ def oblicz_model_czasowy(
         and isclose(mature_demand, target_monthly_demand, rel_tol=1e-9, abs_tol=1e-6)
     )
     steady_monthly_result = (
-        mature_revenue - capacity["miesieczny_koszt_operacji"]
+        mature_revenue - capacity["miesieczny_koszt_obsady"]
         if maturity_reached and mature_revenue is not None
         else None
     )
@@ -769,13 +783,9 @@ def oblicz_model_czasowy(
     supplied_annual_hours = capacity["pojemnosc_brutto_minuty"] / 60 * 12
     annual_capacity_balance = supplied_annual_hours - lifecycle_resource_hours
     minimum_team_monthly_cost = (
-        capacity["miesieczny_koszt_staly"]
-        + minimum_staff
-        * parametry["liczba_dni_pracy_w_roku"]
-        * MINUTY_DNIA_PRACY
-        / 12
-        / 60
-        * parametry["wynagrodzenie_pracownika_na_godzine"]
+        minimum_staff
+        * GODZINY_ETATU_MIESIECZNIE
+        * capacity["koszt_zasobu_na_godzine"]
         if minimum_staff is not None
         else None
     )
@@ -792,10 +802,10 @@ def oblicz_model_czasowy(
         for row in rows[: min(nominal_maturity_month, len(rows))]
     )
     lifecycle_total_cost = lifecycle["koszt_calkowity_lifecycle"]
-    temporal_annual_cost = capacity["miesieczny_koszt_operacji"] * 12
+    temporal_annual_cost = capacity["miesieczny_koszt_obsady"] * 12
     reconciliation_difference = temporal_annual_cost - lifecycle_total_cost
     expected_reconciliation_difference = (
-        annual_capacity_balance * parametry["wynagrodzenie_pracownika_na_godzine"]
+        annual_capacity_balance * capacity["koszt_zasobu_na_godzine"]
     )
     if not isclose(
         reconciliation_difference,
@@ -927,24 +937,33 @@ def porownaj_obsade(
         rows.append(
             {
                 "Liczba pracowników": employees,
-                "Pojemność netto (h/mies.)": result["pojemnosc"][
+                "Pojemność brutto (h/mies.)": result["pojemnosc"][
+                    "pojemnosc_brutto_minuty"
+                ] / 60,
+                "Pojemność na sprawy (h/mies.)": result["pojemnosc"][
                     "pojemnosc_na_sprawy_minuty"
                 ] / 60,
                 "Status pojemności": result["pojemnosc"]["status_pojemnosci"],
-                "Średnie wykorzystanie": result["pojemnosc"][
+                "Wykorzystanie": result["pojemnosc"][
                     "ostatnie_12_miesiecy_wykorzystanie_percent"
                 ],
-                "Backlog po horyzoncie (h)": result["podsumowanie"][
+                "Backlog (h)": result["podsumowanie"][
                     "backlog_koniec_godziny"
                 ],
-                "Miesięczny koszt operacji": result["pojemnosc"][
-                    "miesieczny_koszt_operacji"
+                "Miesięczny narzut kosztów ogólnych": result["pojemnosc"][
+                    "miesieczny_narzut_kosztow_ogolnych"
+                ],
+                "Miesięczne wynagrodzenia": result["pojemnosc"][
+                    "miesieczny_koszt_wynagrodzen"
+                ],
+                "Miesięczny koszt obsady": result["pojemnosc"][
+                    "miesieczny_koszt_obsady"
                 ],
                 "Pierwszy dodatni miesiąc": (
                     f"Miesiąc {first_positive}" if first_positive is not None else "Brak"
                 ),
-                "Break-even skumulowany": result["kpi"]["break_even_skumulowany"],
-                "Wynik miesięczny w stanie stabilnym": result["kpi"][
+                "Break-even": result["kpi"]["break_even_skumulowany"],
+                "Dojrzały wynik miesięczny": result["kpi"][
                     "wynik_miesieczny_w_stanie_stabilnym"
                 ],
             }

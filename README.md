@@ -187,45 +187,63 @@ Linux and macOS:
 Aplikacja pokazuje dwa powiązane, ale odrębne ujęcia ekonomiczne:
 
 - główny model cyklu życia wycenia pełną ekonomię referencyjnej rocznej
-  kohorty spraw jako koszt zużytego zasobu pracowników oraz jeden roczny koszt
-  stały całej operacji;
+  kohorty spraw jako koszt faktycznie wymaganego zasobu pracowników;
 - sekcja **W czasie** symuluje ciągłe działanie firmy przy stałym napływie.
   Wartość „Roczny napływ spraw” jest dzielona przez 12 i taka oczekiwana
   kohorta pojawia się w każdym miesiącu horyzontu.
 
-Stawka `koszt_staly_na_godzine` oznacza koszt całej operacji w godzinie jej
-działania. Nie jest kosztem pracownika ani kosztem godziny pracy nad sprawą.
-Rocznie jest naliczana raz jako `stawka × dni pracy × 8 godzin`, także przy
-zerowym napływie lub zerowej obsadzie. Koszt pracy kohorty to wymagane godziny
-zasobu pracowników pomnożone wyłącznie przez stawkę wynagrodzenia. Przy
-dodatnim napływie koszt stały jest rozdzielany równo na sprawy tylko na potrzeby
-raportowania segmentów; nie staje się przez to kosztem zależnym od aktywności.
+Zachowany dla kompatybilności klucz `koszt_staly_na_godzine` oznacza **narzut
+kosztów ogólnych przypisany do jednej płatnej godziny pracownika**. Nie jest to
+jeden globalny koszt operacji. Narzut nie zawiera wynagrodzenia, które jest
+liczone osobno. Koszt płatnej godziny zasobu wynosi więc:
 
-Model czasowy nalicza w każdym miesiącu jeden koszt stały operacji oraz payroll
-utrzymywanej obsady. Liczba pracowników mnoży wyłącznie płatne godziny
-pracowników, nigdy koszt stały. Czynności dzienne zużywają część pojemności bez
-tworzenia drugiego kosztu. Bezpośrednia praca nad sprawami trafia do kolejki
-FIFO. Jeżeli pojemność jest za mała, backlog narasta, zakończenia spraw się
-opóźniają, a przychód czeka na wykonanie wymaganej pracy. Koszt
-niewykorzystanej pojemności oznacza wyłącznie płatny, niewykorzystany czas
-pracowników i jest wyceniany stawką wynagrodzenia.
+```text
+36,00 zł/h narzutu + 59,88 zł/h wynagrodzenia = 95,88 zł/h
+```
+
+W cyklu życia koszt skaluje się z wymaganymi godzinami zasobu. Przykładowo:
+
+```text
+2 000 h × 95,88 zł/h = 191 760,00 zł
+```
+
+Wynik jest taki sam niezależnie od tego, czy pracę rozdzielono teoretycznie na
+1, 2 czy 10 pracowników. Model używa oczekiwanych, niezaokrąglonych liczebności
+P1/P2/P3 i grup WPS, dlatego identyczny miks spraw zachowuje ten sam koszt,
+przychód i marżę na sprawę przy zmianie wolumenu.
+
+Model czasowy wycenia natomiast pełną utrzymywaną obsadę. Jedynym źródłem
+pojemności i kosztu etatu jest dokładnie **167 płatnych godzin miesięcznie na
+FTE**. Przykładowo:
+
+```text
+1 FTE × 167 h × 95,88 zł/h = 16 011,96 zł/miesiąc
+```
+
+Pełny koszt powstaje także wtedy, gdy pracownik jest niedociążony. Czynności
+dzienne mieszczą się wewnątrz 167 godzin: dla `D` minut dziennie ich miesięczny
+czas to `(167 / 8) × D / 60`, a pozostała część jest pojemnością na sprawy.
+Bezpośrednia praca trafia do kolejki FIFO. Jeżeli pojemność jest za mała,
+backlog narasta, zakończenia spraw się opóźniają, a przychód czeka na wykonanie
+wymaganej pracy. Niewykorzystane płatne godziny są wyceniane pełną stawką
+narzutu i wynagrodzenia.
 
 Oba widoki stosują tę samą fizyczną definicję dnia pracy: pracownik ma 480
 płatnych minut, w których mieszczą się zarówno czynności dzienne, jak i praca
 nad sprawami. Jeśli czynności dzienne zajmują `D` minut, jedna osobodniówka
 dostarcza `480 - D` minut pracy nad sprawami. Koszt zasobu przypisany do kohorty
 jest więc oparty na czasie `bezpośrednie minuty × 480 / (480 - D)`. Model
-czasowy stosuje tę samą relację przy wyznaczaniu pojemności, lecz nalicza pełny
-koszt faktycznie utrzymywanej obsady, także jej niewykorzystanego czasu.
+czasowy zachowuje tę samą proporcję w ramach dokładnie 167 godzin miesięcznie
+i nalicza pełny koszt utrzymywanej obsady, także jej niewykorzystanego czasu.
 
 Widok **W czasie** rozdziela nową pracę przypadającą na miesiąc, pracę już
 oczekującą, pracę wykonaną oraz backlog na koniec. Osobno pokazuje deficyt
 rozruchowy, koszt niewykorzystanej pojemności i strukturalny niedobór obsady.
-Dlatego dodatnia marża kohorty lifecycle może współistnieć ze stratą czasową:
-kohorta zużywa tylko potrzebny zasób, natomiast najmniejsza wykonalna całkowita
-obsada może dostarczać więcej płatnych godzin niż potrzeba. Różnica rocznych
-kosztów modeli jest wtedy równa niewykorzystanym godzinom pracowników razy ich
-stawka. Zbyt mała obsada powoduje z kolei rosnący backlog i opóźnienie przychodu.
+Dlatego dodatnia marża cyklu życia kohorty może współistnieć ze stratą czasową:
+kohorta zużywa tylko potrzebny zasób, natomiast całkowita obsada może dostarczać
+więcej płatnych godzin niż potrzeba. Różnica kosztów jest wtedy równa bilansowi
+godzin razy pełna stawka 95,88 zł/h. Zbyt mała obsada powoduje z kolei rosnący
+backlog i opóźnienie przychodu.
 
 Główny KPI break-even pokazuje wyłącznie trwały break-even: wynik skumulowany
 wrócił do co najmniej zera, nie spadł później pod zero, pojemność jest wykonalna,

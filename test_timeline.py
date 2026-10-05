@@ -1,6 +1,11 @@
 import unittest
 
-from model import MINUTY_DNIA_PRACY, domyslne_parametry, oblicz_model
+from model import (
+    GODZINY_ETATU_MIESIECZNIE,
+    MINUTY_DNIA_PRACY,
+    domyslne_parametry,
+    oblicz_model,
+)
 from timeline import (
     domyslne_parametry_czasowe,
     minimalna_liczba_pracownikow_dla_stabilnosci,
@@ -77,7 +82,7 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
     def setUp(self):
         self.parametry = domyslne_parametry()
 
-    def test_pojemnosc_i_payroll_skaluja_sie_a_koszt_staly_nie(self):
+    def test_pojemnosc_i_pelny_koszt_obsady_skaluja_sie_liniowo(self):
         jeden = oblicz_pojemnosc_miesieczna(
             {**self.parametry, "liczba_pracownikow": 1}
         )
@@ -88,26 +93,39 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             "pojemnosc_brutto_minuty",
             "czynnosci_dzienne_minuty",
             "pojemnosc_na_sprawy_minuty",
-            "miesieczny_koszt_pracownikow",
+            "miesieczny_narzut_kosztow_ogolnych",
+            "miesieczny_koszt_wynagrodzen",
         ):
             self.assertAlmostEqual(dwoch[klucz], 2 * jeden[klucz])
-        self.assertEqual(jeden["miesieczny_koszt_staly"], 6_024.0)
-        self.assertEqual(dwoch["miesieczny_koszt_staly"], 6_024.0)
-        self.assertAlmostEqual(jeden["miesieczny_koszt_operacji"], 16_043.92)
-        self.assertAlmostEqual(dwoch["miesieczny_koszt_operacji"], 26_063.84)
+        self.assertAlmostEqual(jeden["miesieczny_narzut_kosztow_ogolnych"], 6_012.0)
+        self.assertAlmostEqual(jeden["miesieczny_koszt_wynagrodzen"], 9_999.96)
+        self.assertAlmostEqual(jeden["miesieczny_koszt_obsady"], 16_011.96)
+        self.assertAlmostEqual(dwoch["miesieczny_koszt_obsady"], 32_023.92)
         trzech = oblicz_pojemnosc_miesieczna(
             {**self.parametry, "liczba_pracownikow": 3}
         )
-        self.assertEqual(trzech["miesieczny_koszt_staly"], 6_024.0)
-        self.assertAlmostEqual(trzech["miesieczny_koszt_pracownikow"], 30_059.76)
-        self.assertAlmostEqual(trzech["miesieczny_koszt_operacji"], 36_083.76)
+        self.assertAlmostEqual(trzech["miesieczny_koszt_obsady"], 48_035.88)
+        dziesieciu = oblicz_pojemnosc_miesieczna(
+            {**self.parametry, "liczba_pracownikow": 10}
+        )
+        self.assertAlmostEqual(dziesieciu["miesieczny_koszt_obsady"], 160_119.60)
 
     def test_wzor_na_domyslna_pojemnosc_brutto(self):
         pojemnosc = oblicz_pojemnosc_miesieczna(self.parametry)
         self.assertAlmostEqual(
-            pojemnosc["pojemnosc_brutto_minuty"], 2 * 251 * 480 / 12
+            pojemnosc["pojemnosc_brutto_minuty"], 2 * 167 * 60
         )
-        self.assertAlmostEqual(pojemnosc["pojemnosc_brutto_minuty"], 20_080)
+        self.assertAlmostEqual(pojemnosc["pojemnosc_brutto_minuty"], 20_040)
+
+    def test_90_minut_dziennie_jest_wewnatrz_167_godzin(self):
+        pojemnosc = oblicz_pojemnosc_miesieczna(
+            {**self.parametry, "liczba_pracownikow": 1}
+        )
+        self.assertAlmostEqual(pojemnosc["ekwiwalent_dni_pracy_miesiecznie"], 20.875)
+        self.assertAlmostEqual(
+            pojemnosc["czynnosci_dzienne_na_pracownika_godziny"], 31.3125
+        )
+        self.assertAlmostEqual(pojemnosc["pojemnosc_na_sprawy_minuty"] / 60, 135.6875)
 
     def test_brak_pracy_bezposredniej_nie_usuwa_kosztu_zespolu(self):
         wynik = oblicz_model_czasowy({**self.parametry, "liczba_spraw": 0})
@@ -117,10 +135,10 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             wiersz["Niewykorzystana pojemność (h)"],
             wiersz["Pojemność brutto (h)"] - wiersz["Czynności dzienne (h)"],
         )
-        self.assertGreater(wiersz["Miesięczny koszt operacji"], 0.0)
+        self.assertGreater(wiersz["Miesięczny koszt obsady"], 0.0)
         self.assertEqual(
             wiersz["Wynik miesięczny przed podatkiem"],
-            -wiersz["Miesięczny koszt operacji"],
+            -wiersz["Miesięczny koszt obsady"],
         )
 
     def test_czynnosci_dzienne_zuzywaja_moc_bez_drugiego_kosztu(self):
@@ -133,8 +151,8 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             bez_dziennych["pojemnosc"]["pojemnosc_na_sprawy_minuty"],
         )
         self.assertEqual(
-            normalne["pojemnosc"]["miesieczny_koszt_operacji"],
-            bez_dziennych["pojemnosc"]["miesieczny_koszt_operacji"],
+            normalne["pojemnosc"]["miesieczny_koszt_obsady"],
+            bez_dziennych["pojemnosc"]["miesieczny_koszt_obsady"],
         )
 
     def test_koszt_zespolu_nie_odejmuje_ponownie_niewykorzystania(self):
@@ -145,10 +163,10 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
         for wiersz in wynik["tabela_miesieczna"]:
             self.assertAlmostEqual(
                 wiersz["Wynik miesięczny przed podatkiem"],
-                wiersz["Przychód razem"] - wiersz["Miesięczny koszt operacji"],
+                wiersz["Przychód razem"] - wiersz["Miesięczny koszt obsady"],
             )
 
-    def test_koszt_niewykorzystanej_pojemnosci_uzywa_tylko_stawki_pracownika(self):
+    def test_koszt_niewykorzystanej_pojemnosci_uzywa_pelnej_stawki_zasobu(self):
         wynik = oblicz_model_czasowy(
             {**self.parametry, "liczba_pracownikow": 10},
             {"horyzont_miesiace": 12},
@@ -157,7 +175,10 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             self.assertAlmostEqual(
                 wiersz["Koszt niewykorzystanej pojemności"],
                 wiersz["Niewykorzystana pojemność (h)"]
-                * self.parametry["wynagrodzenie_pracownika_na_godzine"],
+                * (
+                    self.parametry["koszt_staly_na_godzine"]
+                    + self.parametry["wynagrodzenie_pracownika_na_godzine"]
+                ),
             )
 
     def test_czynnosci_dzienne_moga_wyczerpac_cala_pojemnosc(self):
@@ -165,8 +186,15 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             **self.parametry,
             "codzienne_czynnosci": {"Czynności dzienne": MINUTY_DNIA_PRACY},
         }
-        with self.assertRaisesRegex(ValueError, "pozostawiać czas"):
+        with self.assertRaisesRegex(ValueError, "cały dzień"):
             oblicz_model_czasowy(parametry, {"horyzont_miesiace": 12})
+
+        bez_spraw = oblicz_pojemnosc_miesieczna(
+            {**parametry, "liczba_spraw": 0, "liczba_pracownikow": 1}
+        )
+        self.assertEqual(bez_spraw["pojemnosc_na_sprawy_minuty"], 0.0)
+        self.assertTrue(bez_spraw["brak_pojemnosci_na_sprawy"])
+        self.assertAlmostEqual(bez_spraw["miesieczny_koszt_obsady"], 16_011.96)
 
     def test_lifecycle_i_timeline_maja_wspolna_fizyke_pojemnosci(self):
         lifecycle = oblicz_model(self.parametry)
@@ -176,8 +204,11 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
         dzienne = sum(self.parametry["codzienne_czynnosci"].values())
         self.assertAlmostEqual(
             pojemnosc["pojemnosc_na_sprawy_minuty"] * 12,
-            self.parametry["liczba_dni_pracy_w_roku"]
-            * (MINUTY_DNIA_PRACY - dzienne),
+            GODZINY_ETATU_MIESIECZNIE
+            * 12
+            * 60
+            * (MINUTY_DNIA_PRACY - dzienne)
+            / MINUTY_DNIA_PRACY,
         )
         self.assertAlmostEqual(
             lifecycle["laczne_minuty"],
@@ -185,6 +216,42 @@ class TestKosztIPojemnoscObsady(unittest.TestCase):
             * MINUTY_DNIA_PRACY
             / (MINUTY_DNIA_PRACY - dzienne),
         )
+
+    def test_twardy_limit_167_godzin_i_backlog(self):
+        wynik = oblicz_model_czasowy(
+            {**self.parametry, "liczba_pracownikow": 1},
+            {"horyzont_miesiace": 24},
+        )
+        for wiersz in wynik["tabela_miesieczna"]:
+            self.assertLessEqual(
+                wiersz["Wykorzystane płatne godziny"], 167.0 + 1e-9
+            )
+            self.assertLessEqual(
+                wiersz["Wykonana praca (h)"], 135.6875 + 1e-9
+            )
+        self.assertGreater(wynik["podsumowanie"]["backlog_koniec_godziny"], 0.0)
+
+    def test_10_godzin_pracy_nadal_kosztuje_pelny_fte(self):
+        parametry = {
+            **self.parametry,
+            "liczba_spraw": 60,
+            "liczba_pracownikow": 1,
+            "wspolne_czynnosci": {"Praca": 120},
+            "procesowe_czynnosci": {},
+            "ugodowe_czynnosci": {},
+            "analiza_mozliwosci_ugody": 0,
+            "codzienne_czynnosci": {},
+            "dodatkowe_minuty": {"P1": 0, "P2": 0, "P3": 0},
+            "kategoryczna_odmowa_percent": 0.0,
+            "automatyczne_ramy_percent": 100.0,
+            "udzial_ii_instancji_percent": 0.0,
+            "obsluga_ii_instancji_minuty": 0,
+        }
+        wynik = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 12})
+        pierwszy = wynik["tabela_miesieczna"][0]
+        self.assertAlmostEqual(pierwszy["Wykonana praca (h)"], 10.0)
+        self.assertAlmostEqual(pierwszy["Miesięczny koszt obsady"], 16_011.96)
+        self.assertAlmostEqual(pierwszy["Niewykorzystana pojemność (h)"], 157.0)
 
 
 class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
@@ -269,8 +336,8 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
         jeden = oblicz_model_czasowy({**self.parametry, "liczba_pracownikow": 1})
         pieciu = oblicz_model_czasowy({**self.parametry, "liczba_pracownikow": 5})
         self.assertGreater(
-            pieciu["pojemnosc"]["miesieczny_koszt_operacji"],
-            jeden["pojemnosc"]["miesieczny_koszt_operacji"],
+            pieciu["pojemnosc"]["miesieczny_koszt_obsady"],
+            jeden["pojemnosc"]["miesieczny_koszt_obsady"],
         )
         self.assertGreater(
             pieciu["pojemnosc"]["pojemnosc_na_sprawy_minuty"],
@@ -442,6 +509,20 @@ class TestStabilnoscIDojrzalosc(unittest.TestCase):
         )
         self.assertEqual([row["Liczba pracowników"] for row in rows], [1, 2, 3, 4, 5])
         self.assertTrue(all("Najlepszy" not in row for row in rows))
+        wymagane = {
+            "Liczba pracowników",
+            "Pojemność brutto (h/mies.)",
+            "Pojemność na sprawy (h/mies.)",
+            "Miesięczny narzut kosztów ogólnych",
+            "Miesięczne wynagrodzenia",
+            "Miesięczny koszt obsady",
+            "Wykorzystanie",
+            "Backlog (h)",
+            "Break-even",
+            "Dojrzały wynik miesięczny",
+        }
+        self.assertTrue(wymagane.issubset(rows[0]))
+        self.assertAlmostEqual(rows[1]["Miesięczny koszt obsady"], 32_023.92)
 
     def test_roznica_kosztow_to_wylacznie_niewykorzystana_praca(self):
         wynik = oblicz_model_czasowy(
@@ -453,7 +534,10 @@ class TestStabilnoscIDojrzalosc(unittest.TestCase):
         self.assertAlmostEqual(
             diagnoza["roznica_kosztu_czasowy_minus_lifecycle"],
             diagnoza["bilans_pojemnosci_rocznie_godziny"]
-            * self.parametry["wynagrodzenie_pracownika_na_godzine"],
+            * (
+                self.parametry["koszt_staly_na_godzine"]
+                + self.parametry["wynagrodzenie_pracownika_na_godzine"]
+            ),
         )
 
 
@@ -498,7 +582,7 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
         self.assertTrue(
             all(
                 w["Wynik miesięczny przed podatkiem"]
-                == -w["Miesięczny koszt operacji"]
+                == -w["Miesięczny koszt obsady"]
                 for w in wynik["tabela_miesieczna"]
             )
         )
@@ -509,9 +593,9 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
             {"horyzont_miesiace": 24},
         )
         self.assertEqual(wynik["pojemnosc"]["pojemnosc_brutto_minuty"], 0.0)
-        self.assertEqual(wynik["pojemnosc"]["miesieczny_koszt_pracownikow"], 0.0)
-        self.assertEqual(wynik["pojemnosc"]["miesieczny_koszt_staly"], 6_024.0)
-        self.assertEqual(wynik["pojemnosc"]["miesieczny_koszt_operacji"], 6_024.0)
+        self.assertEqual(wynik["pojemnosc"]["miesieczny_koszt_wynagrodzen"], 0.0)
+        self.assertEqual(wynik["pojemnosc"]["miesieczny_narzut_kosztow_ogolnych"], 0.0)
+        self.assertEqual(wynik["pojemnosc"]["miesieczny_koszt_obsady"], 0.0)
         self.assertGreater(wynik["podsumowanie"]["backlog_koniec_godziny"], 0.0)
 
     def test_zero_czynnosci_dziennych(self):

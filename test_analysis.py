@@ -374,7 +374,10 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             oczekiwana_roznica_pln = (
                 oczekiwana_roznica_minut
                 / 60
-                * parametry["wynagrodzenie_pracownika_na_godzine"]
+                * (
+                    parametry["koszt_staly_na_godzine"]
+                    + parametry["wynagrodzenie_pracownika_na_godzine"]
+                )
                 * 480
                 / (480 - sum(parametry["codzienne_czynnosci"].values()))
             )
@@ -450,15 +453,15 @@ class TestUgodyIPojemnosc(unittest.TestCase):
     def test_brak_pojemnosci_nie_jest_raportowany_jako_zero_spraw(self):
         parametry = domyslne_parametry()
         parametry["codzienne_czynnosci"] = {"Czynności dzienne": 600}
-        with self.assertRaisesRegex(ValueError, "pozostawiać czas"):
+        with self.assertRaisesRegex(ValueError, "480 minut"):
             maksymalna_liczba_spraw(parametry)
-        with self.assertRaisesRegex(ValueError, "pozostawiać czas"):
+        with self.assertRaisesRegex(ValueError, "480 minut"):
             analiza_pojemnosci(parametry)
 
     def test_analiza_pojemnosci_ma_szesc_segmentow(self):
         self.assertEqual(len(analiza_pojemnosci(domyslne_parametry())["segmenty"]), 6)
 
-    def test_rentowny_wolumen_jest_dokladnie_sprawdzany_dla_alokacji_dyskretnej(self):
+    def test_rentowny_wolumen_jest_sprawdzany_dla_ekonomii_oczekiwanej(self):
         parametry = domyslne_parametry()
         analiza = analiza_pojemnosci(parametry)
         rentowne = []

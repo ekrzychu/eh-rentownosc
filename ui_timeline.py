@@ -101,11 +101,11 @@ def _cumulative_chart(table: pd.DataFrame, horizon: int, break_even: int | None)
 
 
 def _finance_chart(table: pd.DataFrame, horizon: int):
-    melted = table[["Miesiąc", "Przychód razem", "Miesięczny koszt operacji"]].melt(
+    melted = table[["Miesiąc", "Przychód razem", "Miesięczny koszt obsady"]].melt(
         "Miesiąc", var_name="Pozycja", value_name="Kwota"
     )
     melted["Pozycja"] = melted["Pozycja"].replace(
-        {"Przychód razem": "Przychód", "Miesięczny koszt operacji": "Koszt operacji"}
+        {"Przychód razem": "Przychód", "Miesięczny koszt obsady": "Koszt obsady"}
     )
     return (
         alt.Chart(melted)
@@ -117,7 +117,7 @@ def _finance_chart(table: pd.DataFrame, horizon: int):
                 "Pozycja:N",
                 title=None,
                 scale=alt.Scale(
-                    domain=["Przychód", "Koszt operacji"],
+                    domain=["Przychód", "Koszt obsady"],
                     range=["#16a34a", "#dc2626"],
                 ),
             ),
@@ -179,6 +179,10 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
     st.caption(
         "Ciągły model operacyjny łączy koszt utrzymywanej obsady z kolejką pracy, "
         "terminami zakończeń i wpływem przychodów."
+    )
+    st.caption(
+        "Pracownicy są zatrudnieni na pełnym etacie, dlatego każdy kosztuje pełne "
+        "167 godzin miesięcznie niezależnie od wykorzystania."
     )
 
     defaults = domyslne_parametry_czasowe()
@@ -341,18 +345,29 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             "Pojemność na sprawy",
             f"{_liczba(capacity['pojemnosc_na_sprawy_minuty'] / 60, 1)} h/mies.",
         )
-        koszt_metrics = st.columns(3, wrap=True)
+        koszt_metrics = st.columns(4, wrap=True)
         koszt_metrics[0].metric(
-            "Miesięczny koszt stały",
-            _kwota(capacity["miesieczny_koszt_staly"]),
+            "Koszt jednego FTE / mies.",
+            _kwota(capacity["koszt_jednego_fte_miesiecznie"]),
         )
         koszt_metrics[1].metric(
-            "Miesięczny koszt pracowników",
-            _kwota(capacity["miesieczny_koszt_pracownikow"]),
+            "Miesięczny narzut kosztów ogólnych",
+            _kwota(capacity["miesieczny_narzut_kosztow_ogolnych"]),
         )
         koszt_metrics[2].metric(
-            "Miesięczny koszt operacji",
-            _kwota(capacity["miesieczny_koszt_operacji"]),
+            "Miesięczne wynagrodzenia",
+            _kwota(capacity["miesieczny_koszt_wynagrodzen"]),
+        )
+        koszt_metrics[3].metric(
+            "Łączny koszt obsady",
+            _kwota(capacity["miesieczny_koszt_obsady"]),
+        )
+        st.caption(
+            "Narzut kosztów ogólnych / h: "
+            f"{_kwota(parametry['koszt_staly_na_godzine']).replace(' zł', ' zł/h')} · wynagrodzenie / h: "
+            f"{_kwota(parametry['wynagrodzenie_pracownika_na_godzine']).replace(' zł', ' zł/h')} · "
+            "koszt płatnej godziny zasobu: "
+            f"{_kwota(capacity['koszt_zasobu_na_godzine']).replace(' zł', ' zł/h')}."
         )
 
     with st.expander("Szczegóły modelu", expanded=False):
@@ -412,15 +427,15 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
         balance_label = (
             "Niewykorzystana pojemność" if balance >= 0 else "Brakująca pojemność"
         )
-        st.markdown("##### Uzgodnienie lifecycle i modelu czasowego")
+        st.markdown("##### Uzgodnienie cyklu życia i modelu czasowego")
         reconciliation = pd.DataFrame(
             [
                 {
-                    "Pozycja": "Marża lifecycle kohorty przed podatkiem",
+                    "Pozycja": "Marża cyklu życia kohorty przed podatkiem",
                     "Wartość": _procent(diagnosis["marza_lifecycle_przed_podatkiem"]),
                 },
                 {
-                    "Pozycja": "Koszt lifecycle kohorty",
+                    "Pozycja": "Koszt cyklu życia kohorty",
                     "Wartość": _kwota(diagnosis["koszt_lifecycle_roczny"]),
                 },
                 {
@@ -450,7 +465,7 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             )
 
     with st.expander("Szczegóły miesiąc po miesiącu", expanded=False):
-        tabela_do_wyswietlenia = table.drop(columns=["Koszt zespołu"], errors="ignore")
+        tabela_do_wyswietlenia = table
         st.dataframe(
             tabela_do_wyswietlenia,
             hide_index=True,
@@ -462,9 +477,9 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
                 "Przychód z wyroków": st.column_config.NumberColumn(format="%.2f zł"),
                 "Przychód razem": st.column_config.NumberColumn(format="%.2f zł"),
                 "Koszt niewykorzystanej pojemności": st.column_config.NumberColumn(format="%.2f zł"),
-                "Miesięczny koszt stały": st.column_config.NumberColumn(format="%.2f zł"),
-                "Miesięczny koszt pracowników": st.column_config.NumberColumn(format="%.2f zł"),
-                "Miesięczny koszt operacji": st.column_config.NumberColumn(format="%.2f zł"),
+                "Miesięczny narzut kosztów ogólnych": st.column_config.NumberColumn(format="%.2f zł"),
+                "Miesięczny koszt wynagrodzeń": st.column_config.NumberColumn(format="%.2f zł"),
+                "Miesięczny koszt obsady": st.column_config.NumberColumn(format="%.2f zł"),
                 "Wynik miesięczny przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
                 "Wynik skumulowany przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
             },
@@ -485,10 +500,13 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
                 hide_index=True,
                 width="stretch",
                 column_config={
-                    "Pojemność netto (h/mies.)": st.column_config.NumberColumn(format="%.1f h"),
-                    "Średnie wykorzystanie": st.column_config.NumberColumn(format="%.1f%%"),
-                    "Backlog po horyzoncie (h)": st.column_config.NumberColumn(format="%.1f h"),
-                    "Miesięczny koszt operacji": st.column_config.NumberColumn(format="%.2f zł"),
-                    "Wynik miesięczny w stanie stabilnym": st.column_config.NumberColumn(format="%.2f zł"),
+                    "Pojemność brutto (h/mies.)": st.column_config.NumberColumn(format="%.1f h"),
+                    "Pojemność na sprawy (h/mies.)": st.column_config.NumberColumn(format="%.1f h"),
+                    "Wykorzystanie": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Backlog (h)": st.column_config.NumberColumn(format="%.1f h"),
+                    "Miesięczny narzut kosztów ogólnych": st.column_config.NumberColumn(format="%.2f zł"),
+                    "Miesięczne wynagrodzenia": st.column_config.NumberColumn(format="%.2f zł"),
+                    "Miesięczny koszt obsady": st.column_config.NumberColumn(format="%.2f zł"),
+                    "Dojrzały wynik miesięczny": st.column_config.NumberColumn(format="%.2f zł"),
                 },
             )

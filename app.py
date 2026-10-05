@@ -15,6 +15,7 @@ from analysis import (
     wartosc_skrocenia_czynnosci,
 )
 from model import (
+    GODZINY_ETATU_MIESIECZNIE,
     KATEGORIE_SPRAW,
     domyslne_parametry,
     oblicz_model,
@@ -317,29 +318,34 @@ with st.sidebar:
         )
 
     with st.expander("Koszt pracy"):
-        koszt_staly = st.number_input("Koszt stały operacji / h", min_value=0.0, value=domyslne["koszt_staly_na_godzine"], step=1.0)
+        koszt_staly = st.number_input(
+            "Narzut kosztów ogólnych / h pracownika",
+            min_value=0.0,
+            value=domyslne["koszt_staly_na_godzine"],
+            step=1.0,
+            help=(
+                "Jest to średnia część kosztów ogólnych kancelarii przypisana "
+                "do jednej płatnej godziny pracownika. Nie obejmuje "
+                "wynagrodzenia pracownika, które jest liczone osobno."
+            ),
+        )
         wynagrodzenie_pracownika = st.number_input("Wynagrodzenie pracownika / h", min_value=0.0, value=domyslne["wynagrodzenie_pracownika_na_godzine"], step=1.0)
         st.caption(
-            "Koszt stały jest ponoszony raz dla całej operacji i nie jest mnożony "
-            "przez liczbę pracowników. Obsada nie zmienia kosztu cyklu kohorty "
-            "referencyjnej, ale w analizie „W czasie” wyznacza miesięczną "
-            "pojemność i payroll."
+            "W cyklu życia obie stawki przypisujemy tylko do godzin zasobu "
+            "wymaganych przez kohortę. W analizie „W czasie” każdy FTE kosztuje "
+            "pełne 167 godzin miesięcznie niezależnie od wykorzystania."
         )
         liczba_pracownikow = st.number_input(
             "Liczba pracowników", min_value=0,
             value=int(domyslne["liczba_pracownikow"]), step=1,
         )
-        liczba_dni_pracy_w_roku = st.number_input(
-            "Liczba dni pracy w roku", min_value=0,
-            value=int(domyslne["liczba_dni_pracy_w_roku"]), step=1,
+        karta_podsumowania(
+            "Koszt płatnej godziny zasobu",
+            kwota(koszt_staly + wynagrodzenie_pracownika).replace(" zł", " zł/h"),
         )
         karta_podsumowania(
-            "Roczny koszt stały operacji",
-            kwota(koszt_staly * liczba_dni_pracy_w_roku * 8),
-        )
-        karta_podsumowania(
-            "Koszt jednego pracownika / rok",
-            kwota(wynagrodzenie_pracownika * liczba_dni_pracy_w_roku * 8),
+            "Koszt jednego FTE / mies.",
+            kwota(GODZINY_ETATU_MIESIECZNIE * (koszt_staly + wynagrodzenie_pracownika)),
         )
 
     with st.expander("Czas pracy"):
@@ -428,7 +434,7 @@ parametry = {
     "podatek_dochodowy_percent": podatek_dochodowy_percent,
     "niski_wps": niski_wps, "wysoki_wps": wysoki_wps,
     "koszt_staly_na_godzine": koszt_staly, "wynagrodzenie_pracownika_na_godzine": wynagrodzenie_pracownika,
-    "liczba_pracownikow": liczba_pracownikow, "liczba_dni_pracy_w_roku": liczba_dni_pracy_w_roku,
+    "liczba_pracownikow": liczba_pracownikow,
     "wspolne_czynnosci": wspolne_czynnosci, "procesowe_czynnosci": procesowe_czynnosci,
     "ugodowe_czynnosci": ugodowe_czynnosci, "analiza_mozliwosci_ugody": analiza_mozliwosci_ugody,
     "codzienne_czynnosci": codzienne_czynnosci, "dodatkowe_minuty": dodatkowe,
@@ -470,6 +476,31 @@ cykl_2.metric(
     "Czynności dzienne dla całego cyklu kohorty",
     f"{liczba(wyniki['czynnosci_dzienne_lifecycle_godziny'], 1)} h",
 )
+with st.expander("Szczegóły kosztu cyklu życia", expanded=False):
+    st.caption(
+        "Koszt przypisujemy tylko do godzin zasobu wymaganych przez analizowaną "
+        "kohortę spraw; liczba pracowników nie zmienia tej ekonomii."
+    )
+    koszt_lifecycle = st.columns(3, wrap=True)
+    koszt_lifecycle[0].metric(
+        "Narzut kosztów ogólnych / h", kwota(wyniki["koszt_staly_na_godzine"]).replace(" zł", " zł/h")
+    )
+    koszt_lifecycle[1].metric(
+        "Wynagrodzenie / h", kwota(wyniki["wynagrodzenie_pracownika_na_godzine"]).replace(" zł", " zł/h")
+    )
+    koszt_lifecycle[2].metric(
+        "Koszt płatnej godziny zasobu", kwota(wyniki["koszt_zasobu_na_godzine"]).replace(" zł", " zł/h")
+    )
+    rozbicie_lifecycle = st.columns(3, wrap=True)
+    rozbicie_lifecycle[0].metric(
+        "Narzut ogólny kohorty", kwota(wyniki["koszt_narzutu_ogolnego_lifecycle"])
+    )
+    rozbicie_lifecycle[1].metric(
+        "Wynagrodzenia kohorty", kwota(wyniki["koszt_wynagrodzen_lifecycle"])
+    )
+    rozbicie_lifecycle[2].metric(
+        "Łączny koszt cyklu życia", kwota(wyniki["koszt_lifecycle_razem"])
+    )
 
 st.divider()
 st.header("Podział według WPS")
@@ -492,7 +523,7 @@ st.write("")
 
 podzial_tabela = pd.DataFrame([
     {"Rodzaj": rodzaj, "Liczba spraw": sum(wartosci.values()), "WPS od progu wzwyż": wartosci["wysoki_wps"], "WPS poniżej progu": wartosci["niski_wps"]}
-    for rodzaj, wartosci in wyniki["podzial_spraw"].items()
+    for rodzaj, wartosci in wyniki["podzial_spraw_wyswietlanie"].items()
 ])
 with st.expander("Wyliczony podział kohorty referencyjnej"):
     st.dataframe(podzial_tabela, hide_index=True, width="stretch")
@@ -630,11 +661,11 @@ if wybrana_sekcja == "Próg i bufor":
             )
     with gorna_prawa:
         st.markdown("#### Koszt")
-        st.markdown("##### Koszt stały operacji / h")
+        st.markdown("##### Narzut kosztów ogólnych / h pracownika")
         pokaz_kluczowa_granice(
             kluczowe["koszt_staly"], kluczowe["cel_spelniony"], "Obecnie",
             "Maksymalnie dla celu", "Wymagany poziom",
-            "Sama zmiana kosztu stałego nie wystarczy do osiągnięcia celu.",
+            "Sama zmiana narzutu kosztów ogólnych nie wystarczy do osiągnięcia celu.",
         )
         st.markdown("##### Wynagrodzenie pracownika / h")
         pokaz_kluczowa_granice(
@@ -836,7 +867,7 @@ if wybrana_sekcja == "Portfel i pojemność":
     pojemnosc_analiza = analiza_pojemnosci(parametry)
     p1, p2, p3, p4 = st.columns(4)
     p1.metric("Liczba pracowników", str(pojemnosc_analiza["liczba_pracownikow"]))
-    p2.metric("Dni pracy w roku", str(pojemnosc_analiza["dni_pracy"]))
+    p2.metric("Godziny FTE / mies.", liczba(pojemnosc_analiza["godziny_etatu_miesiecznie"], 1))
     p3.metric("Dostępne godziny brutto", liczba(pojemnosc_analiza["godziny_brutto"], 1))
     p4.metric("Godziny czynności dziennych", liczba(pojemnosc_analiza["godziny_dzienne"], 1))
     p5, p6, p7, p8 = st.columns(4)
