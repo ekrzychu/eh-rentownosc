@@ -4,6 +4,26 @@ from streamlit.testing.v1 import AppTest
 
 
 class TestGlowneWidoki(unittest.TestCase):
+    def test_rentowny_rozruch_nie_pokazuje_trwalego_spadku(self):
+        app = AppTest.from_file("app.py", default_timeout=30).run()
+        for label, value in (
+            ("Liczba pracowników", 3),
+            ("Narzut kosztów ogólnych / h pracownika", 20.0),
+            ("Wynagrodzenie pracownika / h", 20.0),
+        ):
+            next(x for x in app.number_input if x.label == label).set_value(value)
+        app.segmented_control[0].set_value("Kontrakt w czasie").run()
+        next(x for x in app.number_input if x.label == "Horyzont analizy (mies.)").set_value(12).run()
+        self.assertFalse(app.exception)
+        metrics = {x.label: x.value for x in app.metric}
+        self.assertEqual(metrics["Status kontraktu"], "Rentowny i stabilny")
+        self.assertIn("Największy deficyt", metrics)
+        self.assertTrue(metrics["Wynik po 12 mies."].startswith("-"))
+        self.assertNotIn(
+            "Skumulowany wynik ma trwały trend spadkowy.",
+            [x.value for x in app.caption],
+        )
+
     def test_obydwa_widoki_renderuja_sie_bez_bledow(self):
         app = AppTest.from_file("app.py", default_timeout=30).run()
         self.assertFalse(app.exception)

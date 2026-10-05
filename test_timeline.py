@@ -715,6 +715,50 @@ class TestStabilnoscIDojrzalosc(unittest.TestCase):
             "Brak trwałego break-even przy obecnej ekonomice",
         )
         self.assertTrue(temporal["kpi"]["wynik_nadal_narasta"])
+        short = oblicz_model_czasowy(tanio, {"horyzont_miesiace": 12})
+        self.assertIsNone(short["kpi"]["wynik_miesieczny_w_stanie_stabilnym"])
+        self.assertLess(short["kpi"]["wynik_miesieczny_biezacej_obsady"], 0)
+        self.assertTrue(short["kpi"]["wynik_nadal_narasta"])
+
+    def test_strata_rozruchowa_nie_oznacza_trwalego_spadku(self):
+        parametry = {
+            **self.parametry,
+            "liczba_pracownikow": 3,
+            "koszt_staly_na_godzine": 20.0,
+            "wynagrodzenie_pracownika_na_godzine": 20.0,
+        }
+        short = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 12})
+        self.assertEqual(short["kpi"]["status_kontraktu"], "Rentowny i stabilny")
+        self.assertGreater(short["kpi"]["wynik_miesieczny_biezacej_obsady"], 0)
+        self.assertLess(short["kpi"]["wynik_skumulowany_na_koniec_horyzontu"], 0)
+        self.assertLess(short["kpi"]["trend_miesieczny_wyniku"], 0)
+        self.assertIsNone(short["kpi"]["wynik_miesieczny_w_stanie_stabilnym"])
+        self.assertFalse(short["kpi"]["wynik_nadal_narasta"])
+
+        mature = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 60})
+        self.assertEqual(mature["kpi"]["status_kontraktu"], "Rentowny i stabilny")
+        self.assertGreater(mature["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 0)
+        self.assertGreater(mature["kpi"]["wynik_skumulowany_na_koniec_horyzontu"], 0)
+        self.assertFalse(mature["kpi"]["wynik_nadal_narasta"])
+
+    def test_niedobor_obsady_nie_dowodzi_trwalego_spadku(self):
+        for horizon in (12, 60):
+            result = oblicz_model_czasowy(self.parametry, {"horyzont_miesiace": horizon})
+            self.assertEqual(result["pojemnosc"]["status_pojemnosci"], "Niewystarczająca")
+            self.assertIsNone(result["kpi"]["wynik_miesieczny_biezacej_obsady"])
+            self.assertLess(result["kpi"]["trend_miesieczny_wyniku"], 0)
+            self.assertFalse(result["kpi"]["wynik_nadal_narasta"])
+
+    def test_zerowa_dojrzala_ekonomika_nie_jest_trwalym_spadkiem(self):
+        parametry = {**self.parametry, "liczba_pracownikow": 3, "koszt_staly_na_godzine": 0.0}
+        parametry["wynagrodzenie_pracownika_na_godzine"] = (
+            oblicz_model(parametry)["ogolem"]["przychod"] / 12
+            / (parametry["liczba_pracownikow"] * GODZINY_ETATU_MIESIECZNIE)
+        )
+        result = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 12})
+        self.assertEqual(result["pojemnosc"]["status_pojemnosci"], "Stabilna")
+        self.assertAlmostEqual(result["kpi"]["wynik_miesieczny_biezacej_obsady"], 0)
+        self.assertFalse(result["kpi"]["wynik_nadal_narasta"])
 
     def test_niedobor_opoznia_przychod_a_minimalna_obsada_ma_dodatnia_ekonomie(self):
         tanio = {

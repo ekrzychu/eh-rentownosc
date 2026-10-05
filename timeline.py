@@ -901,9 +901,11 @@ def oblicz_model_czasowy(
         if steady_monthly_result is not None
         else recent_monthly_trend
     )
-    cumulative_still_falling = (
-        long_run_or_recent_result is not None
-        and long_run_or_recent_result < -TOLERANCJA
+    # Trwały spadek wymaga wykonalnej ujemnej ekonomiki dojrzałej obsady;
+    # średnia miesięcy rozruchowych pozostaje wyłącznie diagnostyką.
+    structural_decline = (
+        current_staff_monthly_result is not None
+        and current_staff_monthly_result < -TOLERANCJA
     )
     current_capacity_delay = (
         max(horizon - queue[0][0].due_month, 0) if queue else 0
@@ -965,7 +967,7 @@ def oblicz_model_czasowy(
             "wynik_skumulowany_na_koniec_horyzontu": rows[-1][
                 "Wynik skumulowany przed podatkiem"
             ],
-            "wynik_nadal_narasta": cumulative_still_falling,
+            "wynik_nadal_narasta": structural_decline,
             "trend_miesieczny_wyniku": long_run_or_recent_result,
             "wynik_miesieczny_w_stanie_stabilnym": steady_monthly_result,
             "wynik_roczny_w_stanie_stabilnym": (
