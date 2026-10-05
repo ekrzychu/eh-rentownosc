@@ -13,18 +13,14 @@ from math import ceil, isclose
 from model import (
     GODZINY_ETATU_MIESIECZNIE,
     MINUTY_DNIA_PRACY,
+    SCIEZKI_BEZ_UGODY,
+    SCIEZKI_UGODOWE,
     domyslne_parametry,
     oblicz_model,
     waliduj_parametry,
 )
 
 
-SCIEZKI_UGODOWE = ("automatyczne_ramy", "zawarte_poza_ramami")
-SCIEZKI_BEZ_UGODY = (
-    "kategoryczna_odmowa",
-    "brak_szans",
-    "brak_ugody_poza_ramami",
-)
 TOLERANCJA = 1e-8
 
 
@@ -415,7 +411,10 @@ def _dodaj_kohorte(
                         cohort_month, branch_path, "analiza_ugody",
                         cases * settlement_analysis_minutes, cohort_stats,
                     )
-                if path == "brak_ugody_poza_ramami":
+                if path in {
+                    "automatyczne_ramy_brak_ugody",
+                    "brak_ugody_poza_ramami",
+                }:
                     attempt_month = min(
                         cohort_month + czas["miesiace_do_ugody"], first_judgment
                     )
@@ -475,55 +474,47 @@ def _status_break_even(
 
 
 def klasyfikuj_status_kontraktu(
+    liczba_spraw: float,
     wynik_jednostkowy_przed_podatkiem: float,
+    liczba_pracownikow: int,
+    minimalna_stabilna_obsada: int | None,
+    wynik_miesieczny_minimalnej_stabilnej_obsady: float | None,
+    wynik_miesieczny_biezacej_obsady: float,
     status_pojemnosci: str,
-    wynik_miesieczny_docelowy: float,
-    status_break_even_finansowego: str,
 ) -> dict:
-    """Klasyfikuje kontrakt z jawnych przesłanek ekonomicznych i operacyjnych.
-
-    Surowe przecięcie zera pozostaje faktem finansowym, niezależnym od tego,
-    czy obsada potrafi trwale obsłużyć napływ. Wynik docelowy porównuje pełny
-    miesięczny koszt bieżącej obsady z dojrzałym miesięcznym przychodem.
-    """
+    """Klasyfikuje kontrakt na podstawie wykonalnej ekonomiki obsady."""
     if status_pojemnosci not in {"Stabilna", "Na granicy", "Niewystarczająca"}:
         raise ValueError("Nieznany status pojemności.")
-    if status_break_even_finansowego not in {
-        "osiagniety",
-        "od_poczatku",
-        "nie_osiagnieto",
-    }:
-        raise ValueError("Nieznany status finansowego break-even.")
 
     ekonomika_sprawy_dodatnia = wynik_jednostkowy_przed_podatkiem > TOLERANCJA
-    wynik_docelowy_dodatni = wynik_miesieczny_docelowy > TOLERANCJA
-    stabilny_operacyjnie = status_pojemnosci in {"Stabilna", "Na granicy"}
-    break_even_osiagniety = status_break_even_finansowego in {
-        "osiagniety",
-        "od_poczatku",
-    }
+    rentowna_stabilna_obsada = (
+        minimalna_stabilna_obsada is not None
+        and wynik_miesieczny_minimalnej_stabilnej_obsady is not None
+        and wynik_miesieczny_minimalnej_stabilnej_obsady > TOLERANCJA
+    )
 
-    if stabilny_operacyjnie:
-        rentowny = ekonomika_sprawy_dodatnia and wynik_docelowy_dodatni
-        etykieta = "Rentowny i stabilny" if rentowny else "Stabilny, ale nierentowny"
+    if liczba_spraw <= TOLERANCJA:
+        etykieta = "Brak napływu spraw"
+    elif not ekonomika_sprawy_dodatnia:
+        etykieta = "Nierentowna ekonomika sprawy"
+    elif not rentowna_stabilna_obsada:
+        etykieta = "Brak rentownej stabilnej obsady"
+    elif liczba_pracownikow < minimalna_stabilna_obsada:
+        etykieta = "Rentowny, wymaga większej obsady"
+    elif wynik_miesieczny_biezacej_obsady > TOLERANCJA:
+        etykieta = "Rentowny i stabilny"
     else:
-        rentowny = (
-            break_even_osiagniety
-            and ekonomika_sprawy_dodatnia
-            and wynik_docelowy_dodatni
-        )
-        etykieta = (
-            "Rentowny finansowo, ale operacyjnie niestabilny"
-            if rentowny
-            else "Nierentowny i niestabilny"
-        )
+        etykieta = "Stabilny, ale obsada zbyt kosztowna"
 
     return {
         "etykieta": etykieta,
         "ekonomika_sprawy_dodatnia": ekonomika_sprawy_dodatnia,
         "status_pojemnosci": status_pojemnosci,
-        "wynik_miesieczny_docelowy": wynik_miesieczny_docelowy,
-        "break_even_finansowy_osiagniety": break_even_osiagniety,
+        "minimalna_stabilna_obsada": minimalna_stabilna_obsada,
+        "wynik_miesieczny_minimalnej_stabilnej_obsady": (
+            wynik_miesieczny_minimalnej_stabilnej_obsady
+        ),
+        "wynik_miesieczny_biezacej_obsady": wynik_miesieczny_biezacej_obsady,
     }
 
 
@@ -738,8 +729,20 @@ def oblicz_model_czasowy(
     )
     target_monthly_revenue = lifecycle["ogolem"]["przychod"] / 12
     target_monthly_demand = lifecycle["bezposrednie_minuty_spraw"] / 12
-    target_monthly_result = (
+    current_staff_monthly_result = (
         target_monthly_revenue - capacity["miesieczny_koszt_obsady"]
+    )
+    minimum_team_monthly_cost = (
+        minimum_staff
+        * GODZINY_ETATU_MIESIECZNIE
+        * capacity["koszt_zasobu_na_godzine"]
+        if minimum_staff is not None
+        else None
+    )
+    mature_result_at_minimum_staff = (
+        target_monthly_revenue - minimum_team_monthly_cost
+        if minimum_team_monthly_cost is not None
+        else None
     )
     case_count = lifecycle["ogolem"]["liczba_spraw"]
     unit_result = (
@@ -748,10 +751,15 @@ def oblicz_model_czasowy(
         else 0.0
     )
     contract_status = klasyfikuj_status_kontraktu(
-        unit_result,
-        capacity["status_pojemnosci"],
-        target_monthly_result,
-        pierwsze_przeciecie["status"],
+        liczba_spraw=case_count,
+        wynik_jednostkowy_przed_podatkiem=unit_result,
+        liczba_pracownikow=parametry["liczba_pracownikow"],
+        minimalna_stabilna_obsada=minimum_staff,
+        wynik_miesieczny_minimalnej_stabilnej_obsady=(
+            mature_result_at_minimum_staff
+        ),
+        wynik_miesieczny_biezacej_obsady=current_staff_monthly_result,
+        status_pojemnosci=capacity["status_pojemnosci"],
     )
     last_twelve = rows[-12:] if len(rows) >= 12 else []
     mature_revenue = (
@@ -850,18 +858,6 @@ def oblicz_model_czasowy(
     lifecycle_resource_hours = lifecycle["laczne_godziny_zasobu_lifecycle"]
     supplied_annual_hours = capacity["pojemnosc_brutto_minuty"] / 60 * 12
     annual_capacity_balance = supplied_annual_hours - lifecycle_resource_hours
-    minimum_team_monthly_cost = (
-        minimum_staff
-        * GODZINY_ETATU_MIESIECZNIE
-        * capacity["koszt_zasobu_na_godzine"]
-        if minimum_staff is not None
-        else None
-    )
-    mature_result_at_minimum_staff = (
-        target_monthly_revenue - minimum_team_monthly_cost
-        if minimum_team_monthly_cost is not None
-        else None
-    )
     unused_capacity_cost_total = sum(
         row["Koszt niewykorzystanej pojemności"] for row in rows
     )
@@ -896,7 +892,11 @@ def oblicz_model_czasowy(
         "kpi": {
             "status_kontraktu": contract_status["etykieta"],
             "status_kontraktu_skladniki": contract_status,
-            "wynik_miesieczny_docelowy": target_monthly_result,
+            "wynik_miesieczny_docelowy": current_staff_monthly_result,
+            "wynik_miesieczny_biezacej_obsady": current_staff_monthly_result,
+            "wynik_miesieczny_minimalnej_stabilnej_obsady": (
+                mature_result_at_minimum_staff
+            ),
             "break_even_skumulowany": trwaly_break_even["etykieta"],
             "break_even_status": trwaly_break_even["status"],
             "break_even_miesiac": trwaly_break_even["miesiac"],

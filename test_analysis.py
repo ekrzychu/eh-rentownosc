@@ -224,7 +224,8 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
     def test_wrazliwosc_zawiera_wymagane_dzwignie(self):
         wymagane = {
             "srednia_kwota_ugody", "koszt_staly", "wynagrodzenie", "szansa_na_ugode",
-            "zawarte_ugody", "czas_ii_instancji", "procesowe:Duplika",
+            "zawarte_ugody", "skutecznosc_automatycznych_ram",
+            "czas_ii_instancji", "procesowe:Duplika",
             "analiza_ugody", "dodatkowe:P1", "dodatkowe:P2", "dodatkowe:P3",
             "wspolne:Analiza sprawy i kompletowanie załącznika",
             "codzienne:Obsługa skrzynki ugody EH",
@@ -241,8 +242,19 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
         parametry = domyslne_parametry()
         zmienione = ustaw_parametr(parametry, "zawarte_ugody", 72.0)
         wynik = oblicz_model(zmienione)
-        sciezki = ("kategoryczna_odmowa", "automatyczne_ramy", "brak_szans", "zawarte_poza_ramami", "brak_ugody_poza_ramami")
+        sciezki = (
+            "kategoryczna_odmowa", "automatyczne_ramy_ugoda",
+            "automatyczne_ramy_brak_ugody", "brak_szans",
+            "zawarte_poza_ramami", "brak_ugody_poza_ramami",
+        )
         self.assertAlmostEqual(sum(wynik["udzialy_ugod"][x] for x in sciezki), 100.0)
+
+        automatyczne = ustaw_parametr(
+            parametry, "skutecznosc_automatycznych_ram", 70.0
+        )
+        udzialy = oblicz_model(automatyczne)["udzialy_ugod"]
+        self.assertAlmostEqual(udzialy["automatyczne_ramy_ugoda"], 21.0)
+        self.assertAlmostEqual(udzialy["automatyczne_ramy_brak_ugody"], 9.0)
 
     def test_wartosc_minuty_zgadza_sie_z_modelem(self):
         parametry = domyslne_parametry()
@@ -339,8 +351,8 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
 
 
 class TestUgodyIPojemnosc(unittest.TestCase):
-    def test_porownanie_automatycznych_ram_reaguje_na_analize_ugod(self):
-        etykieta = "Automatyczne ramy w porównaniu z brakiem szans na ugodę"
+    def test_porownania_sciezek_ugodowych_sa_spojne_z_modelem(self):
+        etykieta = "Ugoda w automatycznych ramach w porównaniu z nieudaną próbą"
         etykieta_wspolnej_analizy = (
             "Zawarta ugoda poza ramami w porównaniu z brakiem ugody poza ramami"
         )
@@ -355,8 +367,8 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             }
             automatyczne_ramy = porownania[etykieta]
             oczekiwana_roznica_minut = (
-                model["czasy_sciezek_z_ii_instancja"]["brak_szans"]
-                - model["czasy_sciezek_z_ii_instancja"]["automatyczne_ramy"]
+                model["czasy_sciezek_z_ii_instancja"]["automatyczne_ramy_brak_ugody"]
+                - model["czasy_sciezek_z_ii_instancja"]["automatyczne_ramy_ugoda"]
             )
             oczekiwana_roznica_pln = (
                 oczekiwana_roznica_minut
@@ -371,7 +383,7 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             oczekiwany_wplyw_portfela = (
                 oczekiwana_roznica_pln
                 * parametry["liczba_spraw"]
-                * model["udzialy_ugod"]["automatyczne_ramy"]
+                * model["udzialy_ugod"]["automatyczne_ramy_ugoda"]
                 / 100
             )
             self.assertAlmostEqual(
@@ -381,7 +393,7 @@ class TestUgodyIPojemnosc(unittest.TestCase):
                 automatyczne_ramy["Różnica PLN na sprawę"], oczekiwana_roznica_pln
             )
             self.assertAlmostEqual(
-                automatyczne_ramy["Wpływ roczny przy obecnym udziale"],
+                automatyczne_ramy["Wpływ na wynik kohorty przy obecnym udziale"],
                 oczekiwany_wplyw_portfela,
             )
             wyniki[minuty_analizy] = {
@@ -389,17 +401,11 @@ class TestUgodyIPojemnosc(unittest.TestCase):
                 "wspolna_analiza": porownania[etykieta_wspolnej_analizy],
             }
 
-        self.assertAlmostEqual(
-            wyniki[30]["automatyczne_ramy"]["Różnica minut na sprawę"]
-            - wyniki[0]["automatyczne_ramy"]["Różnica minut na sprawę"],
-            30.0,
-        )
-        self.assertAlmostEqual(
-            wyniki[60]["automatyczne_ramy"]["Różnica minut na sprawę"]
-            - wyniki[0]["automatyczne_ramy"]["Różnica minut na sprawę"],
-            60.0,
-        )
         for kolumna in ("Różnica minut na sprawę", "Różnica PLN na sprawę"):
+            self.assertAlmostEqual(
+                wyniki[0]["automatyczne_ramy"][kolumna],
+                wyniki[60]["automatyczne_ramy"][kolumna],
+            )
             self.assertAlmostEqual(
                 wyniki[0]["wspolna_analiza"][kolumna],
                 wyniki[60]["wspolna_analiza"][kolumna],

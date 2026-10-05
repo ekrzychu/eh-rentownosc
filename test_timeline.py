@@ -1,4 +1,5 @@
 import unittest
+from collections import defaultdict
 
 from model import (
     GODZINY_ETATU_MIESIECZNIE,
@@ -7,6 +8,7 @@ from model import (
     oblicz_model,
 )
 from timeline import (
+    _dodaj_kohorte,
     domyslne_parametry_czasowe,
     klasyfikuj_status_kontraktu,
     minimalna_liczba_pracownikow_dla_stabilnosci,
@@ -61,6 +63,52 @@ class TestCiaglyNaplywIUzgodnienieKohorty(unittest.TestCase):
             lifecycle["bezposrednie_minuty_spraw"] / 12,
         )
         self.assertAlmostEqual(zbudowana["cases"], 50.0)
+
+    def test_kohorta_ma_szesc_sciezek_i_poprawne_etapy_automatyczne(self):
+        lifecycle = oblicz_model(self.parametry)
+        czas = domyslne_parametry_czasowe()
+        pakiety = defaultdict(list)
+        zakonczenia = []
+        statystyki = _dodaj_kohorte(
+            1, lifecycle, self.parametry, czas, pakiety, zakonczenia
+        )
+        wszystkie_pakiety = [pakiet for lista in pakiety.values() for pakiet in lista]
+        bazowe_sciezki = {
+            zakonczenie.path.split(":", 1)[0] for zakonczenie in zakonczenia
+        }
+        self.assertEqual(
+            bazowe_sciezki,
+            {
+                "kategoryczna_odmowa",
+                "automatyczne_ramy_ugoda",
+                "automatyczne_ramy_brak_ugody",
+                "brak_szans",
+                "zawarte_poza_ramami",
+                "brak_ugody_poza_ramami",
+            },
+        )
+        automatyczne = [
+            pakiet
+            for pakiet in wszystkie_pakiety
+            if pakiet.path.startswith("automatyczne_ramy")
+        ]
+        self.assertNotIn("analiza_ugody", {pakiet.stage for pakiet in automatyczne})
+        nieudane = [
+            pakiet
+            for pakiet in automatyczne
+            if pakiet.stage == "nieudana_proba_ugody"
+        ]
+        self.assertTrue(nieudane)
+        self.assertTrue(
+            all(
+                pakiet.due_month <= 1 + czas["miesiace_do_wyroku_i"]
+                for pakiet in nieudane
+            )
+        )
+        self.assertAlmostEqual(
+            statystyki["direct_minutes"],
+            lifecycle["bezposrednie_minuty_spraw"] / 12,
+        )
 
     def test_domyslne_parametry_nie_maja_trybu_ani_okresu_naplywu(self):
         self.assertEqual(
@@ -572,17 +620,31 @@ class TestDefinicjaBreakEven(unittest.TestCase):
 
 
 class TestStatusKontraktu(unittest.TestCase):
-    def test_cztery_statusy_wynikaja_z_jawnych_przeslanek(self):
+    def test_statusy_wynikaja_z_jawnych_przeslanek(self):
         przypadki = (
-            ((10.0, "Stabilna", 100.0, "osiagniety"), "Rentowny i stabilny"),
             (
-                (10.0, "Niewystarczająca", 100.0, "osiagniety"),
-                "Rentowny finansowo, ale operacyjnie niestabilny",
+                (600.0, -1.0, 3, 2, 100.0, 100.0, "Stabilna"),
+                "Nierentowna ekonomika sprawy",
             ),
-            ((10.0, "Stabilna", -1.0, "nie_osiagnieto"), "Stabilny, ale nierentowny"),
             (
-                (-1.0, "Niewystarczająca", -1.0, "nie_osiagnieto"),
-                "Nierentowny i niestabilny",
+                (600.0, 10.0, 3, 2, -1.0, 100.0, "Stabilna"),
+                "Brak rentownej stabilnej obsady",
+            ),
+            (
+                (600.0, 10.0, 1, 2, 100.0, 100.0, "Niewystarczająca"),
+                "Rentowny, wymaga większej obsady",
+            ),
+            (
+                (600.0, 10.0, 2, 2, 100.0, 100.0, "Stabilna"),
+                "Rentowny i stabilny",
+            ),
+            (
+                (600.0, 10.0, 3, 2, 100.0, -1.0, "Stabilna"),
+                "Stabilny, ale obsada zbyt kosztowna",
+            ),
+            (
+                (0.0, -1.0, 3, None, None, -1.0, "Stabilna"),
+                "Brak napływu spraw",
             ),
         )
         for argumenty, oczekiwany in przypadki:
@@ -605,7 +667,7 @@ class TestStatusKontraktu(unittest.TestCase):
         self.assertIsNotNone(wynik["kpi"]["pierwsze_przeciecie_miesiac"])
         self.assertEqual(
             wynik["kpi"]["status_kontraktu"],
-            "Rentowny finansowo, ale operacyjnie niestabilny",
+            "Rentowny, wymaga większej obsady",
         )
 
 
@@ -666,6 +728,7 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
                 "liczba_pracownikow": 10,
                 "kategoryczna_odmowa_percent": 0.0,
                 "automatyczne_ramy_percent": 100.0,
+                "skutecznosc_automatycznych_ram_percent": 100.0,
                 "udzial_ii_instancji_percent": 100.0,
             }
         )

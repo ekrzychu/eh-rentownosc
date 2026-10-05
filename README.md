@@ -194,6 +194,24 @@ Aplikacja odpowiada na dwa powiązane, ale odrębne pytania:
   Wartość „Roczny napływ spraw” jest dzielona przez 12 i taka oczekiwana
   kohorta pojawia się w każdym miesiącu horyzontu.
 
+„Automatyczne ramy” oznaczają udział wszystkich spraw, w których ugodę można
+obsłużyć bez dodatkowej analizy możliwości ugody. Nie przesądzają one wyniku:
+osobny parametr określa, jaka część tych spraw faktycznie kończy się ugodą.
+Domyślne drzewo sześciu rozłącznych wyników to:
+
+```text
+Kategoryczna odmowa                 15,00%
+Automatyczne ramy → ugoda           15,00%
+Automatyczne ramy → brak ugody      15,00%
+Brak szans na ugodę                 27,50%
+Poza ramami → zawarta ugoda         13,75%
+Poza ramami → brak ugody            13,75%
+```
+
+Łącznie 28,75% spraw kończy się ugodą, a 71,25% bez ugody. Domyślnie 50%
+spraw bez ugody przechodzi do II instancji; nie dotyczy to żadnej ścieżki
+zakończonej ugodą.
+
 Parametr `koszt_staly_na_godzine` oznacza **narzut
 kosztów ogólnych przypisany do jednej płatnej godziny pracownika**. Nie jest to
 jeden globalny koszt operacji. Narzut nie zawiera wynagrodzenia, które jest
@@ -249,8 +267,10 @@ backlog i opóźnienie przychodu.
 
 KPI **Break-even finansowy** pokazuje pierwszy powrót wyniku skumulowanego z
 deficytu do co najmniej zera. Nie znika, gdy pojemność jest niewystarczająca.
-Osobny, jawnie wyjaśniony **status kontraktu** łączy ekonomię sprawy, status
-pojemności i docelowy miesięczny wynik bieżącej obsady. Trwałość break-even
+Osobny, jawnie wyjaśniony **status kontraktu** najpierw ocenia ekonomię pełnego
+cyklu życia sprawy, a następnie sprawdza koszt minimalnej stabilnej obsady i
+pełny koszt bieżącej obsady. Zbyt mały zespół nie jest więc uznawany za
+rentowny tylko dlatego, że jego bieżący koszt jest niski. Trwałość break-even
 pozostaje dostępna w diagnostyce. Status „Na granicy” jest wykonalny, ale
 oznacza brak bufora pojemności.
 

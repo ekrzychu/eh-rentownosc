@@ -45,9 +45,10 @@ PODATEK_DOCHODOWY_PERCENT = 0.0
 
 KATEGORYCZNA_ODMOWA_PERCENT = 15.0
 AUTOMATYCZNE_RAMY_PERCENT = 30.0
+SKUTECZNOSC_AUTOMATYCZNYCH_RAM_PERCENT = 50.0
 SZANSA_NA_UGODE_PERCENT = 50.0
 ZAWARTE_UGODY_PERCENT = 50.0
-UDZIAL_II_INSTANCJI_PERCENT = 20.0
+UDZIAL_II_INSTANCJI_PERCENT = 50.0
 OBSLUGA_II_INSTANCJI_MINUTY = 210
 LICZBA_PRACOWNIKOW = 2
 MINUTY_DNIA_PRACY = 480
@@ -57,6 +58,15 @@ KATEGORIE_SPRAW = {
     "P2": "Koszty najmu pojazdu zastępczego, zadośćuczynienie, nieruchomości",
     "P3": "Pozostałe sprawy",
 }
+
+SCIEZKI_UGODOWE = ("automatyczne_ramy_ugoda", "zawarte_poza_ramami")
+SCIEZKI_BEZ_UGODY = (
+    "kategoryczna_odmowa",
+    "automatyczne_ramy_brak_ugody",
+    "brak_szans",
+    "brak_ugody_poza_ramami",
+)
+SCIEZKI_UGODOWE_LISCIE = SCIEZKI_UGODOWE + SCIEZKI_BEZ_UGODY
 
 
 def domyslne_parametry() -> dict:
@@ -81,6 +91,9 @@ def domyslne_parametry() -> dict:
         "podatek_dochodowy_percent": PODATEK_DOCHODOWY_PERCENT,
         "kategoryczna_odmowa_percent": KATEGORYCZNA_ODMOWA_PERCENT,
         "automatyczne_ramy_percent": AUTOMATYCZNE_RAMY_PERCENT,
+        "skutecznosc_automatycznych_ram_percent": (
+            SKUTECZNOSC_AUTOMATYCZNYCH_RAM_PERCENT
+        ),
         "szansa_na_ugode_percent": SZANSA_NA_UGODE_PERCENT,
         "zawarte_ugody_percent": ZAWARTE_UGODY_PERCENT,
         "udzial_ii_instancji_percent": UDZIAL_II_INSTANCJI_PERCENT,
@@ -113,6 +126,7 @@ def waliduj_parametry(parametry: dict) -> None:
         "podatek_dochodowy_percent",
         "kategoryczna_odmowa_percent",
         "automatyczne_ramy_percent",
+        "skutecznosc_automatycznych_ram_percent",
         "szansa_na_ugode_percent",
         "zawarte_ugody_percent",
         "udzial_ii_instancji_percent",
@@ -174,13 +188,15 @@ def waliduj_parametry(parametry: dict) -> None:
 def oblicz_udzialy_ugod(
     kategoryczna_odmowa_percent: float,
     automatyczne_ramy_percent: float,
+    skutecznosc_automatycznych_ram_percent: float,
     szansa_na_ugode_percent: float,
     zawarte_ugody_percent: float = ZAWARTE_UGODY_PERCENT,
 ) -> dict[str, float]:
-    """Oblicza efektywne udziały pięciu ścieżek ugodowych w portfelu."""
+    """Oblicza sześć rozłącznych wyników drzewa ugodowego."""
     wartosci = (
         kategoryczna_odmowa_percent,
         automatyczne_ramy_percent,
+        skutecznosc_automatycznych_ram_percent,
         szansa_na_ugode_percent,
         zawarte_ugody_percent,
     )
@@ -197,15 +213,23 @@ def oblicz_udzialy_ugod(
         raise ValueError("Suma kategorycznej odmowy i automatycznych ram nie może przekraczać 100%.")
 
     pozostale = 100.0 - kategoryczna_odmowa_percent - automatyczne_ramy_percent
+    automatyczne_ramy_ugoda = (
+        automatyczne_ramy_percent * skutecznosc_automatycznych_ram_percent / 100
+    )
+    automatyczne_ramy_brak_ugody = (
+        automatyczne_ramy_percent - automatyczne_ramy_ugoda
+    )
     szansa_poza_ramami = pozostale * szansa_na_ugode_percent / 100
     brak_szans = pozostale * (100.0 - szansa_na_ugode_percent) / 100
     zawarte_poza_ramami = szansa_poza_ramami * zawarte_ugody_percent / 100
     brak_ugody_poza_ramami = szansa_poza_ramami * (100.0 - zawarte_ugody_percent) / 100
-    zakonczone_ugoda = automatyczne_ramy_percent + zawarte_poza_ramami
+    zakonczone_ugoda = automatyczne_ramy_ugoda + zawarte_poza_ramami
     bez_ugody = 100.0 - zakonczone_ugoda
     wynik = {
         "kategoryczna_odmowa": kategoryczna_odmowa_percent,
         "automatyczne_ramy": automatyczne_ramy_percent,
+        "automatyczne_ramy_ugoda": automatyczne_ramy_ugoda,
+        "automatyczne_ramy_brak_ugody": automatyczne_ramy_brak_ugody,
         "pozostale_sprawy": pozostale,
         "szansa_poza_ramami": szansa_poza_ramami,
         "zawarte_poza_ramami": zawarte_poza_ramami,
@@ -214,20 +238,13 @@ def oblicz_udzialy_ugod(
         "zakonczone_ugoda": zakonczone_ugoda,
         "bez_ugody": bez_ugody,
     }
-    sciezki = (
-        "kategoryczna_odmowa",
-        "automatyczne_ramy",
-        "brak_szans",
-        "zawarte_poza_ramami",
-        "brak_ugody_poza_ramami",
-    )
-    if any(wynik[nazwa] < -1e-9 for nazwa in sciezki):
+    if any(wynik[nazwa] < -1e-9 for nazwa in SCIEZKI_UGODOWE_LISCIE):
         raise RuntimeError("Wyliczono ujemny udział ścieżki ugodowej.")
-    if abs(sum(wynik[nazwa] for nazwa in sciezki) - 100) > 1e-8:
+    if abs(sum(wynik[nazwa] for nazwa in SCIEZKI_UGODOWE_LISCIE) - 100) > 1e-8:
         raise RuntimeError("Udziały ścieżek ugodowych nie sumują się do 100%.")
     if abs(wynik["zakonczone_ugoda"] + wynik["bez_ugody"] - 100) > 1e-8:
         raise RuntimeError("Udziały zakończeń ugodowych nie sumują się do 100%.")
-    for nazwa in sciezki:
+    for nazwa in SCIEZKI_UGODOWE_LISCIE:
         if -1e-9 < wynik[nazwa] < 0:
             wynik[nazwa] = 0.0
     return wynik
@@ -249,7 +266,10 @@ def oblicz_czasy_sciezek_ugod(
     )
     return {
         "kategoryczna_odmowa": wspolne + procesowe,
-        "automatyczne_ramy": wspolne + ugodowe,
+        "automatyczne_ramy_ugoda": wspolne + ugodowe,
+        "automatyczne_ramy_brak_ugody": (
+            wspolne + przygotowanie_ugody + procesowe
+        ),
         "brak_szans": wspolne + procesowe + analiza_mozliwosci_ugody,
         "zawarte_poza_ramami": wspolne + analiza_mozliwosci_ugody + ugodowe,
         "brak_ugody_poza_ramami": (
@@ -268,14 +288,9 @@ def oblicz_czasy_sciezek_z_ii_instancja(
         raise ValueError("Udział spraw w II instancji musi mieścić się w zakresie od 0% do 100%.")
     if obsluga_ii_instancji_minuty < 0:
         raise ValueError("Czas obsługi sprawy w II instancji nie może być ujemny.")
-    sciezki_bez_ugody = {
-        "kategoryczna_odmowa",
-        "brak_szans",
-        "brak_ugody_poza_ramami",
-    }
     oczekiwany_czas = udzial_ii_instancji_percent / 100 * obsluga_ii_instancji_minuty
     czasy_ii_instancji = {
-        nazwa: oczekiwany_czas if nazwa in sciezki_bez_ugody else 0.0
+        nazwa: oczekiwany_czas if nazwa in SCIEZKI_BEZ_UGODY else 0.0
         for nazwa in czasy_podstawowe
     }
     czasy_laczne = {
@@ -314,16 +329,9 @@ def oblicz_sredni_czas_sciezki_ugody(
     udzialy_ugod: dict[str, float], czasy_sciezek: dict[str, float]
 ) -> float:
     """Zwraca ważony oczekiwany czas ścieżki ugodowej dla jednej sprawy."""
-    nazwy_sciezek = (
-        "kategoryczna_odmowa",
-        "automatyczne_ramy",
-        "brak_szans",
-        "zawarte_poza_ramami",
-        "brak_ugody_poza_ramami",
-    )
     return sum(
         udzialy_ugod[nazwa] / 100 * czasy_sciezek[nazwa]
-        for nazwa in nazwy_sciezek
+        for nazwa in SCIEZKI_UGODOWE_LISCIE
     )
 
 
@@ -584,10 +592,13 @@ def oblicz_model(parametry: dict | None = None) -> dict:
     waliduj_parametry(parametry)
 
     udzialy_ugod = oblicz_udzialy_ugod(
-        parametry["kategoryczna_odmowa_percent"],
-        parametry["automatyczne_ramy_percent"],
-        parametry["szansa_na_ugode_percent"],
-        parametry.get("zawarte_ugody_percent", ZAWARTE_UGODY_PERCENT),
+        kategoryczna_odmowa_percent=parametry["kategoryczna_odmowa_percent"],
+        automatyczne_ramy_percent=parametry["automatyczne_ramy_percent"],
+        skutecznosc_automatycznych_ram_percent=parametry[
+            "skutecznosc_automatycznych_ram_percent"
+        ],
+        szansa_na_ugode_percent=parametry["szansa_na_ugode_percent"],
+        zawarte_ugody_percent=parametry["zawarte_ugody_percent"],
     )
     czasy_sciezek = oblicz_czasy_sciezek_ugod(
         parametry["wspolne_czynnosci"],

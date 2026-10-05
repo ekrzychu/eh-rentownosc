@@ -21,6 +21,7 @@ PARAMETRY_STEROWALNE = frozenset({
     "koszt_staly",
     "wynagrodzenie",
     "szansa_na_ugode",
+    "skutecznosc_automatycznych_ram",
     "zawarte_ugody",
     "czas_ii_instancji",
     "analiza_ugody",
@@ -114,7 +115,8 @@ def definicje_parametrow(parametry: dict) -> list[dict]:
         {"id": "niski_wps", "nazwa": "Średni WPS poniżej progu", "kategoria": "Warunki ekonomiczne", "jednostka": "zł", "typ": "liczba", "min": 0.0, "max": max(0.0, parametry["prog_wps"] - 0.001), "krok": 1000.0},
         {"id": "wysoki_wps", "nazwa": "Średni WPS od progu wzwyż", "kategoria": "Warunki ekonomiczne", "jednostka": "zł", "typ": "liczba", "min": parametry["prog_wps"], "max": max(parametry["wysoki_wps"] * 4, parametry["prog_wps"] + 100_000), "krok": 1000.0},
         {"id": "kategoryczna_odmowa", "nazwa": "Kategoryczna odmowa", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0 - parametry["automatyczne_ramy_percent"], "krok": 5.0},
-        {"id": "automatyczne_ramy", "nazwa": "Automatyczne ramy", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0 - parametry["kategoryczna_odmowa_percent"], "krok": 5.0},
+        {"id": "automatyczne_ramy", "nazwa": "Automatyczne ramy (% wszystkich spraw)", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0 - parametry["kategoryczna_odmowa_percent"], "krok": 5.0},
+        {"id": "skutecznosc_automatycznych_ram", "nazwa": "Zawarte ugody w automatycznych ramach", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "szansa_na_ugode", "nazwa": "Szansa na ugodę poza ramami", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "zawarte_ugody", "nazwa": "Zawarte ugody", "kategoria": "Ugody", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "udzial_ii_instancji", "nazwa": "Udział spraw w II instancji", "kategoria": "Operacyjne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
@@ -156,6 +158,7 @@ def wartosc_parametru(parametry: dict, identyfikator: str) -> float:
         "podatek_dochodowy": "podatek_dochodowy_percent",
         "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
         "kategoryczna_odmowa": "kategoryczna_odmowa_percent", "automatyczne_ramy": "automatyczne_ramy_percent",
+        "skutecznosc_automatycznych_ram": "skutecznosc_automatycznych_ram_percent",
         "szansa_na_ugode": "szansa_na_ugode_percent", "zawarte_ugody": "zawarte_ugody_percent",
         "udzial_ii_instancji": "udzial_ii_instancji_percent", "czas_ii_instancji": "obsluga_ii_instancji_minuty",
         "wysoki_wps_procent": "wysoki_wps_procent", "liczba_spraw": "liczba_spraw",
@@ -182,6 +185,7 @@ def ustaw_parametr(parametry: dict, identyfikator: str, wartosc: float) -> dict:
         "podatek_dochodowy": "podatek_dochodowy_percent",
         "niski_wps": "niski_wps", "wysoki_wps": "wysoki_wps",
         "kategoryczna_odmowa": "kategoryczna_odmowa_percent", "automatyczne_ramy": "automatyczne_ramy_percent",
+        "skutecznosc_automatycznych_ram": "skutecznosc_automatycznych_ram_percent",
         "szansa_na_ugode": "szansa_na_ugode_percent", "zawarte_ugody": "zawarte_ugody_percent",
         "udzial_ii_instancji": "udzial_ii_instancji_percent", "czas_ii_instancji": "obsluga_ii_instancji_minuty",
         "wysoki_wps_procent": "wysoki_wps_procent", "liczba_spraw": "liczba_spraw",
@@ -434,13 +438,15 @@ def ekonomika_ugod(parametry: dict) -> dict:
         )
     mnoznik_kosztu_lifecycle = 480 / produktywne_minuty
     nazwy = {
-        "kategoryczna_odmowa": "Kategoryczna odmowa", "automatyczne_ramy": "Automatyczne ramy",
+        "kategoryczna_odmowa": "Kategoryczna odmowa",
+        "automatyczne_ramy_ugoda": "Automatyczne ramy → ugoda",
+        "automatyczne_ramy_brak_ugody": "Automatyczne ramy → brak ugody",
         "brak_szans": "Brak szans na ugodę", "zawarte_poza_ramami": "Szansa poza ramami → zawarte ugody",
         "brak_ugody_poza_ramami": "Szansa poza ramami → brak ugody",
     }
     sciezki = [{"Ścieżka": etykieta, "Efektywny udział portfela": udzialy[klucz], "Czas podstawowy ścieżki": czasy_podstawowe[klucz], "Oczekiwany czas II instancji": czasy_ii_instancji[klucz], "Łączny oczekiwany czas ścieżki": pelne_czasy_sciezek[klucz], "Oczekiwana liczba spraw": liczba_spraw * udzialy[klucz] / 100} for klucz, etykieta in nazwy.items()]
     porownania_def = (
-        ("Automatyczne ramy w porównaniu z brakiem szans na ugodę", "automatyczne_ramy", "brak_szans", "automatyczne_ramy"),
+        ("Ugoda w automatycznych ramach w porównaniu z nieudaną próbą", "automatyczne_ramy_ugoda", "automatyczne_ramy_brak_ugody", "automatyczne_ramy_ugoda"),
         ("Zawarta ugoda poza ramami w porównaniu z brakiem ugody poza ramami", "zawarte_poza_ramami", "brak_ugody_poza_ramami", "zawarte_poza_ramami"),
         ("Brak ugody poza ramami w porównaniu z brakiem szans na ugodę", "brak_ugody_poza_ramami", "brak_szans", "brak_ugody_poza_ramami"),
     )
@@ -456,7 +462,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
             * koszt_zasobu_godzinowy
             * mnoznik_kosztu_lifecycle
         )
-        porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ roczny przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
+        porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ na wynik kohorty przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
 
     bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))
     wynik_bez_prob = bez_prob["ogolem"]["wynik_po_podatku"]
@@ -488,7 +494,25 @@ def ekonomika_ugod(parametry: dict) -> dict:
     for punkty in (1, 5, 10):
         nowa = min(100.0, parametry["zawarte_ugody_percent"] + punkty)
         wyniki_poprawy = oblicz_model(ustaw_parametr(parametry, "zawarte_ugody", nowa))
-        wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik roczny": wyniki_poprawy["ogolem"]["wynik_po_podatku"] - bazowy_wynik})
+        wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik kohorty": wyniki_poprawy["ogolem"]["wynik_po_podatku"] - bazowy_wynik})
+
+    wartosc_poprawy_automatycznych_ram = []
+    for punkty in (1, 5, 10):
+        obecna = parametry["skutecznosc_automatycznych_ram_percent"]
+        nowa = min(100.0, obecna + punkty)
+        wyniki_poprawy = oblicz_model(
+            ustaw_parametr(
+                parametry, "skutecznosc_automatycznych_ram", nowa
+            )
+        )
+        wartosc_poprawy_automatycznych_ram.append(
+            {
+                "Zmiana": nowa - obecna,
+                "Wpływ na wynik kohorty": (
+                    wyniki_poprawy["ogolem"]["wynik_po_podatku"] - bazowy_wynik
+                ),
+            }
+        )
 
     przychod_wedlug_zakonczenia = [
         {"Sposób zakończenia": "Sprawy zakończone ugodą", "Oczekiwany udział": udzialy["zakonczone_ugoda"], "Oczekiwana liczba spraw": liczba_spraw * udzialy["zakonczone_ugoda"] / 100, "Oczekiwany przychód": wyniki["ogolem"]["przychod_ugody"]},
@@ -507,6 +531,9 @@ def ekonomika_ugod(parametry: dict) -> dict:
             else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc
         ),
         "wartosc_poprawy": wartosc_poprawy,
+        "wartosc_poprawy_automatycznych_ram": (
+            wartosc_poprawy_automatycznych_ram
+        ),
         "strategia_wplyw_pln": bazowy_wynik - wynik_bez_prob,
         "strategia_wplyw_godzin": (
             bez_prob["laczne_godziny_zasobu_lifecycle"]

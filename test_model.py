@@ -65,19 +65,27 @@ class TestUgody(unittest.TestCase):
         self.parametry = domyslne_parametry()
 
     def test_domyslne_udzialy_ugod(self):
-        udzialy = oblicz_udzialy_ugod(15, 30, 50, 50)
+        udzialy = oblicz_udzialy_ugod(
+            kategoryczna_odmowa_percent=15,
+            automatyczne_ramy_percent=30,
+            skutecznosc_automatycznych_ram_percent=50,
+            szansa_na_ugode_percent=50,
+        )
         self.assertEqual(udzialy["kategoryczna_odmowa"], 15.0)
         self.assertEqual(udzialy["automatyczne_ramy"], 30.0)
+        self.assertEqual(udzialy["automatyczne_ramy_ugoda"], 15.0)
+        self.assertEqual(udzialy["automatyczne_ramy_brak_ugody"], 15.0)
         self.assertEqual(udzialy["pozostale_sprawy"], 55.0)
         self.assertEqual(udzialy["szansa_poza_ramami"], 27.5)
         self.assertEqual(udzialy["zawarte_poza_ramami"], 13.75)
         self.assertEqual(udzialy["brak_ugody_poza_ramami"], 13.75)
         self.assertEqual(udzialy["brak_szans"], 27.5)
-        self.assertEqual(udzialy["zakonczone_ugoda"], 43.75)
-        self.assertEqual(udzialy["bez_ugody"], 56.25)
+        self.assertEqual(udzialy["zakonczone_ugoda"], 28.75)
+        self.assertEqual(udzialy["bez_ugody"], 71.25)
         self.assertAlmostEqual(
             sum(udzialy[nazwa] for nazwa in (
-                "kategoryczna_odmowa", "automatyczne_ramy",
+                "kategoryczna_odmowa", "automatyczne_ramy_ugoda",
+                "automatyczne_ramy_brak_ugody",
                 "brak_szans", "zawarte_poza_ramami",
                 "brak_ugody_poza_ramami",
             )),
@@ -85,17 +93,22 @@ class TestUgody(unittest.TestCase):
         )
 
     def test_przyklad_podzialu_i_wskaznik_ugod(self):
-        udzialy = oblicz_udzialy_ugod(15, 30, 50, 60)
+        udzialy = oblicz_udzialy_ugod(
+            kategoryczna_odmowa_percent=15,
+            automatyczne_ramy_percent=30,
+            skutecznosc_automatycznych_ram_percent=50,
+            szansa_na_ugode_percent=60,
+        )
         self.assertEqual(udzialy["zawarte_poza_ramami"], 16.5)
-        self.assertEqual(udzialy["brak_ugody_poza_ramami"], 11.0)
-        self.assertEqual(udzialy["zakonczone_ugoda"], 46.5)
-        self.assertEqual(udzialy["bez_ugody"], 53.5)
+        self.assertEqual(udzialy["brak_ugody_poza_ramami"], 16.5)
+        self.assertEqual(udzialy["zakonczone_ugoda"], 31.5)
+        self.assertEqual(udzialy["bez_ugody"], 68.5)
 
     def test_nieprawidlowe_udzialy_sa_odrzucane(self):
         with self.assertRaises(ValueError):
-            oblicz_udzialy_ugod(60, 50, 50)
+            oblicz_udzialy_ugod(60, 50, 50, 50)
         with self.assertRaises(ValueError):
-            oblicz_udzialy_ugod(15, 30, 101)
+            oblicz_udzialy_ugod(15, 30, 101, 50)
         with self.assertRaises(ValueError):
             oblicz_udzialy_ugod(15, 30, 50, 101)
 
@@ -108,13 +121,19 @@ class TestUgody(unittest.TestCase):
         )
         self.assertEqual(czasy, {
             "kategoryczna_odmowa": 280,
-            "automatyczne_ramy": 85,
+            "automatyczne_ramy_ugoda": 85,
+            "automatyczne_ramy_brak_ugody": 315,
             "brak_szans": 310,
             "zawarte_poza_ramami": 115,
             "brak_ugody_poza_ramami": 345,
         })
-        udzialy = oblicz_udzialy_ugod(15, 30, 50, 50)
-        self.assertAlmostEqual(oblicz_sredni_czas_sciezki_ugody(udzialy, czasy), 216.0)
+        udzialy = oblicz_udzialy_ugod(
+            kategoryczna_odmowa_percent=15,
+            automatyczne_ramy_percent=30,
+            skutecznosc_automatycznych_ram_percent=50,
+            szansa_na_ugode_percent=50,
+        )
+        self.assertAlmostEqual(oblicz_sredni_czas_sciezki_ugody(udzialy, czasy), 250.5)
 
     def test_brak_ugody_pomija_podpis_i_obejmuje_proces(self):
         ugodowe = self.parametry["ugodowe_czynnosci"].copy()
@@ -137,6 +156,14 @@ class TestUgody(unittest.TestCase):
         )["brak_ugody_poza_ramami"]
         self.assertEqual(z_dodatkowym_procesem, 355)
 
+        automatyczne_bez_ugody = oblicz_czasy_sciezek_ugod(
+            self.parametry["wspolne_czynnosci"],
+            self.parametry["procesowe_czynnosci"],
+            ugodowe,
+            self.parametry["analiza_mozliwosci_ugody"],
+        )["automatyczne_ramy_brak_ugody"]
+        self.assertEqual(automatyczne_bez_ugody, 315)
+
 
 class TestDrugaInstancja(unittest.TestCase):
     def setUp(self):
@@ -144,29 +171,34 @@ class TestDrugaInstancja(unittest.TestCase):
         self.wyniki = oblicz_model(self.parametry)
 
     def test_domyslne_udzialy_liczba_i_czas_portfela(self):
-        self.assertAlmostEqual(self.wyniki["udzialy_ugod"]["bez_ugody"], 56.25)
-        self.assertAlmostEqual(self.wyniki["udzial_ii_instancji_w_portfelu"], 11.25)
-        self.assertAlmostEqual(self.wyniki["oczekiwana_liczba_spraw_ii_instancji"], 67.5)
-        self.assertAlmostEqual(self.wyniki["ii_instancja_minuty_na_sprawe_portfela"], 23.625)
-        self.assertAlmostEqual(self.wyniki["ii_instancja_minuty_lacznie"], 14_175)
-        self.assertAlmostEqual(self.wyniki["ii_instancja_godziny_lacznie"], 236.25)
+        self.assertEqual(self.parametry["udzial_ii_instancji_percent"], 50.0)
+        self.assertAlmostEqual(self.wyniki["udzialy_ugod"]["bez_ugody"], 71.25)
+        self.assertAlmostEqual(self.wyniki["udzial_ii_instancji_w_portfelu"], 35.625)
+        self.assertAlmostEqual(self.wyniki["oczekiwana_liczba_spraw_ii_instancji"], 213.75)
+        self.assertAlmostEqual(self.wyniki["ii_instancja_minuty_na_sprawe_portfela"], 74.8125)
+        self.assertAlmostEqual(self.wyniki["ii_instancja_minuty_lacznie"], 44_887.5)
+        self.assertAlmostEqual(self.wyniki["ii_instancja_godziny_lacznie"], 748.125)
 
     def test_ii_instancja_dotyczy_tylko_sciezek_bez_ugody(self):
         podstawowe = self.wyniki["czasy_sciezek_ugod"]
         laczne = self.wyniki["czasy_sciezek_z_ii_instancja"]
         dodatkowe = self.wyniki["czasy_ii_instancji_sciezek"]
-        for sciezka in ("kategoryczna_odmowa", "brak_szans", "brak_ugody_poza_ramami"):
-            self.assertEqual(dodatkowe[sciezka], 42.0)
-            self.assertEqual(laczne[sciezka], podstawowe[sciezka] + 42.0)
-        for sciezka in ("automatyczne_ramy", "zawarte_poza_ramami"):
+        for sciezka in (
+            "kategoryczna_odmowa", "automatyczne_ramy_brak_ugody",
+            "brak_szans", "brak_ugody_poza_ramami",
+        ):
+            self.assertEqual(dodatkowe[sciezka], 105.0)
+            self.assertEqual(laczne[sciezka], podstawowe[sciezka] + 105.0)
+        for sciezka in ("automatyczne_ramy_ugoda", "zawarte_poza_ramami"):
             self.assertEqual(dodatkowe[sciezka], 0.0)
             self.assertEqual(laczne[sciezka], podstawowe[sciezka])
         self.assertEqual(laczne, {
-            "kategoryczna_odmowa": 322.0,
-            "automatyczne_ramy": 85.0,
-            "brak_szans": 352.0,
+            "kategoryczna_odmowa": 385.0,
+            "automatyczne_ramy_ugoda": 85.0,
+            "automatyczne_ramy_brak_ugody": 420.0,
+            "brak_szans": 415.0,
             "zawarte_poza_ramami": 115.0,
-            "brak_ugody_poza_ramami": 387.0,
+            "brak_ugody_poza_ramami": 450.0,
         })
 
     def test_ii_instancja_jest_dodatkowa_do_p_i_niezalezna_od_wps(self):
@@ -232,6 +264,7 @@ class TestDrugaInstancja(unittest.TestCase):
             **self.parametry,
             "kategoryczna_odmowa_percent": 0.0,
             "automatyczne_ramy_percent": 100.0,
+            "skutecznosc_automatycznych_ram_percent": 100.0,
         })
         for wynik in (zero_udzialu, zero_czasu, zero_spraw, wszystkie_ugodzone):
             self.assertEqual(wynik["ii_instancja_minuty_lacznie"], 0.0)
@@ -423,24 +456,34 @@ class TestModelFinansowy(unittest.TestCase):
             for grupa in wynik["grupy"]
         )
         self.assertAlmostEqual(wynik["ogolem"]["przychod"], oczekiwany)
-        self.assertAlmostEqual(wynik["srednie_minuty_podstawowej_sciezki_ugody"], 216.0)
-        self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 239.625)
-        self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 233_955)
-        self.assertAlmostEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 53_989.61538461538)
-        self.assertAlmostEqual(wynik["koszt_narzutu_ogolnego_lifecycle"], 172_766.76923076922)
-        self.assertAlmostEqual(wynik["koszt_wynagrodzen_lifecycle"], 287_368.72615384613)
-        self.assertAlmostEqual(wynik["ogolem"]["przychod"], 508_413.4860000001)
-        self.assertAlmostEqual(wynik["ogolem"]["koszt_calkowity"], 460_135.4953846154)
-        self.assertAlmostEqual(wynik["ogolem"]["wynik_przed_podatkiem"], 48_277.99061538471)
-        self.assertAlmostEqual(wynik["ogolem"]["marza_przed_podatkiem"], 9.495812354471003)
-        self.assertAlmostEqual(wynik["ogolem"]["sredni_przychod"], 847.3558100000001)
-        self.assertAlmostEqual(wynik["ogolem"]["sredni_koszt"], 766.8924923076924)
+        self.assertAlmostEqual(wynik["srednie_minuty_podstawowej_sciezki_ugody"], 250.5)
+        self.assertAlmostEqual(wynik["srednie_minuty_sciezki_ugody"], 325.3125)
+        domyslne = domyslne_parametry()
+        oczekiwane_minuty_p = sum(
+            udzial / 100 * domyslne["dodatkowe_minuty"][rodzaj]
+            for rodzaj, udzial in domyslne["udzialy_rodzajow"].items()
+        )
+        self.assertAlmostEqual(oczekiwane_minuty_p, 150.3)
         self.assertAlmostEqual(
-            wynik["ogolem"]["sredni_wynik_przed_podatkiem"], 80.46331769230785
+            wynik["bezposrednie_minuty_spraw"] / wynik["ogolem"]["liczba_spraw"],
+            475.6125,
+        )
+        self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 285_367.5)
+        self.assertAlmostEqual(wynik["czynnosci_dzienne_lifecycle_minuty"], 65_854.03846153845)
+        self.assertAlmostEqual(wynik["koszt_narzutu_ogolnego_lifecycle"], 210_732.92307692306)
+        self.assertAlmostEqual(wynik["koszt_wynagrodzen_lifecycle"], 350_519.0953846154)
+        self.assertAlmostEqual(wynik["ogolem"]["przychod"], 451_963.2540000001)
+        self.assertAlmostEqual(wynik["ogolem"]["koszt_calkowity"], 561_252.0184615385)
+        self.assertAlmostEqual(wynik["ogolem"]["wynik_przed_podatkiem"], -109_288.7644615384)
+        self.assertAlmostEqual(wynik["ogolem"]["marza_przed_podatkiem"], -24.18089601185551)
+        self.assertAlmostEqual(wynik["ogolem"]["sredni_przychod"], 753.2720900000002)
+        self.assertAlmostEqual(wynik["ogolem"]["sredni_koszt"], 935.4200307692308)
+        self.assertAlmostEqual(
+            wynik["ogolem"]["sredni_wynik_przed_podatkiem"], -182.14794076923067
         )
         self.assertAlmostEqual(
             wynik["laczne_godziny_zasobu_lifecycle"] / wynik["ogolem"]["liczba_spraw"],
-            7.998461538461538,
+            9.756153846153847,
         )
         self.assertAlmostEqual(
             wynik["koszt_narzutu_ogolnego_lifecycle"],
@@ -486,7 +529,12 @@ class TestModelFinansowy(unittest.TestCase):
 
     def test_skrajne_udzialy_ugod_izoluja_wlasciwy_parametr(self):
         bazowe = domyslne_parametry()
-        same_ugody = {**bazowe, "kategoryczna_odmowa_percent": 0.0, "automatyczne_ramy_percent": 100.0}
+        same_ugody = {
+            **bazowe,
+            "kategoryczna_odmowa_percent": 0.0,
+            "automatyczne_ramy_percent": 100.0,
+            "skutecznosc_automatycznych_ram_percent": 100.0,
+        }
         przychod_ugod = oblicz_model(same_ugody)["ogolem"]["przychod"]
         self.assertEqual(
             oblicz_model({**same_ugody, "srednia_kwota_wyroku_percent": 0.0})["ogolem"]["przychod"],
@@ -658,6 +706,7 @@ class TestModelFinansowy(unittest.TestCase):
             {"niski_wps": 10_000},
             {"wysoki_wps": 9_999},
             {"wysoki_wps_procent": 101},
+            {"skutecznosc_automatycznych_ram_percent": 101},
             {"koszt_staly_na_godzine": -1},
         )
         for zmiana in przypadki:

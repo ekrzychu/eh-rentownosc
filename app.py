@@ -67,8 +67,20 @@ with st.sidebar:
             value=domyslne["kategoryczna_odmowa_percent"], step=0.1, format="%.1f",
         )
         automatyczne_ramy_percent = st.number_input(
-            "Automatyczne ramy (%)", min_value=0.0, max_value=100.0,
+            "Automatyczne ramy (% wszystkich spraw)", min_value=0.0, max_value=100.0,
             value=domyslne["automatyczne_ramy_percent"], step=0.1, format="%.1f",
+        )
+        skutecznosc_automatycznych_ram_percent = st.number_input(
+            "Zawarte ugody w automatycznych ramach (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=domyslne["skutecznosc_automatycznych_ram_percent"],
+            step=0.1,
+            format="%.1f",
+            help=(
+                "Jest to odsetek spraw objętych automatycznymi ramami, które "
+                "faktycznie kończą się ugodą. Pozostałe sprawy przechodzą do procesu."
+            ),
         )
         szansa_na_ugode_percent = st.number_input(
             "Szansa na ugodę poza ramami (% pozostałych spraw)", min_value=0.0, max_value=100.0,
@@ -181,6 +193,9 @@ parametry = {
     "podatek_dochodowy_percent": podatek_dochodowy_percent,
     "kategoryczna_odmowa_percent": kategoryczna_odmowa_percent,
     "automatyczne_ramy_percent": automatyczne_ramy_percent,
+    "skutecznosc_automatycznych_ram_percent": (
+        skutecznosc_automatycznych_ram_percent
+    ),
     "szansa_na_ugode_percent": szansa_na_ugode_percent,
     "zawarte_ugody_percent": zawarte_ugody_percent,
     "udzial_ii_instancji_percent": udzial_ii_instancji_percent,

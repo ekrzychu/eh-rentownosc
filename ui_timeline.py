@@ -265,8 +265,13 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
     primary_top[0].metric("Status kontraktu", kpi["status_kontraktu"])
     primary_top[1].metric("Break-even finansowy", break_even_value, help=break_even_help)
     primary_bottom = st.columns(2, gap="large", wrap=True)
+    deficit_label = (
+        "Największy deficyt"
+        if kpi["najglebszy_deficyt_potwierdzony"]
+        else f"Najniższy wynik do {horizon} mies."
+    )
     primary_bottom[0].metric(
-        "Największy deficyt",
+        deficit_label,
         _kwota_skrocona(kpi["najglebszy_deficyt_skumulowany"]),
         help=_kwota(kpi["najglebszy_deficyt_skumulowany"]),
     )
@@ -300,11 +305,15 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
         )
 
     components = kpi["status_kontraktu_skladniki"]
+    minimum_result = components["wynik_miesieczny_minimalnej_stabilnej_obsady"]
     st.caption(
         "Składniki statusu · ekonomika sprawy: "
         f"{'dodatnia' if components['ekonomika_sprawy_dodatnia'] else 'niedodatnia'} · "
-        f"pojemność: {components['status_pojemnosci'].lower()} · "
-        f"docelowy wynik bieżącej obsady: {_kwota(components['wynik_miesieczny_docelowy'])}/mies."
+        f"minimalna stabilna obsada: {components['minimalna_stabilna_obsada'] or 'brak'} · "
+        "wynik przy minimalnej obsadzie: "
+        f"{_kwota(minimum_result) + '/mies.' if minimum_result is not None else 'brak'} · "
+        "wynik bieżącej obsady: "
+        f"{_kwota(components['wynik_miesieczny_biezacej_obsady'])}/mies."
     )
 
     loss_reasons = [

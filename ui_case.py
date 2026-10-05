@@ -202,6 +202,19 @@ def _renderuj_ugody(parametry: dict) -> None:
             "Oczekiwany przychód": st.column_config.NumberColumn(format="%.2f zł"),
         },
     )
+    st.markdown("##### Sześć możliwych wyników sprawy")
+    st.dataframe(
+        pd.DataFrame(ekonomika["sciezki"]),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Efektywny udział portfela": st.column_config.NumberColumn(format="%.2f%%"),
+            "Czas podstawowy ścieżki": st.column_config.NumberColumn(format="%.1f min"),
+            "Oczekiwany czas II instancji": st.column_config.NumberColumn(format="%.1f min"),
+            "Łączny oczekiwany czas ścieżki": st.column_config.NumberColumn(format="%.1f min"),
+            "Oczekiwana liczba spraw": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
     st.markdown("##### Czas i wartość ścieżek")
     st.dataframe(
         pd.DataFrame(ekonomika["porownania"]),
@@ -210,7 +223,7 @@ def _renderuj_ugody(parametry: dict) -> None:
         column_config={
             "Różnica minut na sprawę": st.column_config.NumberColumn(format="%.1f min"),
             "Różnica PLN na sprawę": st.column_config.NumberColumn(format="%.2f zł"),
-            "Wpływ roczny przy obecnym udziale": st.column_config.NumberColumn(format="%.2f zł"),
+            "Wpływ na wynik kohorty przy obecnym udziale": st.column_config.NumberColumn(format="%.2f zł"),
         },
     )
     prog = ekonomika["minimalna_skutecznosc"]
@@ -377,9 +390,9 @@ def renderuj_ekonomike_sprawy(parametry: dict, wyniki: dict | None = None) -> No
     with st.expander("Wartości całej kohorty", expanded=False):
         suma = st.columns(4, wrap=True)
         suma[0].metric("Oczekiwana liczba spraw", _liczba(sprawy, 1))
-        suma[1].metric("Przychód", _kwota(ogolem["przychod"]))
-        suma[2].metric("Koszt", _kwota(ogolem["koszt_calkowity"]))
-        suma[3].metric("Wynik po podatku", _kwota(ogolem["wynik_po_podatku"]))
+        suma[1].metric("Przychód kohorty", _kwota(ogolem["przychod"]))
+        suma[2].metric("Koszt kohorty", _kwota(ogolem["koszt_calkowity"]))
+        suma[3].metric("Wynik kohorty", _kwota(ogolem["wynik_po_podatku"]))
 
     _renderuj_strukture(wyniki)
     wrazliwosc = _renderuj_dzwignie(parametry)
@@ -398,9 +411,9 @@ def renderuj_ekonomike_sprawy(parametry: dict, wyniki: dict | None = None) -> No
     with st.expander("Szczegóły finansowe i podatek", expanded=False):
         szczegoly = pd.DataFrame(
             [
-                {"Pozycja": "Wynik przed podatkiem", "Wartość": ogolem["wynik_przed_podatkiem"]},
-                {"Pozycja": "Podatek dochodowy", "Wartość": ogolem["podatek_dochodowy"]},
-                {"Pozycja": "Wynik po podatku", "Wartość": ogolem["wynik_po_podatku"]},
+                {"Pozycja": "Wynik kohorty przed podatkiem", "Wartość": ogolem["wynik_przed_podatkiem"]},
+                {"Pozycja": "Podatek dochodowy kohorty", "Wartość": ogolem["podatek_dochodowy"]},
+                {"Pozycja": "Wynik kohorty po podatku", "Wartość": ogolem["wynik_po_podatku"]},
             ]
         )
         st.dataframe(
