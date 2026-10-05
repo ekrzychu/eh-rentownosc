@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from analysis import (
     analiza_wrazliwosci,
@@ -348,6 +349,88 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
                 parametry, "czas_ii_instancji", pozycja[klucz]
             ))
             self.assertEqual(scenariusz["ogolem"]["przychod"], bazowy_przychod)
+
+
+class TestNiewykonalneWariantyWrazliwosci(unittest.TestCase):
+    def test_poprawna_baza_450_minut_ma_tylko_korzystny_kierunek(self):
+        parametry = domyslne_parametry()
+        nazwy = list(parametry["codzienne_czynnosci"])
+        parametry["codzienne_czynnosci"] = dict(zip(nazwy, (300, 75, 75)))
+        bazowy = oblicz_model(parametry)
+        identyfikator = f"codzienne:{nazwy[0]}"
+        with self.assertRaises(ValueError):
+            oblicz_model(ustaw_parametr(parametry, identyfikator, 330))
+        pozycje = {x["Id"]: x for x in analiza_wrazliwosci(parametry, 10.0)}
+        pozycja = pozycje[identyfikator]
+        poprawiony = oblicz_model(ustaw_parametr(parametry, identyfikator, 270))
+        self.assertEqual(pozycja["Wartość po korzystnej zmianie"], 270)
+        self.assertAlmostEqual(pozycja["Korzystna zmiana (%)"], -10)
+        self.assertEqual(pozycja["Kierunek poprawy"], "spadek")
+        self.assertAlmostEqual(
+            pozycja["Wpływ korzystny"],
+            poprawiony["ogolem"]["wynik_po_podatku"] - bazowy["ogolem"]["wynik_po_podatku"],
+        )
+        self.assertGreater(pozycja["Wpływ korzystny"], 0)
+        for klucz in (
+            "Niekorzystna zmiana", "Niekorzystna zmiana (%)",
+            "Wartość po niekorzystnej zmianie", "Wpływ niekorzystny",
+            "Wynik po niekorzystnej zmianie", "Marża po niekorzystnej zmianie",
+            "Wpływ niekorzystny na marżę",
+        ):
+            self.assertIsNone(pozycja[klucz], klucz)
+        self.assertIn("procesowe:Duplika", pozycje)
+
+    def test_nieprawidlowa_baza_nadal_jest_odrzucana(self):
+        parametry = domyslne_parametry()
+        parametry["codzienne_czynnosci"] = {"Dzienna": 480}
+        with self.assertRaises(ValueError):
+            analiza_wrazliwosci(parametry)
+
+    def warianty(self, wplywy):
+        parametry = domyslne_parametry()
+        bazowy = oblicz_model(parametry)
+        wyniki = [bazowy]
+        for wplyw in wplywy:
+            wyniki.append(wplyw if isinstance(wplyw, Exception) else {
+                "ogolem": {
+                    "wynik_po_podatku": bazowy["ogolem"]["wynik_po_podatku"] + wplyw,
+                    "marza_po_podatku": bazowy["ogolem"]["marza_po_podatku"],
+                }
+            })
+        definicja = next(x for x in definicje_parametrow(parametry) if x["id"] == "koszt_staly")
+        with (
+            patch("analysis.sterowalne_definicje_parametrow", return_value=[definicja]),
+            patch("analysis.oblicz_model", side_effect=wyniki),
+        ):
+            return analiza_wrazliwosci(parametry)
+
+    def test_jedyny_niekorzystny_wariant_nie_jest_korzystnym(self):
+        pozycja = self.warianty([ValueError("niewykonalny"), -10])[0]
+        for klucz in (
+            "Wynik po korzystnej zmianie", "Kierunek poprawy", "Korzystna zmiana",
+            "Korzystna zmiana (%)", "Wartość po korzystnej zmianie",
+            "Wpływ korzystny", "Marża po korzystnej zmianie", "Wpływ korzystny na marżę",
+        ):
+            self.assertIsNone(pozycja[klucz], klucz)
+        self.assertEqual(pozycja["Wpływ niekorzystny"], -10)
+
+    def test_obydwa_niewykonalne_warianty_pomijaja_parametr(self):
+        self.assertEqual(self.warianty([ValueError("minus"), ValueError("plus")]), [])
+
+    def test_znak_wplywu_wyznacza_kierunek_a_zero_jest_neutralne(self):
+        for wplywy, korzystny, niekorzystny in (
+            ((-10, -20), None, -20),
+            ((10, 20), 20, None),
+            ((0, 0), None, None),
+        ):
+            with self.subTest(wplywy=wplywy):
+                pozycja = self.warianty(wplywy)[0]
+                self.assertEqual(pozycja["Wpływ korzystny"], korzystny)
+                self.assertEqual(pozycja["Wpływ niekorzystny"], niekorzystny)
+
+    def test_nieoczekiwany_blad_nie_jest_pomijany(self):
+        with self.assertRaisesRegex(RuntimeError, "blad programu"):
+            self.warianty([RuntimeError("blad programu"), 10])
 
 
 class TestUgodyIPojemnosc(unittest.TestCase):

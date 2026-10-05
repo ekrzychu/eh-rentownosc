@@ -345,7 +345,11 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
             rzeczywista = float(wartosc_parametru(zmienione, identyfikator))
             if rzeczywista == obecnie:
                 continue
-            wyniki = oblicz_model(zmienione)
+            try:
+                wyniki = oblicz_model(zmienione)
+            except ValueError:
+                # Niewykonalny wariant nie unieważnia poprawnego modelu bazowego.
+                continue
             wynik = wyniki["ogolem"]["wynik_po_podatku"]
             marza = wyniki["ogolem"]["marza_po_podatku"]
             scenariusze.append({
@@ -359,33 +363,42 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
             })
         if not scenariusze:
             continue
-        korzystny = max(scenariusze, key=lambda x: x["wplyw"])
-        niekorzystny = min(scenariusze, key=lambda x: x["wplyw"])
+        korzystny = max(
+            (x for x in scenariusze if x["wplyw"] > 0),
+            key=lambda x: x["wplyw"], default=None,
+        )
+        niekorzystny = min(
+            (x for x in scenariusze if x["wplyw"] < 0),
+            key=lambda x: x["wplyw"], default=None,
+        )
         wiersze.append({
             "Parametr": definicja["nazwa"], "Id": identyfikator,
             "Kategoria": definicja["kategoria"], "Obecnie": obecnie,
             "Jednostka": definicja["jednostka"],
             "Zmiana analizowana (%)": zmiana_percent,
-            "Wynik bazowy": bazowy_wynik, "Wynik po korzystnej zmianie": korzystny["wynik_po_podatku"],
+            "Wynik bazowy": bazowy_wynik, "Wynik po korzystnej zmianie": korzystny["wynik_po_podatku"] if korzystny is not None else None,
             "Marża bazowa": bazowa_marza,
-            "Kierunek poprawy": "wzrost" if korzystny["zmiana"] > 0 else "spadek",
-            "Korzystna zmiana": korzystny["zmiana"],
-            "Korzystna zmiana (%)": korzystny["zmiana_percent"],
-            "Wartość po korzystnej zmianie": korzystny["wartosc"],
-            "Wpływ korzystny": korzystny["wplyw"],
-            "Marża po korzystnej zmianie": korzystny["marza_po_podatku"],
-            "Wpływ korzystny na marżę": korzystny["wplyw_marza"],
-            "Niekorzystna zmiana": niekorzystny["zmiana"],
-            "Niekorzystna zmiana (%)": niekorzystny["zmiana_percent"],
-            "Wartość po niekorzystnej zmianie": niekorzystny["wartosc"],
-            "Wpływ niekorzystny": niekorzystny["wplyw"],
-            "Wynik po niekorzystnej zmianie": niekorzystny["wynik_po_podatku"],
-            "Marża po niekorzystnej zmianie": niekorzystny["marza_po_podatku"],
-            "Wpływ niekorzystny na marżę": niekorzystny["wplyw_marza"],
+            "Kierunek poprawy": (
+                ("wzrost" if korzystny["zmiana"] > 0 else "spadek")
+                if korzystny is not None else None
+            ),
+            "Korzystna zmiana": korzystny["zmiana"] if korzystny is not None else None,
+            "Korzystna zmiana (%)": korzystny["zmiana_percent"] if korzystny is not None else None,
+            "Wartość po korzystnej zmianie": korzystny["wartosc"] if korzystny is not None else None,
+            "Wpływ korzystny": korzystny["wplyw"] if korzystny is not None else None,
+            "Marża po korzystnej zmianie": korzystny["marza_po_podatku"] if korzystny is not None else None,
+            "Wpływ korzystny na marżę": korzystny["wplyw_marza"] if korzystny is not None else None,
+            "Niekorzystna zmiana": niekorzystny["zmiana"] if niekorzystny is not None else None,
+            "Niekorzystna zmiana (%)": niekorzystny["zmiana_percent"] if niekorzystny is not None else None,
+            "Wartość po niekorzystnej zmianie": niekorzystny["wartosc"] if niekorzystny is not None else None,
+            "Wpływ niekorzystny": niekorzystny["wplyw"] if niekorzystny is not None else None,
+            "Wynik po niekorzystnej zmianie": niekorzystny["wynik_po_podatku"] if niekorzystny is not None else None,
+            "Marża po niekorzystnej zmianie": niekorzystny["marza_po_podatku"] if niekorzystny is not None else None,
+            "Wpływ niekorzystny na marżę": niekorzystny["wplyw_marza"] if niekorzystny is not None else None,
         })
     return sorted(
         wiersze,
-        key=lambda x: abs(x["Wpływ korzystny"]),
+        key=lambda x: abs(x["Wpływ korzystny"] or 0.0),
         reverse=True,
     )
 

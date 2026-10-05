@@ -148,7 +148,10 @@ def _renderuj_dzwignie(parametry: dict) -> list[dict]:
         "ponownego przeliczenia całego scenariusza."
     )
     wrazliwosc = analiza_wrazliwosci(parametry, zmiana_percent=10.0)
-    top = [wiersz for wiersz in wrazliwosc if wiersz["Wpływ korzystny"] > 0][:5]
+    top = [
+        wiersz for wiersz in wrazliwosc
+        if wiersz["Wpływ korzystny"] is not None and wiersz["Wpływ korzystny"] > 0
+    ][:5]
     if top:
         st.dataframe(
             pd.DataFrame(

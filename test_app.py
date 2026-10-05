@@ -4,6 +4,33 @@ from streamlit.testing.v1 import AppTest
 
 
 class TestGlowneWidoki(unittest.TestCase):
+    def test_450_minut_dziennych_nie_przerywa_analiz(self):
+        from model import domyslne_parametry
+
+        app = AppTest.from_file("app.py", default_timeout=30).run()
+        for label, value in zip(domyslne_parametry()["codzienne_czynnosci"], (300, 75, 75)):
+            next(x for x in app.number_input if x.label == label).set_value(value)
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertIn("Ekonomika sprawy", [x.value for x in app.header])
+        self.assertIn("Analizy pogłębione", [x.value for x in app.subheader])
+        self.assertIn("Wrażliwość", [x.label for x in app.expander])
+        tabela = next(x.value for x in app.dataframe if "Wpływ niekorzystny" in x.value.columns)
+        wiersz = tabela.loc[tabela["Parametr"] == "Obsługa skrzynki ugody EH"].iloc[0]
+        self.assertGreater(wiersz["Wpływ korzystny"], 0)
+        self.assertTrue(tabela.loc[tabela["Parametr"] == "Obsługa skrzynki ugody EH", "Wpływ niekorzystny"].isna().all())
+
+    def test_neutralna_wrazliwosc_z_brakujacymi_kierunkami_renderuje_sie(self):
+        app = AppTest.from_file("app.py", default_timeout=30).run()
+        for label in ("Narzut kosztów ogólnych / h pracownika", "Wynagrodzenie pracownika / h"):
+            next(x for x in app.number_input if x.label == label).set_value(0.0)
+        app.run()
+        self.assertFalse(app.exception)
+        tabela = next(x.value for x in app.dataframe if "Dźwignia" in x.value.columns)
+        self.assertTrue((tabela["Wpływ na wynik kohorty"] > 0).all())
+        szczegoly = next(x.value for x in app.dataframe if "Wpływ niekorzystny" in x.value.columns)
+        self.assertTrue(szczegoly.loc[szczegoly["Parametr"] == "Duplika", "Wpływ korzystny"].isna().all())
+
     def test_rentowny_rozruch_nie_pokazuje_trwalego_spadku(self):
         app = AppTest.from_file("app.py", default_timeout=30).run()
         for label, value in (
