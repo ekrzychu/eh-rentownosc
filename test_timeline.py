@@ -1,5 +1,8 @@
 import unittest
-from collections import defaultdict
+from collections import defaultdict, deque
+from unittest.mock import patch
+
+import timeline
 
 from model import (
     MINUTY_DNIA_PRACY,
@@ -7,8 +10,12 @@ from model import (
     oblicz_model,
 )
 from timeline import (
+    Completion,
     GODZINY_ETATU_MIESIECZNIE,
     _dodaj_kohorte,
+    _dodaj_pakiet,
+    _przyrost_zakonczenia,
+    _wykonaj_prace,
     domyslne_parametry_czasowe,
     klasyfikuj_status_kontraktu,
     minimalna_liczba_pracownikow_dla_stabilnosci,
@@ -22,6 +29,202 @@ from timeline import (
 
 def pierwszy_miesiac_z_wartoscia(wiersze, klucz):
     return next(w["Miesiąc"] for w in wiersze if w[klucz] > 1e-8)
+
+
+def parametry_jednej_sciezki():
+    """2,5 sprawy/mies., po 6000 minut w jednym etapie, 10020 minut/FTE."""
+    return {
+        **domyslne_parametry(),
+        "liczba_spraw": 30,
+        "liczba_pracownikow": 1,
+        "udzialy_rodzajow": {"P1": 100.0, "P2": 0.0, "P3": 0.0},
+        "wysoki_wps_procent": 100.0,
+        "kategoryczna_odmowa_percent": 0.0,
+        "automatyczne_ramy_percent": 100.0,
+        "skutecznosc_automatycznych_ram_percent": 100.0,
+        "udzial_ii_instancji_percent": 0.0,
+        "wspolne_czynnosci": {},
+        "procesowe_czynnosci": {},
+        "ugodowe_czynnosci": {"Oferta ugody": 6000},
+        "dodatkowe_minuty": {"P1": 0, "P2": 0, "P3": 0},
+        "codzienne_czynnosci": {},
+    }
+
+
+class TestPrzeplywOczekiwany(unittest.TestCase):
+    def test_proporcjonalny_podzial_i_fifo_miedzy_miesiacami(self):
+        completions = [Completion(1, "test", "ugoda", 5, 10, 8000) for _ in range(4)]
+        packets = defaultdict(list)
+        stats = {"direct_minutes": 0.0}
+        for i, minutes in enumerate((1200, 2400, 3600, 600)):
+            _dodaj_pakiet(packets, completions, i, 5 if i < 3 else 6,
+                          1, "test", "zawarcie_ugody", minutes, stats)
+        queue = deque([packets[5], packets[6]])
+        self.assertEqual(_wykonaj_prace(queue, completions, 3600), 3600)
+        self.assertEqual([c.stage_executed_minutes["zawarcie_ugody"] for c in completions],
+                         [600, 1200, 1800, 0])
+        self.assertEqual(_wykonaj_prace(queue, completions, 3900), 3900)
+        self.assertEqual([c.stage_executed_minutes["zawarcie_ugody"] for c in completions],
+                         [1200, 2400, 3600, 300])
+        self.assertEqual(queue[0][0].due_month, 6)
+
+    def test_zakonczenie_wymaga_wszystkich_etapow_i_terminu_nominalnego(self):
+        c = Completion(1, "test:ii", "ii", 9, 10, 8000,
+                       {"proces": 100, "ii_instancja": 200, "zerowy": 0},
+                       {"proces": 100, "ii_instancja": 80})
+        self.assertEqual(_przyrost_zakonczenia(c, 8), 0)
+        cases, revenue = [], []
+        for month, executed, expected in ((9, 80, .4), (10, 150, .35), (11, 200, .25)):
+            c.stage_executed_minutes["ii_instancja"] = executed
+            increment = _przyrost_zakonczenia(c, month)
+            self.assertAlmostEqual(increment, expected)
+            cases.append(c.cases * increment)
+            revenue.append(c.revenue * increment)
+            self.assertEqual(_przyrost_zakonczenia(c, month), 0)
+        for actual, expected in zip(cases, (4, 3.5, 2.5)):
+            self.assertAlmostEqual(actual, expected)
+        for actual, expected in zip(revenue, (3200, 2800, 2000)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(sum(cases), c.cases)
+        self.assertAlmostEqual(sum(revenue), c.revenue)
+        self.assertEqual(c.recognized_fraction, 1)
+        self.assertEqual(_przyrost_zakonczenia(c, 12), 0)
+
+    def test_brak_przychodu_gdy_jeden_wymagany_etap_jest_niewykonany(self):
+        for outcome, final_stage in (("ugoda", "zawarcie_ugody"), ("i", "proces"), ("ii", "ii_instancja")):
+            c = Completion(1, "test", outcome, 1, 10, 8000,
+                           {"przyjecie": 100, final_stage: 100},
+                           {"przyjecie": 100, final_stage: 0})
+            self.assertEqual(_przyrost_zakonczenia(c, 1), 0)
+            c.stage_executed_minutes[final_stage] = 25
+            self.assertEqual(_przyrost_zakonczenia(c, 1), .25)
+
+    def test_zerowa_praca_czeka_na_nominalny_termin(self):
+        c = Completion(1, "test", "ugoda", 7, 2.5, 1000)
+        self.assertEqual(_przyrost_zakonczenia(c, 6), 0)
+        self.assertEqual(_przyrost_zakonczenia(c, 7), 1)
+        self.assertEqual(_przyrost_zakonczenia(c, 8), 0)
+
+    def test_rozlozony_etap_rejestruje_caly_wymagany_czas(self):
+        p = domyslne_parametry()
+        packets, completions = defaultdict(list), []
+        _dodaj_kohorte(1, oblicz_model(p), p, domyslne_parametry_czasowe(), packets, completions)
+        for i, c in enumerate(completions):
+            for stage, total in c.stage_total_minutes.items():
+                self.assertAlmostEqual(total, sum(packet.minutes_remaining
+                    for bucket in packets.values() for packet in bucket
+                    if packet.completion_id == i and packet.stage == stage))
+        self.assertTrue(any(c.outcome == "ii" and "ii_instancja" in c.stage_total_minutes for c in completions))
+
+    def test_czesc_agregatu_zamyka_sie_z_proporcjonalnym_przychodem(self):
+        p = parametry_jednej_sciezki()
+        result = oblicz_model_czasowy(p, {"miesiace_do_ugody": 0, "horyzont_miesiace": 2})
+        first, second = result["tabela_miesieczna"]
+        self.assertAlmostEqual(first["Wykonana praca (h)"], 167)
+        self.assertAlmostEqual(first["Ugody zakończone"], 1.67)
+        unit_revenue = oblicz_model(p)["ogolem"]["przychod"] / 30
+        self.assertAlmostEqual(first["Przychód z ugód"], 1.67 * unit_revenue)
+        self.assertAlmostEqual(second["Ugody zakończone"], 1.67)
+        self.assertAlmostEqual(first["Aktywne sprawy"], .83)
+        self.assertAlmostEqual(result["podsumowanie"]["srednie_opoznienie_pojemnosci_miesiace"], .83 / 3.34)
+        self.assertEqual(result["podsumowanie"]["maksymalne_opoznienie_pojemnosci_miesiace"], 1)
+
+    def test_opoznienie_platnosci_przesuwa_osobno_kazdy_przyrost(self):
+        p = parametry_jednej_sciezki()
+        time = {"miesiace_do_ugody": 0, "horyzont_miesiace": 5}
+        direct = oblicz_model_czasowy(p, time)["tabela_miesieczna"]
+        delayed = oblicz_model_czasowy(p, {**time, "opoznienie_platnosci_miesiace": 2})["tabela_miesieczna"]
+        for i, (a, b) in enumerate(zip(direct, delayed)):
+            for key in ("Wykonana praca (h)", "Backlog na koniec (h)", "Ugody zakończone", "Aktywne sprawy"):
+                self.assertAlmostEqual(a[key], b[key])
+            self.assertAlmostEqual(b["Przychód razem"], direct[i-2]["Przychód razem"] if i >= 2 else 0)
+
+    def test_ii_instancja_nie_placi_przy_wyroku_i(self):
+        p = {**parametry_jednej_sciezki(), "kategoryczna_odmowa_percent": 100.0,
+             "automatyczne_ramy_percent": 0.0, "ugodowe_czynnosci": {},
+             "udzial_ii_instancji_percent": 100.0, "obsluga_ii_instancji_minuty": 6000}
+        time = {"miesiace_do_wyroku_i": 0, "miesiace_wyrok_i_do_ii": 1,
+                "opoznienie_platnosci_miesiace": 1, "horyzont_miesiace": 3}
+        rows = oblicz_model_czasowy(p, time)["tabela_miesieczna"]
+        self.assertEqual(rows[0]["Zakończenia po I instancji"], 0)
+        self.assertEqual(rows[0]["Zakończenia po II instancji"], 0)
+        self.assertEqual(rows[0]["Przychód razem"], 0)
+        self.assertAlmostEqual(rows[1]["Zakończenia po II instancji"], 1.67)
+        self.assertEqual(rows[1]["Przychód razem"], 0)
+        unit_revenue = oblicz_model(p)["ogolem"]["przychod"] / 30
+        self.assertAlmostEqual(rows[2]["Przychód razem"], 1.67 * unit_revenue)
+
+
+class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
+    def assert_nested_equal(self, a, b):
+        if isinstance(a, dict):
+            self.assertEqual(set(a), set(b))
+            for key in a:
+                self.assert_nested_equal(a[key], b[key])
+        elif isinstance(a, list):
+            self.assertEqual(len(a), len(b))
+            for x, y in zip(a, b):
+                self.assert_nested_equal(x, y)
+        elif isinstance(a, (int, float)) and not isinstance(a, bool):
+            self.assertAlmostEqual(a, b, places=6)
+        else:
+            self.assertEqual(a, b)
+
+    def test_odwrocenie_p_wps_i_sciezek_nie_zmienia_wynikow(self):
+        for staff in (1, 2):
+            p = {**domyslne_parametry(), "liczba_pracownikow": staff,
+                 "koszt_staly_na_godzine": 1.0, "wynagrodzenie_pracownika_na_godzine": 1.0}
+            baseline = oblicz_model_czasowy(p)
+            for variant in ("P", "WPS", "ugody", "bez_ugody", "wszystko"):
+                def reordered(params):
+                    result = oblicz_model(params)
+                    if variant in ("P", "wszystko"):
+                        result["grupy"].sort(key=lambda g: g["rodzaj"], reverse=True)
+                    if variant in ("WPS", "wszystko"):
+                        result["grupy"] = [g for rodzaj in dict.fromkeys(g["rodzaj"] for g in result["grupy"])
+                                           for g in reversed(result["grupy"]) if g["rodzaj"] == rodzaj]
+                    return result
+                settlement_paths = timeline.SCIEZKI_UGODOWE
+                judgment_paths = timeline.SCIEZKI_BEZ_UGODY
+                if variant in ("ugody", "wszystko"):
+                    settlement_paths = tuple(reversed(settlement_paths))
+                if variant in ("bez_ugody", "wszystko"):
+                    judgment_paths = tuple(reversed(judgment_paths))
+                with (
+                    self.subTest(staff=staff, variant=variant),
+                    patch.object(timeline, "oblicz_model", reordered),
+                    patch.object(timeline, "SCIEZKI_UGODOWE", settlement_paths),
+                    patch.object(timeline, "SCIEZKI_BEZ_UGODY", judgment_paths),
+                ):
+                    result = oblicz_model_czasowy(p)
+                    self.assert_nested_equal(baseline, result)
+
+    def test_wiecej_fte_nie_zwieksza_backlogu_ani_opoznien(self):
+        results = [oblicz_model_czasowy({**domyslne_parametry(), "liczba_pracownikow": n}) for n in (1, 2, 3, 10)]
+        for lower, higher in zip(results, results[1:]):
+            for a, b in zip(lower["tabela_miesieczna"], higher["tabela_miesieczna"]):
+                self.assertLessEqual(b["Backlog na koniec (h)"], a["Backlog na koniec (h)"] + 1e-7)
+            for key in ("srednie_opoznienie_pojemnosci_miesiace", "maksymalne_opoznienie_pojemnosci_miesiace"):
+                self.assertLessEqual(higher["podsumowanie"][key], lower["podsumowanie"][key] + 1e-7)
+        self.assertAlmostEqual(results[-1]["podsumowanie"]["backlog_koniec_godziny"], 0)
+
+    def test_obfita_obsada_zachowuje_nominalny_przeplyw(self):
+        p = {**domyslne_parametry(), "liczba_pracownikow": 10}
+        lifecycle = oblicz_model(p)
+        result = oblicz_model_czasowy(p)
+        shares = lifecycle["udzialy_ugod"]
+        for row in result["tabela_miesieczna"]:
+            m = row["Miesiąc"]
+            self.assertAlmostEqual(row["Ugody zakończone"], 50 * shares["zakonczone_ugoda"] / 100 if m >= 7 else 0)
+            self.assertAlmostEqual(row["Zakończenia po I instancji"], 50 * shares["bez_ugody"] / 200 if m >= 10 else 0)
+            self.assertAlmostEqual(row["Zakończenia po II instancji"], 50 * shares["bez_ugody"] / 200 if m >= 16 else 0)
+            self.assertAlmostEqual(row["Przychód z ugód"], lifecycle["ogolem"]["przychod_ugody"] / 12 if m >= 7 else 0)
+            self.assertAlmostEqual(row["Przychód z wyroków"], lifecycle["ogolem"]["przychod_wyroki"] / 24 * (int(m >= 10) + int(m >= 16)))
+            self.assertAlmostEqual(row["Backlog na koniec (h)"], 0)
+        self.assertEqual(result["podsumowanie"]["maksymalne_opoznienie_pojemnosci_miesiace"], 0)
+        last_year = result["tabela_miesieczna"][-12:]
+        self.assertAlmostEqual(sum(row["Ugody zakończone"] + row["Zakończenia po I instancji"] + row["Zakończenia po II instancji"] for row in last_year), p["liczba_spraw"])
+        self.assertAlmostEqual(sum(row["Przychód razem"] for row in last_year), lifecycle["ogolem"]["przychod"])
 
 
 class TestCiaglyNaplywIUzgodnienieKohorty(unittest.TestCase):

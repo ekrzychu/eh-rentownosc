@@ -29,7 +29,7 @@ class TestGlowneWidoki(unittest.TestCase):
             {
                 "Status kontraktu",
                 "Break-even finansowy",
-                "Największy deficyt",
+                "Najniższy wynik do 60 mies.",
                 "Obsada",
                 "Backlog",
             }.issubset({metric.label for metric in app.metric})

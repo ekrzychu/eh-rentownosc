@@ -7,8 +7,8 @@ nie jest zatem uzgadniany z kosztem pracy zużytej przez pojedynczą kohortę.
 """
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
-from math import ceil, isclose
+from dataclasses import dataclass, field
+from math import ceil, fsum, isclose
 
 from config import wczytaj_defaults
 
@@ -40,7 +40,7 @@ class WorkPacket:
 
 @dataclass
 class Completion:
-    """Oczekiwany wynik ścieżki i zależny od wykonania pracy przychód."""
+    """Oczekiwana grupa spraw; postęp wszystkich etapów wyznacza zakończenia."""
 
     cohort_month: int
     path: str
@@ -48,9 +48,9 @@ class Completion:
     nominal_month: int
     cases: float
     revenue: float
-    remaining_minutes: float = 0.0
-    completed: bool = False
-    actual_month: int | None = None
+    stage_total_minutes: dict[str, float] = field(default_factory=dict)
+    stage_executed_minutes: dict[str, float] = field(default_factory=dict)
+    recognized_fraction: float = 0.0
 
 
 def domyslne_parametry_czasowe() -> dict:
@@ -261,7 +261,11 @@ def _dodaj_pakiet(
         completion_id=completion_id,
     )
     due_packets[due_month].append(packet)
-    completions[completion_id].remaining_minutes += minutes_value
+    completion = completions[completion_id]
+    completion.stage_total_minutes[stage] = (
+        completion.stage_total_minutes.get(stage, 0.0) + minutes_value
+    )
+    completion.stage_executed_minutes.setdefault(stage, 0.0)
     cohort_stats["direct_minutes"] += minutes_value
 
 
@@ -448,6 +452,59 @@ def _dodaj_kohorte(
     return cohort_stats
 
 
+def _wykonaj_prace(
+    queue: deque[list[WorkPacket]],
+    completions: list[Completion],
+    available_minutes: float,
+) -> float:
+    """FIFO między datami; równy ułamek pozostałej pracy wewnątrz daty."""
+    executed_parts = []
+    remaining_capacity = available_minutes
+    while queue and remaining_capacity > TOLERANCJA:
+        # Najstarszy miesiąc wymagalności ma pierwszeństwo przed kolejnym.
+        bucket = queue[0]
+        remaining_work = fsum(packet.minutes_remaining for packet in bucket)
+        fraction = min(remaining_capacity / remaining_work, 1.0)
+        bucket_executed = []
+        # Każdy pakiet tej samej daty dostaje proporcjonalny udział pojemności.
+        for packet in bucket:
+            executed = packet.minutes_remaining * fraction
+            packet.minutes_remaining -= executed
+            completion = completions[packet.completion_id]
+            completion.stage_executed_minutes[packet.stage] += executed
+            bucket_executed.append(executed)
+        executed = fsum(bucket_executed)
+        executed_parts.append(executed)
+        remaining_capacity = max(remaining_capacity - executed, 0.0)
+        if fraction == 1.0:
+            queue.popleft()
+        else:
+            break
+    return fsum(executed_parts)
+
+
+def _przyrost_zakonczenia(completion: Completion, month: int) -> float:
+    """Zwraca nowy ułamek grupy, który przeszedł wszystkie wymagane etapy.
+
+    Ułamki opisują w pełni zakończone oczekiwane sprawy, a nie częściową zapłatę
+    za pojedynczą niezakończoną sprawę. Termin nominalny nadal blokuje wynik.
+    """
+    if month < completion.nominal_month or completion.recognized_fraction >= 1.0:
+        return 0.0
+    progress = min(
+        (
+            1.0 if isclose(completion.stage_executed_minutes[stage], total, rel_tol=1e-12, abs_tol=0.0)
+            else max(0.0, min(completion.stage_executed_minutes[stage] / total, 1.0))
+            for stage, total in completion.stage_total_minutes.items()
+            if total > 0.0
+        ),
+        default=1.0,
+    )
+    increment = max(progress - completion.recognized_fraction, 0.0)
+    completion.recognized_fraction += increment
+    return increment
+
+
 def _status_break_even(
     break_even: dict, capacity_status: str, steady_monthly_result: float | None
 ) -> str:
@@ -539,7 +596,7 @@ def oblicz_model_czasowy(
     monthly_inflow = miesieczny_naplyw(lifecycle["ogolem"]["liczba_spraw"])
     due_packets: dict[int, list[WorkPacket]] = defaultdict(list)
     completions: list[Completion] = []
-    queue: deque[WorkPacket] = deque()
+    queue: deque[list[WorkPacket]] = deque()
     payments: dict[int, dict[str, float]] = defaultdict(
         lambda: {"ugoda": 0.0, "wyrok": 0.0}
     )
@@ -562,54 +619,41 @@ def oblicz_model_czasowy(
         cumulative_inflow += monthly_inflow
 
         new_packets = due_packets.pop(month, [])
-        backlog_start_minutes = sum(packet.minutes_remaining for packet in queue)
-        new_due_minutes = sum(packet.minutes_remaining for packet in new_packets)
+        backlog_start_minutes = fsum(
+            packet.minutes_remaining for bucket in queue for packet in bucket
+        )
+        new_due_minutes = fsum(packet.minutes_remaining for packet in new_packets)
         total_available_work_minutes = backlog_start_minutes + new_due_minutes
         total_due_minutes += new_due_minutes
-        queue.extend(new_packets)
+        if new_packets:
+            queue.append(new_packets)
         direct_capacity = capacity["pojemnosc_na_sprawy_minuty"]
-        remaining_capacity = direct_capacity
-        executed_minutes = 0.0
-        while queue and remaining_capacity > TOLERANCJA:
-            packet = queue[0]
-            executed = min(packet.minutes_remaining, remaining_capacity)
-            packet.minutes_remaining -= executed
-            completions[packet.completion_id].remaining_minutes -= executed
-            executed_minutes += executed
-            remaining_capacity -= executed
-            if packet.minutes_remaining <= TOLERANCJA:
-                queue.popleft()
-            else:
-                break
+        executed_minutes = _wykonaj_prace(queue, completions, direct_capacity)
         total_executed_minutes += executed_minutes
 
         settlements = 0.0
         first_instance_endings = 0.0
         second_instance_endings = 0.0
         for completion in completions:
-            if (
-                not completion.completed
-                and completion.nominal_month <= month
-                and completion.remaining_minutes <= TOLERANCJA
-            ):
-                completion.completed = True
-                completion.actual_month = month
-                cumulative_completed += completion.cases
+            increment = _przyrost_zakonczenia(completion, month)
+            if increment > 0.0:
+                completed_cases = completion.cases * increment
+                cumulative_completed += completed_cases
                 capacity_delay = month - completion.nominal_month
-                completed_delay_weight += capacity_delay * completion.cases
-                completed_cases_for_delay += completion.cases
+                completed_delay_weight += capacity_delay * completed_cases
+                completed_cases_for_delay += completed_cases
                 maximum_capacity_delay = max(maximum_capacity_delay, capacity_delay)
                 if completion.outcome == "ugoda":
-                    settlements += completion.cases
+                    settlements += completed_cases
                     revenue_type = "ugoda"
                 elif completion.outcome == "i":
-                    first_instance_endings += completion.cases
+                    first_instance_endings += completed_cases
                     revenue_type = "wyrok"
                 else:
-                    second_instance_endings += completion.cases
+                    second_instance_endings += completed_cases
                     revenue_type = "wyrok"
                 payment_month = month + czas["opoznienie_platnosci_miesiace"]
-                payments[payment_month][revenue_type] += completion.revenue
+                payments[payment_month][revenue_type] += completion.revenue * increment
 
         settlement_revenue = payments[month]["ugoda"]
         judgment_revenue = payments[month]["wyrok"]
@@ -619,8 +663,8 @@ def oblicz_model_czasowy(
         operation_cost = capacity["miesieczny_koszt_obsady"]
         monthly_result = revenue - operation_cost
         cumulative_result += monthly_result
-        backlog_end_minutes_month = sum(
-            packet.minutes_remaining for packet in queue
+        backlog_end_minutes_month = fsum(
+            packet.minutes_remaining for bucket in queue for packet in bucket
         )
         if not isclose(
             backlog_start_minutes + new_due_minutes - executed_minutes,
@@ -862,7 +906,7 @@ def oblicz_model_czasowy(
         and long_run_or_recent_result < -TOLERANCJA
     )
     current_capacity_delay = (
-        max(horizon - queue[0].due_month, 0) if queue else 0
+        max(horizon - queue[0][0].due_month, 0) if queue else 0
     )
     lifecycle_resource_hours = lifecycle["laczne_godziny_zasobu_lifecycle"]
     supplied_annual_hours = capacity["pojemnosc_brutto_minuty"] / 60 * 12
