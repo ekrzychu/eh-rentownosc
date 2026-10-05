@@ -141,9 +141,10 @@ def _renderuj_strukture(wyniki: dict) -> None:
 
 
 def _renderuj_dzwignie(parametry: dict) -> list[dict]:
-    st.subheader("Najważniejsze dźwignie")
+    st.subheader("Wpływ zmiany parametrów o 10%")
     st.caption(
-        "Każda zmiana jest liczona osobno. Wpływów nie należy sumować bez "
+        "Każdy parametr zmieniamy osobno o około 10%. Wyniki nie są rankingiem "
+        "trudności wdrożenia zmian. Wpływów nie należy sumować bez "
         "ponownego przeliczenia całego scenariusza."
     )
     wrazliwosc = analiza_wrazliwosci(parametry, zmiana_percent=10.0)

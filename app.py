@@ -3,6 +3,7 @@
 import streamlit as st
 
 from model import domyslne_parametry, oblicz_model
+from timeline import GODZINY_ETATU_MIESIECZNIE
 from ui_case import renderuj_ekonomike_sprawy
 from ui_timeline import renderuj_widok_czasowy
 
@@ -104,7 +105,10 @@ with st.sidebar:
         liczba_pracownikow = st.number_input(
             "Liczba pracowników", min_value=0, value=int(domyslne["liczba_pracownikow"]), step=1,
         )
-        st.caption("Ekonomika sprawy wycenia zużyty czas zasobu. Kontrakt w czasie wycenia pełne 167 h każdego FTE miesięcznie.")
+        st.caption(
+            "Ekonomika sprawy wycenia zużyty czas zasobu. Kontrakt w czasie wycenia "
+            f"pełne {GODZINY_ETATU_MIESIECZNIE:g} h każdego FTE miesięcznie."
+        )
 
     with st.expander("Czas pracy"):
         st.caption("Czynności wspólne")

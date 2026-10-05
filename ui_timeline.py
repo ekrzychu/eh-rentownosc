@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from timeline import (
+    GODZINY_ETATU_MIESIECZNIE,
     domyslne_parametry_czasowe,
     oblicz_model_czasowy,
     porownaj_obsade,
@@ -185,7 +186,7 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
     )
     st.caption(
         "Pracownicy są zatrudnieni na pełnym etacie, dlatego każdy kosztuje pełne "
-        "167 godzin miesięcznie niezależnie od wykorzystania."
+        f"{GODZINY_ETATU_MIESIECZNIE:g} godzin miesięcznie niezależnie od wykorzystania."
     )
 
     defaults = domyslne_parametry_czasowe()
@@ -306,6 +307,12 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
 
     components = kpi["status_kontraktu_skladniki"]
     minimum_result = components["wynik_miesieczny_minimalnej_stabilnej_obsady"]
+    current_result = components["wynik_miesieczny_biezacej_obsady"]
+    current_result_text = (
+        _kwota(current_result) + "/mies."
+        if current_result is not None
+        else "niedostępny — niewystarczająca obsada"
+    )
     st.caption(
         "Składniki statusu · ekonomika sprawy: "
         f"{'dodatnia' if components['ekonomika_sprawy_dodatnia'] else 'niedodatnia'} · "
@@ -313,7 +320,7 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
         "wynik przy minimalnej obsadzie: "
         f"{_kwota(minimum_result) + '/mies.' if minimum_result is not None else 'brak'} · "
         "wynik bieżącej obsady: "
-        f"{_kwota(components['wynik_miesieczny_biezacej_obsady'])}/mies."
+        f"{current_result_text}"
     )
 
     loss_reasons = [
@@ -465,10 +472,11 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
             st.write(
                 f"Wynik w stanie stabilnym: **{summary['status_stanu_stabilnego']}**"
             )
-        st.write(
-            "Docelowy wynik miesięczny bieżącej obsady: "
-            f"**{_kwota(kpi['wynik_miesieczny_docelowy'])}/mies.**"
-        )
+        if current_result is not None:
+            st.write(
+                "Dojrzały wynik miesięczny bieżącej obsady: "
+                f"**{_kwota(current_result)}/mies.**"
+            )
 
         balance = diagnosis["bilans_pojemnosci_rocznie_godziny"]
         balance_label = (

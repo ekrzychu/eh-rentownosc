@@ -1,0 +1,76 @@
+[metadata]
+"version" = "2026-10"
+"description" = "Aktualne rzeczywiste założenia referencyjne modelu EH"
+
+[portfolio]
+"liczba_spraw" = 600
+"prog_wps" = 10000
+"niski_wps" = 3110
+"wysoki_wps" = 37631
+"wysoki_wps_procent" = 79.0
+
+[rodzaje_spraw]
+"P1_percent" = 25.0
+"P2_percent" = 58.0
+"P3_percent" = 17.0
+
+[przychod]
+"srednia_kwota_ugody_percent" = 70.0
+"srednia_kwota_wyroku_percent" = 95.0
+"podatek_dochodowy_percent" = 0.0
+
+[ugody]
+"kategoryczna_odmowa_percent" = 15.0
+"automatyczne_ramy_percent" = 30.0
+"skutecznosc_automatycznych_ram_percent" = 50.0
+"szansa_na_ugode_percent" = 50.0
+"zawarte_ugody_percent" = 50.0
+
+[ii_instancja]
+"udzial_percent" = 50.0
+"obsluga_minuty" = 210
+
+[koszty]
+"narzut_kosztow_ogolnych_na_godzine" = 36.0
+"wynagrodzenie_pracownika_na_godzine" = 59.88
+
+[organizacja]
+"liczba_pracownikow" = 2
+"godziny_etatu_miesiecznie" = 167.0
+"minuty_dnia_pracy" = 480
+
+[czas_dodatkowy]
+"P1" = 90
+"P2" = 150
+"P3" = 240
+
+[czynnosci_wspolne]
+"Analiza sprawy i kompletowanie załącznika" = 30
+
+[czynnosci_procesowe]
+"Wniosek o wideo" = 10
+"Duplika" = 90
+"Pytania do świadków" = 60
+"Rozprawa" = 60
+"Notatka z rozprawy" = 10
+"Wyrok" = 20
+
+[czynnosci_ugodowe]
+"Oferta ugody" = 15
+"Projekt ugody" = 20
+"Podpisanie ugody" = 20
+
+[pozostale_czasy]
+"analiza_mozliwosci_ugody" = 30
+
+[czynnosci_dzienne]
+"Obsługa skrzynki ugody EH" = 30
+"Komunikacja z EH i zlecanie opłat w SOSS" = 30
+"Umieszczanie dokumentów w SOSS" = 30
+
+[timeline]
+"miesiace_do_ugody" = 6
+"miesiace_do_wyroku_i" = 9
+"miesiace_wyrok_i_do_ii" = 6
+"opoznienie_platnosci_miesiace" = 0
+"horyzont_miesiace" = 60

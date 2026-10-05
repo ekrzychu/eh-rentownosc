@@ -1,8 +1,12 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import config
 
 from model import (
     MINUTY_DNIA_PRACY,
-    alokuj_liczby_z_procentow,
     domyslne_parametry,
     oblicz_czynnosci_dzienne_lifecycle,
     oblicz_czasy_sciezek_ugod,
@@ -10,7 +14,6 @@ from model import (
     oblicz_model,
     oblicz_oczekiwany_podzial_spraw,
     oblicz_podatek_dochodowy,
-    oblicz_podzial_spraw,
     oblicz_prog_czasu,
     oblicz_prog_kosztu_stalego,
     oblicz_prog_wynagrodzenia_pracownika,
@@ -21,34 +24,72 @@ from model import (
 )
 
 
-class TestAlokacjaSpraw(unittest.TestCase):
-    def test_domyslny_podzial(self):
-        alokacja = alokuj_liczby_z_procentow(600, {"P1": 25, "P2": 58, "P3": 17})
-        self.assertEqual(alokacja, {"P1": 150, "P2": 348, "P3": 102})
+class TestKonfiguracja(unittest.TestCase):
+    def test_slowniki_domyslne_sa_izolowane(self):
+        pierwsze = domyslne_parametry()
+        oczekiwane = domyslne_parametry()
+        for klucz, wartosc in pierwsze.items():
+            if isinstance(wartosc, dict):
+                wartosc[next(iter(wartosc))] = -1
+            else:
+                pierwsze[klucz] = -1
+        self.assertEqual(domyslne_parametry(), oczekiwane)
+        dane = config.wczytaj_defaults()
+        dane["organizacja"]["liczba_pracownikow"] = -1
+        self.assertEqual(config.wczytaj_defaults()["organizacja"]["liczba_pracownikow"], oczekiwane["liczba_pracownikow"])
 
-    def test_domyslny_podzial_wps(self):
-        podzial = oblicz_podzial_spraw(600, {"P1": 25, "P2": 58, "P3": 17}, 80)
-        self.assertEqual(podzial["P1"], {"wysoki_wps": 120, "niski_wps": 30})
-        self.assertEqual(podzial["P2"], {"wysoki_wps": 278, "niski_wps": 70})
-        self.assertEqual(podzial["P3"], {"wysoki_wps": 82, "niski_wps": 20})
+    def test_konfiguracja_nie_zalezy_od_katalogu_roboczego(self):
+        import subprocess
+        import sys
+        with TemporaryDirectory() as katalog:
+            wynik = subprocess.run(
+                [sys.executable, "-c",
+                 f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "
+                 "from model import domyslne_parametry; print(domyslne_parametry()['liczba_spraw'])"],
+                cwd=katalog, capture_output=True, text=True, check=True,
+            )
+        self.assertEqual(int(wynik.stdout), config.wczytaj_defaults()["portfolio"]["liczba_spraw"])
 
-    def test_globalny_cel_wysokiego_wps_jest_zachowany(self):
-        podzial = oblicz_podzial_spraw(600, {"P1": 25, "P2": 58, "P3": 17}, 79)
-        self.assertEqual(sum(x["wysoki_wps"] for x in podzial.values()), 474)
-        self.assertEqual(sum(sum(x.values()) for x in podzial.values()), 600)
-        self.assertEqual(
-            podzial,
-            {
-                "P1": {"wysoki_wps": 118, "niski_wps": 32},
-                "P2": {"wysoki_wps": 275, "niski_wps": 73},
-                "P3": {"wysoki_wps": 81, "niski_wps": 21},
-            },
-        )
+    def test_parametry_pochodza_z_rzeczywistego_toml(self):
+        tekst = config.DEFAULTS_PATH.read_text()
+        with TemporaryDirectory() as katalog:
+            plik = Path(katalog) / "defaults.toml"
+            plik.write_text(tekst.replace('"liczba_spraw" = 600', '"liczba_spraw" = 601'))
+            with patch.object(config, "DEFAULTS_PATH", plik):
+                self.assertEqual(domyslne_parametry()["liczba_spraw"], 601)
 
-    def test_niewygodna_liczba_spraw_sumuje_sie_poprawnie(self):
-        alokacja = alokuj_liczby_z_procentow(601, {"P1": 25, "P2": 58, "P3": 17})
-        self.assertEqual(sum(alokacja.values()), 601)
+    def test_bledy_konfiguracji_sa_jawne(self):
+        tekst = config.DEFAULTS_PATH.read_text()
+        with TemporaryDirectory() as katalog:
+            plik = Path(katalog) / "defaults.toml"
+            with patch.object(config, "DEFAULTS_PATH", plik):
+                with self.assertRaisesRegex(ValueError, "Nie można wczytać konfiguracji"):
+                    config.wczytaj_defaults()
+                for zawartosc, komunikat in (
+                    ("[", "Nie można wczytać konfiguracji"),
+                    (tekst.replace('"liczba_spraw" = 600\n', ''), "brak portfolio.liczba_spraw"),
+                    (tekst.replace('"liczba_spraw" = 600', '"liczba_spraw" = true'), "niepoprawna wartość portfolio.liczba_spraw"),
+                    (tekst.replace('"godziny_etatu_miesiecznie" = 167.0', '"godziny_etatu_miesiecznie" = 0'), "niepoprawna wartość organizacja.godziny_etatu_miesiecznie"),
+                ):
+                    with self.subTest(komunikat=komunikat):
+                        plik.write_text(zawartosc)
+                        with self.assertRaisesRegex(ValueError, komunikat):
+                            config.wczytaj_defaults()
 
+    def test_regresja_zaakceptowanej_ekonomiki_lifecycle(self):
+        wynik = oblicz_model(domyslne_parametry())
+        for klucz, oczekiwane in {
+            "przychod": 451963.254,
+            "koszt_calkowity": 561252.0184615385,
+            "wynik_przed_podatkiem": -109288.7644615384,
+            "marza_przed_podatkiem": -24.18089601185551,
+        }.items():
+            self.assertAlmostEqual(wynik["ogolem"][klucz], oczekiwane)
+        self.assertAlmostEqual(wynik["bezposrednie_minuty_spraw"], 285367.5)
+        self.assertAlmostEqual(wynik["laczne_godziny_zasobu_lifecycle"] / domyslne_parametry()["liczba_spraw"], 9.756153846153847)
+
+
+class TestOczekiwanyPodzialSpraw(unittest.TestCase):
     def test_oczekiwany_podzial_nie_zaokragla_ekonomii(self):
         podzial = oblicz_oczekiwany_podzial_spraw(
             600, {"P1": 25.3, "P2": 57.7, "P3": 17.0}, 79.0
@@ -665,6 +706,11 @@ class TestModelFinansowy(unittest.TestCase):
             lambda x: x["ogolem"]["wynik_przed_podatkiem"],
         ):
             self.assertAlmostEqual(getter(wiekszy), 2 * getter(mniejszy))
+        for klucz in ("przychod", "koszt_calkowity", "wynik_przed_podatkiem"):
+            self.assertAlmostEqual(
+                wiekszy["ogolem"][klucz] / 1200,
+                mniejszy["ogolem"][klucz] / 600,
+            )
         self.assertAlmostEqual(
             wiekszy["ogolem"]["marza_przed_podatkiem"],
             mniejszy["ogolem"]["marza_przed_podatkiem"],

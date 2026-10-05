@@ -2,7 +2,7 @@
 
 from math import ceil, floor
 
-from model import oblicz_model
+from model import MINUTY_DNIA_PRACY, oblicz_model
 
 
 KOPIOWANE_SLOWNIKI = (
@@ -366,12 +366,8 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
             "Kategoria": definicja["kategoria"], "Obecnie": obecnie,
             "Jednostka": definicja["jednostka"],
             "Zmiana analizowana (%)": zmiana_percent,
-            "Zmiana porównawcza": korzystny["zmiana"],
-            "Wartość po zmianie": korzystny["wartosc"],
-            "Wynik bazowy": bazowy_wynik, "Wynik po zmianie": korzystny["wynik_po_podatku"],
-            "Wpływ na wynik": korzystny["wplyw"],
-            "Marża bazowa": bazowa_marza, "Marża po zmianie": korzystny["marza_po_podatku"],
-            "Wpływ na marżę": korzystny["wplyw_marza"],
+            "Wynik bazowy": bazowy_wynik, "Wynik po korzystnej zmianie": korzystny["wynik_po_podatku"],
+            "Marża bazowa": bazowa_marza,
             "Kierunek poprawy": "wzrost" if korzystny["zmiana"] > 0 else "spadek",
             "Korzystna zmiana": korzystny["zmiana"],
             "Korzystna zmiana (%)": korzystny["zmiana_percent"],
@@ -386,15 +382,6 @@ def analiza_wrazliwosci(parametry: dict, zmiana_percent: float = 10.0) -> list[d
             "Wynik po niekorzystnej zmianie": niekorzystny["wynik_po_podatku"],
             "Marża po niekorzystnej zmianie": niekorzystny["marza_po_podatku"],
             "Wpływ niekorzystny na marżę": niekorzystny["wplyw_marza"],
-            # Aliasy utrzymują zgodność dotychczasowego API analitycznego.
-            "Wynik obecny": bazowy_wynik, "Marża obecna": bazowa_marza,
-            "Zmiana testowa": korzystny["zmiana"],
-            "Wartość po poprawie": korzystny["wartosc"],
-            "Wpływ na wynik roczny": korzystny["wplyw"],
-            "Wynik po poprawie": korzystny["wynik_po_podatku"],
-            "Marża po poprawie": korzystny["marza_po_podatku"],
-            "Wynik po pogorszeniu": niekorzystny["wynik_po_podatku"],
-            "Marża po pogorszeniu": niekorzystny["marza_po_podatku"],
         })
     return sorted(
         wiersze,
@@ -430,13 +417,13 @@ def ekonomika_ugod(parametry: dict) -> dict:
         + parametry["wynagrodzenie_pracownika_na_godzine"]
     )
     dzienne_minuty = sum(parametry["codzienne_czynnosci"].values())
-    produktywne_minuty = 480 - dzienne_minuty
+    produktywne_minuty = MINUTY_DNIA_PRACY - dzienne_minuty
     if produktywne_minuty <= 0:
         raise ValueError(
             "Czynności dzienne zużywają cały dzień pracy; "
             "nie można wycenić oszczędności czasu spraw."
         )
-    mnoznik_kosztu_lifecycle = 480 / produktywne_minuty
+    mnoznik_kosztu_lifecycle = MINUTY_DNIA_PRACY / produktywne_minuty
     nazwy = {
         "kategoryczna_odmowa": "Kategoryczna odmowa",
         "automatyczne_ramy_ugoda": "Automatyczne ramy → ugoda",
@@ -496,24 +483,6 @@ def ekonomika_ugod(parametry: dict) -> dict:
         wyniki_poprawy = oblicz_model(ustaw_parametr(parametry, "zawarte_ugody", nowa))
         wartosc_poprawy.append({"Zmiana": nowa - parametry["zawarte_ugody_percent"], "Wpływ na wynik kohorty": wyniki_poprawy["ogolem"]["wynik_po_podatku"] - bazowy_wynik})
 
-    wartosc_poprawy_automatycznych_ram = []
-    for punkty in (1, 5, 10):
-        obecna = parametry["skutecznosc_automatycznych_ram_percent"]
-        nowa = min(100.0, obecna + punkty)
-        wyniki_poprawy = oblicz_model(
-            ustaw_parametr(
-                parametry, "skutecznosc_automatycznych_ram", nowa
-            )
-        )
-        wartosc_poprawy_automatycznych_ram.append(
-            {
-                "Zmiana": nowa - obecna,
-                "Wpływ na wynik kohorty": (
-                    wyniki_poprawy["ogolem"]["wynik_po_podatku"] - bazowy_wynik
-                ),
-            }
-        )
-
     przychod_wedlug_zakonczenia = [
         {"Sposób zakończenia": "Sprawy zakończone ugodą", "Oczekiwany udział": udzialy["zakonczone_ugoda"], "Oczekiwana liczba spraw": liczba_spraw * udzialy["zakonczone_ugoda"] / 100, "Oczekiwany przychód": wyniki["ogolem"]["przychod_ugody"]},
         {"Sposób zakończenia": "Sprawy zakończone wyrokiem", "Oczekiwany udział": udzialy["bez_ugody"], "Oczekiwana liczba spraw": liczba_spraw * udzialy["bez_ugody"] / 100, "Oczekiwany przychód": wyniki["ogolem"]["przychod_wyroki"]},
@@ -531,9 +500,6 @@ def ekonomika_ugod(parametry: dict) -> dict:
             else parametry["zawarte_ugody_percent"] - minimalna_skutecznosc
         ),
         "wartosc_poprawy": wartosc_poprawy,
-        "wartosc_poprawy_automatycznych_ram": (
-            wartosc_poprawy_automatycznych_ram
-        ),
         "strategia_wplyw_pln": bazowy_wynik - wynik_bez_prob,
         "strategia_wplyw_godzin": (
             bez_prob["laczne_godziny_zasobu_lifecycle"]

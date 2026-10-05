@@ -1,57 +1,15 @@
-"""Deterministyczny model rentowności portfela spraw."""
+"""Ekonomika pełnego lifecycle kohorty, niezależna od obsady i kalendarza.
 
-from math import floor, isfinite
+Pojemność, kolejka, opóźnienia przychodu i koszt utrzymywanej obsady należą
+do timeline.py. Ten model wycenia wyłącznie zasób zużyty przez kohortę.
+"""
+
+from math import isfinite
+
+from config import parametry_modelu, wczytaj_defaults
 
 
-LICZBA_SPRAW = 600
-PROG_WPS = 10_000
-NISKI_WPS = 3_110
-WYSOKI_WPS = 37_631
-KOSZT_STALY_NA_GODZINE = 36.00
-WYNAGRODZENIE_PRACOWNIKA_NA_GODZINE = 59.88
-GODZINY_ETATU_MIESIECZNIE = 167.0
-
-WSPOLNE_CZYNNOSCI = {
-    "Analiza sprawy i kompletowanie załącznika": 30,
-}
-PROCESOWE_CZYNNOSCI = {
-    "Wniosek o wideo": 10,
-    "Duplika": 90,
-    "Pytania do świadków": 60,
-    "Rozprawa": 60,
-    "Notatka z rozprawy": 10,
-    "Wyrok": 20,
-}
-UGODOWE_CZYNNOSCI = {
-    "Oferta ugody": 15,
-    "Projekt ugody": 20,
-    "Podpisanie ugody": 20,
-}
-ANALIZA_MOZLIWOSCI_UGODY = 30
-CODZIENNE_CZYNNOSCI = {
-    "Obsługa skrzynki ugody EH": 30,
-    "Komunikacja z EH i zlecanie opłat w SOSS": 30,
-    "Umieszczanie dokumentów w SOSS": 30,
-}
-
-DODATKOWE_MINUTY = {"P1": 90, "P2": 150, "P3": 240}
-P1_PERCENT = 25.0
-P2_PERCENT = 58.0
-P3_PERCENT = 17.0
-HIGH_WPS_PERCENT = 79.0
-SREDNIA_KWOTA_UGODY_PERCENT = 70.0
-SREDNIA_KWOTA_WYROKU_PERCENT = 95.0
-PODATEK_DOCHODOWY_PERCENT = 0.0
-
-KATEGORYCZNA_ODMOWA_PERCENT = 15.0
-AUTOMATYCZNE_RAMY_PERCENT = 30.0
-SKUTECZNOSC_AUTOMATYCZNYCH_RAM_PERCENT = 50.0
-SZANSA_NA_UGODE_PERCENT = 50.0
-ZAWARTE_UGODY_PERCENT = 50.0
-UDZIAL_II_INSTANCJI_PERCENT = 50.0
-OBSLUGA_II_INSTANCJI_MINUTY = 210
-LICZBA_PRACOWNIKOW = 2
-MINUTY_DNIA_PRACY = 480
+MINUTY_DNIA_PRACY = wczytaj_defaults()["organizacja"]["minuty_dnia_pracy"]
 
 KATEGORIE_SPRAW = {
     "P1": "Koszty naprawy, uprzednie uzgodnienie kosztów",
@@ -71,35 +29,7 @@ SCIEZKI_UGODOWE_LISCIE = SCIEZKI_UGODOWE + SCIEZKI_BEZ_UGODY
 
 def domyslne_parametry() -> dict:
     """Zwraca kopię wszystkich edytowalnych parametrów modelu."""
-    return {
-        "liczba_spraw": LICZBA_SPRAW,
-        "prog_wps": PROG_WPS,
-        "niski_wps": NISKI_WPS,
-        "wysoki_wps": WYSOKI_WPS,
-        "koszt_staly_na_godzine": KOSZT_STALY_NA_GODZINE,
-        "wynagrodzenie_pracownika_na_godzine": WYNAGRODZENIE_PRACOWNIKA_NA_GODZINE,
-        "wspolne_czynnosci": WSPOLNE_CZYNNOSCI.copy(),
-        "procesowe_czynnosci": PROCESOWE_CZYNNOSCI.copy(),
-        "ugodowe_czynnosci": UGODOWE_CZYNNOSCI.copy(),
-        "analiza_mozliwosci_ugody": ANALIZA_MOZLIWOSCI_UGODY,
-        "codzienne_czynnosci": CODZIENNE_CZYNNOSCI.copy(),
-        "dodatkowe_minuty": DODATKOWE_MINUTY.copy(),
-        "udzialy_rodzajow": {"P1": P1_PERCENT, "P2": P2_PERCENT, "P3": P3_PERCENT},
-        "wysoki_wps_procent": HIGH_WPS_PERCENT,
-        "srednia_kwota_ugody_percent": SREDNIA_KWOTA_UGODY_PERCENT,
-        "srednia_kwota_wyroku_percent": SREDNIA_KWOTA_WYROKU_PERCENT,
-        "podatek_dochodowy_percent": PODATEK_DOCHODOWY_PERCENT,
-        "kategoryczna_odmowa_percent": KATEGORYCZNA_ODMOWA_PERCENT,
-        "automatyczne_ramy_percent": AUTOMATYCZNE_RAMY_PERCENT,
-        "skutecznosc_automatycznych_ram_percent": (
-            SKUTECZNOSC_AUTOMATYCZNYCH_RAM_PERCENT
-        ),
-        "szansa_na_ugode_percent": SZANSA_NA_UGODE_PERCENT,
-        "zawarte_ugody_percent": ZAWARTE_UGODY_PERCENT,
-        "udzial_ii_instancji_percent": UDZIAL_II_INSTANCJI_PERCENT,
-        "obsluga_ii_instancji_minuty": OBSLUGA_II_INSTANCJI_MINUTY,
-        "liczba_pracownikow": LICZBA_PRACOWNIKOW,
-    }
+    return parametry_modelu()
 
 
 def waliduj_parametry(parametry: dict) -> None:
@@ -166,7 +96,7 @@ def waliduj_parametry(parametry: dict) -> None:
     if set(parametry["dodatkowe_minuty"]) != oczekiwane_rodzaje:
         raise ValueError("Dodatkowe minuty muszą zawierać dokładnie P1, P2 i P3.")
     if sum(parametry["codzienne_czynnosci"].values()) > MINUTY_DNIA_PRACY:
-        raise ValueError("Czynności dzienne nie mogą przekraczać 480 minut dziennie.")
+        raise ValueError(f"Czynności dzienne nie mogą przekraczać {MINUTY_DNIA_PRACY} minut dziennie.")
     if any(
         not isinstance(wartosc, (int, float))
         or isinstance(wartosc, bool)
@@ -190,9 +120,11 @@ def oblicz_udzialy_ugod(
     automatyczne_ramy_percent: float,
     skutecznosc_automatycznych_ram_percent: float,
     szansa_na_ugode_percent: float,
-    zawarte_ugody_percent: float = ZAWARTE_UGODY_PERCENT,
+    zawarte_ugody_percent: float | None = None,
 ) -> dict[str, float]:
     """Oblicza sześć rozłącznych wyników drzewa ugodowego."""
+    if zawarte_ugody_percent is None:
+        zawarte_ugody_percent = domyslne_parametry()["zawarte_ugody_percent"]
     wartosci = (
         kategoryczna_odmowa_percent,
         automatyczne_ramy_percent,
@@ -371,63 +303,6 @@ def oblicz_czynnosci_dzienne_lifecycle(
         "laczne_minuty_zasobu_lifecycle": laczne_minuty_zasobu,
         "laczne_godziny_zasobu_lifecycle": laczne_minuty_zasobu / 60,
     }
-
-
-def alokuj_liczby_z_procentow(liczba_spraw: int, udzialy: dict[str, float]) -> dict[str, int]:
-    """Alokuje całkowitą liczbę spraw metodą największych reszt."""
-    if liczba_spraw < 0:
-        raise ValueError("Liczba spraw nie może być ujemna.")
-    if abs(sum(udzialy.values()) - 100) > 1e-9:
-        raise ValueError("Udziały rodzajów spraw muszą sumować się do 100%.")
-
-    wartosci_dokladne = {nazwa: liczba_spraw * udzial / 100 for nazwa, udzial in udzialy.items()}
-    alokacja = {nazwa: floor(wartosc) for nazwa, wartosc in wartosci_dokladne.items()}
-    pozostale = liczba_spraw - sum(alokacja.values())
-    kolejnosc = sorted(udzialy, key=lambda nazwa: -(wartosci_dokladne[nazwa] - alokacja[nazwa]))
-    for nazwa in kolejnosc[:pozostale]:
-        alokacja[nazwa] += 1
-    return alokacja
-
-
-def zaokraglij_polowki_w_gore(wartosc: float) -> int:
-    """Zaokrągla dodatnią wartość według zwyczajowej zasady .5 w górę."""
-    return floor(wartosc + 0.5)
-
-
-def oblicz_podzial_spraw(
-    liczba_spraw: int, udzialy_rodzajow: dict[str, float], wysoki_wps_procent: float
-) -> dict[str, dict[str, int]]:
-    """Dzieli portfel tak, by globalna liczba wysokiego WPS była zachowana."""
-    if not 0 <= wysoki_wps_procent <= 100:
-        raise ValueError("Udział wysokiego WPS musi mieścić się w zakresie 0–100%.")
-    liczby_rodzajow = alokuj_liczby_z_procentow(liczba_spraw, udzialy_rodzajow)
-    cel_wysokiego_wps = zaokraglij_polowki_w_gore(
-        liczba_spraw * wysoki_wps_procent / 100
-    )
-    dokladne = {
-        rodzaj: liczba * wysoki_wps_procent / 100
-        for rodzaj, liczba in liczby_rodzajow.items()
-    }
-    wysokie = {rodzaj: floor(wartosc) for rodzaj, wartosc in dokladne.items()}
-    pozostale = cel_wysokiego_wps - sum(wysokie.values())
-    kolejnosc = sorted(
-        liczby_rodzajow,
-        key=lambda rodzaj: (-(dokladne[rodzaj] - wysokie[rodzaj]), rodzaj),
-    )
-    for rodzaj in kolejnosc:
-        if pozostale <= 0:
-            break
-        if wysokie[rodzaj] < liczby_rodzajow[rodzaj]:
-            wysokie[rodzaj] += 1
-            pozostale -= 1
-    podzial = {
-        rodzaj: {
-            "wysoki_wps": wysokie[rodzaj],
-            "niski_wps": liczba - wysokie[rodzaj],
-        }
-        for rodzaj, liczba in liczby_rodzajow.items()
-    }
-    return podzial
 
 
 def oblicz_oczekiwany_podzial_spraw(
@@ -627,9 +502,6 @@ def oblicz_model(parametry: dict | None = None) -> dict:
     podzial_spraw = oblicz_oczekiwany_podzial_spraw(
         liczba_spraw, parametry["udzialy_rodzajow"], parametry["wysoki_wps_procent"]
     )
-    podzial_spraw_wyswietlanie = oblicz_podzial_spraw(
-        liczba_spraw, parametry["udzialy_rodzajow"], parametry["wysoki_wps_procent"]
-    )
     bezposrednie_minuty_spraw = sum(
         sum(podzial.values())
         * (srednie_minuty_sciezki + parametry["dodatkowe_minuty"][rodzaj])
@@ -708,7 +580,6 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         "rodzaje": rodzaje,
         "grupy": grupy,
         "podzial_spraw": podzial_spraw,
-        "podzial_spraw_wyswietlanie": podzial_spraw_wyswietlanie,
         "udzialy_ugod": udzialy_ugod,
         "czasy_sciezek_ugod": czasy_sciezek,
         "czasy_ii_instancji_sciezek": czasy_ii_instancji_sciezek,

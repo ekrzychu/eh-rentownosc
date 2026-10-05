@@ -4,7 +4,7 @@ A local Streamlit application for analysing the profitability of EH cases.
 
 ## Requirements
 
-- Python 3
+- Python 3.11+
 - `pip`
 - A terminal / shell
 - The project files, including `app.py` and `requirements.txt`
@@ -277,3 +277,10 @@ oznacza brak bufora pojemności.
 Obecna wersja nie modeluje terminów płatności podatku, podwyżek wynagrodzeń i
 inflacji, sezonowości napływu, rzeczywistych historycznych rozkładów czasu,
 świąt ani zmiennej długości miesięcy oraz zróżnicowanych ról pracowników.
+
+## Założenia referencyjne
+
+`defaults.toml` jest jedynym źródłem aktualnych empirycznych i organizacyjnych
+założeń referencyjnych, w tym terminów modelu czasowego. Wzory pozostają w Pythonie.
+Zmiana wartości domyślnej nie wymaga zmiany kodu modelu. Założenia należy
+aktualizować świadomie, gdy dostępne są lepsze dane rzeczywiste.

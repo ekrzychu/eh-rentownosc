@@ -10,8 +10,9 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from math import ceil, isclose
 
+from config import wczytaj_defaults
+
 from model import (
-    GODZINY_ETATU_MIESIECZNIE,
     MINUTY_DNIA_PRACY,
     SCIEZKI_BEZ_UGODY,
     SCIEZKI_UGODOWE,
@@ -21,6 +22,7 @@ from model import (
 )
 
 
+GODZINY_ETATU_MIESIECZNIE = wczytaj_defaults()["organizacja"]["godziny_etatu_miesiecznie"]
 TOLERANCJA = 1e-8
 
 
@@ -52,14 +54,8 @@ class Completion:
 
 
 def domyslne_parametry_czasowe() -> dict:
-    """Zwraca testowe założenia procesu dla ciągłej symulacji."""
-    return {
-        "miesiace_do_ugody": 6,
-        "miesiace_do_wyroku_i": 9,
-        "miesiace_wyrok_i_do_ii": 6,
-        "opoznienie_platnosci_miesiace": 0,
-        "horyzont_miesiace": 60,
-    }
+    """Zwraca referencyjne założenia procesu dla ciągłej symulacji."""
+    return wczytaj_defaults()["timeline"]
 
 
 def _parametry_czasowe(parametry_czasowe: dict | None) -> dict:
@@ -176,7 +172,7 @@ def oblicz_pojemnosc_miesieczna(
     dzienne_na_pracownika = sum(parametry["codzienne_czynnosci"].values())
     brutto_godziny = pracownicy * GODZINY_ETATU_MIESIECZNIE
     brutto_minuty = brutto_godziny * 60
-    ekwiwalent_dni_miesiecznie = GODZINY_ETATU_MIESIECZNIE / 8
+    ekwiwalent_dni_miesiecznie = GODZINY_ETATU_MIESIECZNIE / (MINUTY_DNIA_PRACY / 60)
     dzienne_godziny_na_pracownika = (
         ekwiwalent_dni_miesiecznie * dzienne_na_pracownika / 60
     )
@@ -236,7 +232,7 @@ def minimalna_liczba_pracownikow_dla_stabilnosci(
     dzienne = sum(parametry["codzienne_czynnosci"].values())
     netto_na_pracownika = (
         GODZINY_ETATU_MIESIECZNIE * 60
-        - GODZINY_ETATU_MIESIECZNIE / 8 * dzienne
+        - GODZINY_ETATU_MIESIECZNIE / (MINUTY_DNIA_PRACY / 60) * dzienne
     )
     if netto_na_pracownika <= TOLERANCJA:
         return None
@@ -479,7 +475,7 @@ def klasyfikuj_status_kontraktu(
     liczba_pracownikow: int,
     minimalna_stabilna_obsada: int | None,
     wynik_miesieczny_minimalnej_stabilnej_obsady: float | None,
-    wynik_miesieczny_biezacej_obsady: float,
+    wynik_miesieczny_biezacej_obsady: float | None,
     status_pojemnosci: str,
 ) -> dict:
     """Klasyfikuje kontrakt na podstawie wykonalnej ekonomiki obsady."""
@@ -501,7 +497,10 @@ def klasyfikuj_status_kontraktu(
         etykieta = "Brak rentownej stabilnej obsady"
     elif liczba_pracownikow < minimalna_stabilna_obsada:
         etykieta = "Rentowny, wymaga większej obsady"
-    elif wynik_miesieczny_biezacej_obsady > TOLERANCJA:
+    elif (
+        wynik_miesieczny_biezacej_obsady is not None
+        and wynik_miesieczny_biezacej_obsady > TOLERANCJA
+    ):
         etykieta = "Rentowny i stabilny"
     else:
         etykieta = "Stabilny, ale obsada zbyt kosztowna"
@@ -514,7 +513,13 @@ def klasyfikuj_status_kontraktu(
         "wynik_miesieczny_minimalnej_stabilnej_obsady": (
             wynik_miesieczny_minimalnej_stabilnej_obsady
         ),
-        "wynik_miesieczny_biezacej_obsady": wynik_miesieczny_biezacej_obsady,
+        "wynik_miesieczny_biezacej_obsady": (
+            wynik_miesieczny_biezacej_obsady
+            if status_pojemnosci != "Niewystarczająca"
+            and minimalna_stabilna_obsada is not None
+            and liczba_pracownikow >= minimalna_stabilna_obsada
+            else None
+        ),
     }
 
 
@@ -626,7 +631,7 @@ def oblicz_model_czasowy(
             raise RuntimeError("Miesięczne rozliczenie backlogu nie jest domknięte.")
         used_minutes = capacity["czynnosci_dzienne_minuty"] + executed_minutes
         if used_minutes > capacity["pojemnosc_brutto_minuty"] + TOLERANCJA:
-            raise RuntimeError("Wykonano pracę ponad twardy limit 167 h/FTE.")
+            raise RuntimeError("Wykonano pracę ponad limit płatnych godzin FTE.")
         unused_minutes = max(capacity["pojemnosc_brutto_minuty"] - used_minutes, 0.0)
         utilization = (
             used_minutes / capacity["pojemnosc_brutto_minuty"] * 100
@@ -731,6 +736,10 @@ def oblicz_model_czasowy(
     target_monthly_demand = lifecycle["bezposrednie_minuty_spraw"] / 12
     current_staff_monthly_result = (
         target_monthly_revenue - capacity["miesieczny_koszt_obsady"]
+        if capacity["status_pojemnosci"] != "Niewystarczająca"
+        and minimum_staff is not None
+        and parametry["liczba_pracownikow"] >= minimum_staff
+        else None
     )
     minimum_team_monthly_cost = (
         minimum_staff
@@ -892,7 +901,6 @@ def oblicz_model_czasowy(
         "kpi": {
             "status_kontraktu": contract_status["etykieta"],
             "status_kontraktu_skladniki": contract_status,
-            "wynik_miesieczny_docelowy": current_staff_monthly_result,
             "wynik_miesieczny_biezacej_obsady": current_staff_monthly_result,
             "wynik_miesieczny_minimalnej_stabilnej_obsady": (
                 mature_result_at_minimum_staff

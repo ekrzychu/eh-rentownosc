@@ -2,12 +2,12 @@ import unittest
 from collections import defaultdict
 
 from model import (
-    GODZINY_ETATU_MIESIECZNIE,
     MINUTY_DNIA_PRACY,
     domyslne_parametry,
     oblicz_model,
 )
 from timeline import (
+    GODZINY_ETATU_MIESIECZNIE,
     _dodaj_kohorte,
     domyslne_parametry_czasowe,
     klasyfikuj_status_kontraktu,
@@ -620,6 +620,39 @@ class TestDefinicjaBreakEven(unittest.TestCase):
 
 
 class TestStatusKontraktu(unittest.TestCase):
+    def test_wynik_biezacej_obsady_wymaga_wystarczajacej_pojemnosci(self):
+        for obsada in (1, 2, 3, 10):
+            with self.subTest(obsada=obsada):
+                wynik = oblicz_model_czasowy({**domyslne_parametry(), "liczba_pracownikow": obsada})
+                kpi = wynik["kpi"]
+                self.assertNotIn("wynik_miesieczny_docelowy", kpi)
+                current = kpi["wynik_miesieczny_biezacej_obsady"]
+                self.assertEqual(current, kpi["status_kontraktu_skladniki"]["wynik_miesieczny_biezacej_obsady"])
+                if obsada < wynik["pojemnosc"]["minimalna_liczba_pracownikow_dla_stabilnosci"]:
+                    self.assertIsNone(current)
+                else:
+                    self.assertAlmostEqual(
+                        current,
+                        oblicz_model(domyslne_parametry())["ogolem"]["przychod"] / 12
+                        - wynik["pojemnosc"]["miesieczny_koszt_obsady"],
+                    )
+                self.assertEqual(kpi["status_kontraktu"], "Nierentowna ekonomika sprawy")
+
+    def test_klasyfikator_nie_ujawnia_hipotetycznego_wyniku_malej_obsady(self):
+        for obsada, status in ((1, "Stabilna"), (2, "Niewystarczająca")):
+            wynik = klasyfikuj_status_kontraktu(600, 10, obsada, 2, 100, 1000, status)
+            self.assertIsNone(wynik["wynik_miesieczny_biezacej_obsady"])
+        wynik = klasyfikuj_status_kontraktu(600, 10, 2, 2, 100, 100, "Na granicy")
+        self.assertEqual(wynik["wynik_miesieczny_biezacej_obsady"], 100)
+
+    def test_parametry_czasowe_pochodza_z_toml_i_sa_izolowane(self):
+        from config import wczytaj_defaults
+        oczekiwane = wczytaj_defaults()["timeline"]
+        pierwsze = domyslne_parametry_czasowe()
+        self.assertEqual(pierwsze, oczekiwane)
+        pierwsze["horyzont_miesiace"] = -1
+        self.assertEqual(domyslne_parametry_czasowe(), oczekiwane)
+
     def test_statusy_wynikaja_z_jawnych_przeslanek(self):
         przypadki = (
             (
