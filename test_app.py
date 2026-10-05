@@ -4,6 +4,24 @@ from streamlit.testing.v1 import AppTest
 
 
 class TestGlowneWidoki(unittest.TestCase):
+    def test_zero_ii_pokazuje_osiagniety_stan_stabilny_i_trwaly_break_even(self):
+        app = AppTest.from_file("app.py", default_timeout=30).run()
+        for label, value in (
+            ("Liczba pracowników", 3),
+            ("Narzut kosztów ogólnych / h pracownika", 20.0),
+            ("Wynagrodzenie pracownika / h", 20.0),
+            ("Udział spraw bez ugody w II instancji (%)", 0.0),
+        ):
+            next(x for x in app.number_input if x.label == label).set_value(value)
+        app.segmented_control[0].set_value("Kontrakt w czasie").run()
+        next(x for x in app.number_input if x.label == "Horyzont analizy (mies.)").set_value(24).run()
+        self.assertFalse(app.exception)
+        metrics = {x.label: x.value for x in app.metric}
+        self.assertEqual(metrics["Stan stabilny"], "Osiągnięty")
+        self.assertEqual(metrics["Break-even finansowy"], "Miesiąc 17")
+        self.assertTrue(any("Ocena trwałości: **Break-even trwały**" in x.value for x in app.markdown))
+        self.assertTrue(any("Wynik w stanie stabilnym:" in x.value and "17 623,60 zł" in x.value for x in app.markdown))
+
     def test_450_minut_dziennych_nie_przerywa_analiz(self):
         from model import domyslne_parametry
 

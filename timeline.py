@@ -580,6 +580,23 @@ def klasyfikuj_status_kontraktu(
     }
 
 
+def _nominalny_miesiac_dojrzalosci(lifecycle: dict, czas: dict) -> int | None:
+    """Pierwszy miesiąc dojrzałych wpływów z najdłuższej aktywnej ścieżki."""
+    if lifecycle["ogolem"]["liczba_spraw"] <= TOLERANCJA:
+        return None
+    shares = lifecycle["udzialy_ugod"]
+    ii_share = lifecycle["udzial_ii_instancji_w_portfelu"]
+    outcome_lags = (
+        (shares["zakonczone_ugoda"], czas["miesiace_do_ugody"]),
+        (shares["bez_ugody"] - ii_share, czas["miesiace_do_wyroku_i"]),
+        (ii_share, czas["miesiace_do_wyroku_i"] + czas["miesiace_wyrok_i_do_ii"]),
+    )
+    active_lags = [lag for share, lag in outcome_lags if share > TOLERANCJA]
+    if not active_lags:
+        return None
+    return 1 + max(active_lags) + czas["opoznienie_platnosci_miesiace"]
+
+
 def oblicz_model_czasowy(
     parametry: dict | None = None, parametry_czasowe: dict | None = None
 ) -> dict:
@@ -767,15 +784,7 @@ def oblicz_model_czasowy(
         None,
     )
     deepest = min(rows, key=lambda row: row["Wynik skumulowany przed podatkiem"])
-    nominal_maturity_month = (
-        1
-        + max(
-            czas["miesiace_do_ugody"],
-            czas["miesiace_do_wyroku_i"],
-            czas["miesiace_do_wyroku_i"] + czas["miesiace_wyrok_i_do_ii"],
-        )
-        + czas["opoznienie_platnosci_miesiace"]
-    )
+    nominal_maturity_month = _nominalny_miesiac_dojrzalosci(lifecycle, czas)
     target_monthly_revenue = lifecycle["ogolem"]["przychod"] / 12
     target_monthly_demand = lifecycle["bezposrednie_minuty_spraw"] / 12
     current_staff_monthly_result = (
@@ -824,7 +833,8 @@ def oblicz_model_czasowy(
         if last_twelve else None
     )
     maturity_reached = (
-        capacity["status_pojemnosci"] != "Niewystarczająca"
+        nominal_maturity_month is not None
+        and capacity["status_pojemnosci"] != "Niewystarczająca"
         and horizon >= nominal_maturity_month + 11
         and mature_revenue is not None
         and mature_demand is not None
@@ -879,7 +889,9 @@ def oblicz_model_czasowy(
     break_even_sustainability = _status_break_even(
         trwaly_break_even, capacity["status_pojemnosci"], steady_monthly_result
     )
-    if capacity["status_pojemnosci"] == "Niewystarczająca":
+    if case_count <= TOLERANCJA:
+        maturity_status = "Brak napływu spraw"
+    elif capacity["status_pojemnosci"] == "Niewystarczająca":
         maturity_status = "Nieosiągalny przy obecnej obsadzie"
     elif maturity_reached:
         maturity_status = "Osiągnięty"
@@ -918,7 +930,7 @@ def oblicz_model_czasowy(
     )
     startup_deficit = any(
         row["Wynik skumulowany przed podatkiem"] < -TOLERANCJA
-        for row in rows[: min(nominal_maturity_month, len(rows))]
+        for row in rows[: min(nominal_maturity_month or horizon, len(rows))]
     )
     lifecycle_total_cost = lifecycle["koszt_lifecycle_razem"]
     temporal_annual_cost = capacity["miesieczny_koszt_obsady"] * 12

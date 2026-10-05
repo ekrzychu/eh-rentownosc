@@ -14,6 +14,7 @@ from timeline import (
     GODZINY_ETATU_MIESIECZNIE,
     _dodaj_kohorte,
     _dodaj_pakiet,
+    _nominalny_miesiac_dojrzalosci,
     _przyrost_zakonczenia,
     _wykonaj_prace,
     domyslne_parametry_czasowe,
@@ -949,6 +950,107 @@ class TestStatusKontraktu(unittest.TestCase):
             wynik["kpi"]["status_kontraktu"],
             "Rentowny, wymaga większej obsady",
         )
+
+
+class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
+    def setUp(self):
+        self.parametry = {
+            **domyslne_parametry(),
+            "liczba_pracownikow": 3,
+            "koszt_staly_na_godzine": 20.0,
+            "wynagrodzenie_pracownika_na_godzine": 20.0,
+            "udzial_ii_instancji_percent": 0.0,
+        }
+
+    def assert_roczne_uzgodnienie(self, wynik, parametry):
+        lifecycle = oblicz_model(parametry)
+        rows = wynik["tabela_miesieczna"][-12:]
+        self.assertTrue(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
+        self.assertAlmostEqual(sum(
+            row["Ugody zakończone"] + row["Zakończenia po I instancji"]
+            + row["Zakończenia po II instancji"] for row in rows
+        ), parametry["liczba_spraw"])
+        self.assertAlmostEqual(sum(row["Przychód razem"] for row in rows), lifecycle["ogolem"]["przychod"])
+        self.assertAlmostEqual(sum(row["Nowa praca (h)"] * 60 for row in rows), lifecycle["bezposrednie_minuty_spraw"])
+        self.assertTrue(all(abs(row["Backlog na koniec (h)"]) < 1e-8 for row in rows))
+
+    def test_zero_ii_potwierdza_dojrzalosc_i_break_even_w_miesiacu_17(self):
+        wynik = oblicz_model_czasowy(self.parametry, {"horyzont_miesiace": 24})
+        self.assert_roczne_uzgodnienie(wynik, self.parametry)
+        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 10)
+        self.assertAlmostEqual(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 17623.6045)
+        self.assertEqual(wynik["kpi"]["break_even_status"], "osiagniety")
+        self.assertEqual(wynik["kpi"]["break_even_miesiac"], 17)
+        self.assertEqual(wynik["kpi"]["status_break_even"], "Break-even trwały")
+
+    def test_same_ii_respektuja_termin_ii_i_pelny_rok(self):
+        parametry = {**self.parametry, "udzial_ii_instancji_percent": 100.0, "liczba_pracownikow": 10}
+        short = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 26})
+        self.assertEqual(short["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 16)
+        self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
+        mature = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 27})
+        self.assert_roczne_uzgodnienie(mature, parametry)
+        self.assertTrue(all(row["Zakończenia po I instancji"] == 0 for row in mature["tabela_miesieczna"]))
+        self.assertEqual(pierwszy_miesiac_z_wartoscia(mature["tabela_miesieczna"], "Zakończenia po II instancji"), 16)
+
+    def test_zero_ugod_pomija_ich_termin(self):
+        parametry = {**self.parametry, "automatyczne_ramy_percent": 0.0,
+                     "zawarte_ugody_percent": 0.0, "liczba_pracownikow": 10}
+        for settlement_lag in (0, 100):
+            with self.subTest(settlement_lag=settlement_lag):
+                czas = {"miesiace_do_ugody": settlement_lag, "horyzont_miesiace": 21}
+                wynik = oblicz_model_czasowy(parametry, czas)
+                self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 10)
+                self.assert_roczne_uzgodnienie(wynik, parametry)
+                short = oblicz_model_czasowy(parametry, {**czas, "horyzont_miesiace": 20})
+                self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
+
+    def test_same_ugody_pomijaja_obydwa_terminy_wyrokow(self):
+        parametry = {**self.parametry, "kategoryczna_odmowa_percent": 0.0,
+                     "automatyczne_ramy_percent": 100.0,
+                     "skutecznosc_automatycznych_ram_percent": 100.0,
+                     "udzial_ii_instancji_percent": 100.0, "liczba_pracownikow": 10}
+        czas = {"miesiace_do_wyroku_i": 100, "miesiace_wyrok_i_do_ii": 100,
+                "horyzont_miesiace": 18}
+        wynik = oblicz_model_czasowy(parametry, czas)
+        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 7)
+        self.assert_roczne_uzgodnienie(wynik, parametry)
+        short = oblicz_model_czasowy(parametry, {**czas, "horyzont_miesiace": 17})
+        self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
+
+    def test_platnosc_opoznia_dojrzalosc_przychodu_ale_nie_prace(self):
+        czas = {"opoznienie_platnosci_miesiace": 4, "horyzont_miesiace": 25}
+        delayed = oblicz_model_czasowy(self.parametry, czas)
+        self.assertEqual(delayed["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 14)
+        self.assert_roczne_uzgodnienie(delayed, self.parametry)
+        short = oblicz_model_czasowy(self.parametry, {**czas, "horyzont_miesiace": 24})
+        self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
+        direct = oblicz_model_czasowy(self.parametry, {**czas, "opoznienie_platnosci_miesiace": 0})
+        for a, b in zip(direct["tabela_miesieczna"], delayed["tabela_miesieczna"]):
+            for key in ("Nowa praca (h)", "Wykonana praca (h)", "Backlog na koniec (h)",
+                        "Ugody zakończone", "Zakończenia po I instancji", "Zakończenia po II instancji"):
+                self.assertEqual(a[key], b[key])
+        self.assertEqual(pierwszy_miesiac_z_wartoscia(delayed["tabela_miesieczna"], "Przychód z wyroków"), 14)
+
+    def test_zero_naplywu_nie_fabrykuje_dojrzalosci(self):
+        wynik = oblicz_model_czasowy({**self.parametry, "liczba_spraw": 0})
+        self.assertEqual(wynik["kpi"]["status_kontraktu"], "Brak napływu spraw")
+        self.assertEqual(wynik["podsumowanie"]["status_stanu_stabilnego"], "Brak napływu spraw")
+        self.assertIsNone(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"])
+        self.assertFalse(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
+        self.assertIsNone(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"])
+
+    def test_aktywnosc_sciezki_uzywa_tolerancji(self):
+        parametry = {**self.parametry, "udzial_ii_instancji_percent": 1e-9}
+        self.assertEqual(_nominalny_miesiac_dojrzalosci(
+            oblicz_model(parametry), domyslne_parametry_czasowe()
+        ), 10)
+
+    def test_poprawny_termin_nie_zastepuje_wystarczajacej_pojemnosci(self):
+        wynik = oblicz_model_czasowy({**self.parametry, "liczba_pracownikow": 1}, {"horyzont_miesiace": 24})
+        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 10)
+        self.assertFalse(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
+        self.assertIsNone(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"])
 
 
 class TestPrzypadkiBrzegowe(unittest.TestCase):
