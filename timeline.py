@@ -269,36 +269,6 @@ def _dodaj_pakiet(
     cohort_stats["direct_minutes"] += minutes_value
 
 
-def _rozloz_pakiet(
-    due_packets: dict[int, list[WorkPacket]],
-    completions: list[Completion],
-    completion_id: int,
-    start_month: int,
-    end_month: int,
-    cohort_month: int,
-    path: str,
-    stage: str,
-    minutes_value: float,
-    cohort_stats: dict,
-) -> None:
-    number_of_months = end_month - start_month + 1
-    if number_of_months <= 0:
-        raise ValueError("Nieprawidłowy przedział alokacji pracy.")
-    part = minutes_value / number_of_months
-    for due_month in range(start_month, end_month + 1):
-        _dodaj_pakiet(
-            due_packets,
-            completions,
-            completion_id,
-            due_month,
-            cohort_month,
-            path,
-            stage,
-            part,
-            cohort_stats,
-        )
-
-
 def _dodaj_kohorte(
     cohort_month: int,
     lifecycle: dict,
@@ -307,7 +277,11 @@ def _dodaj_kohorte(
     due_packets: dict[int, list[WorkPacket]],
     completions: list[Completion],
 ) -> dict:
-    """Tworzy miesięczną kohortę jako 1/12 kohorty referencyjnej."""
+    """Zleca pracę przy wpływie, a II instancję w terminie wyroku I.
+
+    Terminy nominalne blokują zakończenie, nie rozkładają minut pracy.
+    Kohorta zużywa dokładnie 1/12 pracy i przychodu referencyjnego lifecycle.
+    """
     shares = lifecycle["udzialy_ugod"]
     second_instance_share = parametry["udzial_ii_instancji_percent"] / 100
     common_minutes = sum(parametry["wspolne_czynnosci"].values())
@@ -369,12 +343,12 @@ def _dodaj_kohorte(
                     cases * settlement_analysis_minutes, cohort_stats,
                 )
             _dodaj_pakiet(
-                due_packets, completions, completion_id, nominal,
+                due_packets, completions, completion_id, cohort_month,
                 cohort_month, path, "zawarcie_ugody",
                 cases * settlement_minutes, cohort_stats,
             )
-            _rozloz_pakiet(
-                due_packets, completions, completion_id, cohort_month, nominal,
+            _dodaj_pakiet(
+                due_packets, completions, completion_id, cohort_month,
                 cohort_month, path, "praca_dodatkowa_p",
                 cases * extra_minutes, cohort_stats,
             )
@@ -415,38 +389,25 @@ def _dodaj_kohorte(
                     "automatyczne_ramy_brak_ugody",
                     "brak_ugody_poza_ramami",
                 }:
-                    attempt_month = min(
-                        cohort_month + czas["miesiace_do_ugody"], first_judgment
-                    )
                     _dodaj_pakiet(
-                        due_packets, completions, completion_id, attempt_month,
+                        due_packets, completions, completion_id, cohort_month,
                         cohort_month, branch_path, "nieudana_proba_ugody",
                         cases * failed_offer_minutes, cohort_stats,
                     )
-                process_start = (
-                    cohort_month + 1
-                    if czas["miesiace_do_wyroku_i"] > 0
-                    else first_judgment
-                )
-                _rozloz_pakiet(
-                    due_packets, completions, completion_id, process_start,
-                    first_judgment, cohort_month, branch_path, "proces",
+                _dodaj_pakiet(
+                    due_packets, completions, completion_id, cohort_month,
+                    cohort_month, branch_path, "proces",
                     cases * process_minutes, cohort_stats,
                 )
-                _rozloz_pakiet(
-                    due_packets, completions, completion_id, cohort_month, nominal,
+                _dodaj_pakiet(
+                    due_packets, completions, completion_id, cohort_month,
                     cohort_month, branch_path, "praca_dodatkowa_p",
                     cases * extra_minutes, cohort_stats,
                 )
                 if second_instance:
-                    second_start = (
-                        first_judgment + 1
-                        if czas["miesiace_wyrok_i_do_ii"] > 0
-                        else first_judgment
-                    )
-                    _rozloz_pakiet(
-                        due_packets, completions, completion_id, second_start,
-                        nominal, cohort_month, branch_path, "ii_instancja",
+                    _dodaj_pakiet(
+                        due_packets, completions, completion_id, first_judgment,
+                        cohort_month, branch_path, "ii_instancja",
                         cases * second_instance_minutes, cohort_stats,
                     )
     return cohort_stats

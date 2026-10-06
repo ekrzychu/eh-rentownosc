@@ -185,6 +185,11 @@ def renderuj_widok_czasowy(parametry: dict) -> None:
         "terminami zakończeń i wpływem przychodów."
     )
     st.caption(
+        "Terminy ugody i wyroków określają czas kalendarzowy do zakończenia, "
+        "nie czas pracy: zwykła praca trafia do kolejki przy wpływie, II instancja "
+        "przy wyroku I instancji, a samo oczekiwanie nie dodaje minut pracy sprawy."
+    )
+    st.caption(
         "Pracownicy są zatrudnieni na pełnym etacie, dlatego każdy kosztuje pełne "
         f"{GODZINY_ETATU_MIESIECZNIE:g} godzin miesięcznie niezależnie od wykorzystania."
     )
