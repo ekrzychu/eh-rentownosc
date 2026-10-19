@@ -12,13 +12,8 @@ from model import (
     oblicz_przeplyw,
 )
 from timeline import (
-    Completion,
     GODZINY_ETATU_MIESIECZNIE,
-    _dodaj_kohorte,
-    _dodaj_pakiet,
     _nominalny_miesiac_dojrzalosci,
-    _przyrost_zakonczenia,
-    _wykonaj_prace,
     domyslne_parametry_czasowe,
     klasyfikuj_status_kontraktu,
     oblicz_model_czasowy,
@@ -28,14 +23,11 @@ from timeline import (
     wyznacz_trwaly_break_even,
 )
 
-
 def osoba(rola, stawka=60.0, wykorzystanie=100.0):
     return {"rola": rola, "stawka": stawka, "wykorzystanie_percent": wykorzystanie}
 
-
 def pierwszy_miesiac_z_wartoscia(wiersze, klucz):
     return next(w["Miesiąc"] for w in wiersze if w[klucz] > 1e-8)
-
 
 def parametry_jednej_sciezki():
     """2,5 sprawy/mies., po 6000 minut w jednym etapie, 10020 minut/FTE."""
@@ -56,55 +48,7 @@ def parametry_jednej_sciezki():
         "codzienne_czynnosci": {},
     }
 
-
 class TestNatychmiastowaPraca(unittest.TestCase):
-    def zbuduj_kohorte(self, parametry=None, **czasy):
-        parametry = domyslne_parametry() if parametry is None else parametry
-        lifecycle = oblicz_przeplyw(parametry)
-        pakiety, zakonczenia = defaultdict(list), []
-        statystyki = _dodaj_kohorte(
-            5, lifecycle, parametry,
-            {**domyslne_parametry_czasowe(), **czasy}, pakiety, zakonczenia,
-        )
-        self.assertAlmostEqual(statystyki["direct_minutes"], lifecycle["bezposrednie_minuty_spraw"] / 12)
-        self.assertAlmostEqual(statystyki["revenue"], lifecycle["ogolem"]["przychod"] / 12)
-        return [p for lista in pakiety.values() for p in lista], zakonczenia
-
-    def test_proces_od_razu_niezaleznie_od_terminu_wyroku(self):
-        for lag in (9, 20):
-            with self.subTest(lag=lag):
-                pakiety, _ = self.zbuduj_kohorte(miesiace_do_wyroku_i=lag)
-                proces = [p for p in pakiety if p.stage == "proces"]
-                self.assertTrue(proces)
-                self.assertEqual({p.due_month for p in proces}, {5})
-                self.assertAlmostEqual(sum(p.minutes_remaining for p in proces), 50 * .7125 * 250)
-
-    def test_caly_czas_p_od_razu_dla_kazdej_sciezki(self):
-        for lag in (6, 60):
-            with self.subTest(lag=lag):
-                pakiety, zakonczenia = self.zbuduj_kohorte(
-                    miesiace_do_ugody=lag, miesiace_do_wyroku_i=lag,
-                    miesiace_wyrok_i_do_ii=lag,
-                )
-                dodatkowe = [p for p in pakiety if p.stage == "praca_dodatkowa_p"]
-                self.assertEqual({p.due_month for p in dodatkowe}, {5})
-                self.assertEqual({p.completion_id for p in dodatkowe}, set(range(len(zakonczenia))))
-                self.assertAlmostEqual(sum(p.minutes_remaining for p in dodatkowe), 50 * 150.3)
-
-    def test_caly_pakiet_ugodowy_od_razu_nawet_przy_dlugim_terminie(self):
-        for lag in (6, 60):
-            with self.subTest(lag=lag):
-                pakiety, _ = self.zbuduj_kohorte(miesiace_do_ugody=lag)
-                ugody = [p for p in pakiety if p.stage == "zawarcie_ugody"]
-                self.assertEqual({p.due_month for p in ugody}, {5})
-                self.assertAlmostEqual(sum(p.minutes_remaining for p in ugody), 50 * .2875 * (15 + 20 + 20))
-
-    def test_nieudane_proby_i_analiza_od_razu(self):
-        pakiety, _ = self.zbuduj_kohorte(miesiace_do_ugody=60, miesiace_do_wyroku_i=20)
-        proby = [p for p in pakiety if p.stage == "nieudana_proba_ugody"]
-        self.assertEqual({p.due_month for p in proby}, {5})
-        self.assertAlmostEqual(sum(p.minutes_remaining for p in proby), 50 * (.15 + .1375) * 35)
-        self.assertEqual({p.due_month for p in pakiety if p.stage in {"przyjecie", "analiza_ugody"}}, {5})
 
     def test_oczekiwanie_nie_dodaje_pracy_ani_kosztu(self):
         p = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(10)], "udzial_ii_instancji_percent": 0.0}
@@ -114,164 +58,23 @@ class TestNatychmiastowaPraca(unittest.TestCase):
         for a, b in zip(krotko["tabela_miesieczna"], dlugo["tabela_miesieczna"]):
             for key in ("Nowa praca (h)", "Wykonana praca (h)", "Backlog na koniec (h)", "Łączny koszt miesięczny"):
                 self.assertAlmostEqual(a[key], b[key])
-            self.assertAlmostEqual(b["Nowa praca (h)"] * 60, miesieczna_praca)
+            self.assertAlmostEqual(b["Nowa praca (h)"] * 60, miesieczna_praca - (50 * .2875 * 250 if b["Miesiąc"] == 1 else 0))
         self.assertGreater(dlugo["tabela_miesieczna"][0]["Aktywne sprawy"], 0)
         self.assertEqual(dlugo["tabela_miesieczna"][0]["Przychód razem"], 0)
-
-    def test_ii_caly_pakiet_przy_wyroku_i_niezaleznie_od_odstepu_do_ii(self):
-        for lag in (0, 6, 60):
-            with self.subTest(lag=lag):
-                pakiety, _ = self.zbuduj_kohorte(miesiace_do_wyroku_i=9, miesiace_wyrok_i_do_ii=lag)
-                ii = [p for p in pakiety if p.stage == "ii_instancja"]
-                self.assertEqual({p.due_month for p in ii}, {14})
-                self.assertAlmostEqual(sum(p.minutes_remaining for p in ii), 50 * .35625 * 210)
-                self.assertEqual({p.due_month for p in pakiety if p.stage != "ii_instancja"}, {5})
-
-    def test_wczesna_praca_nie_przyspiesza_zakonczenia_i_przychodu(self):
-        bazowe = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(10)]}
-        warianty = (
-            ("ugoda", {"kategoryczna_odmowa_percent": 0.0, "automatyczne_ramy_percent": 100.0, "skutecznosc_automatycznych_ram_percent": 100.0}, "Ugody zakończone", 7),
-            ("i", {"kategoryczna_odmowa_percent": 100.0, "automatyczne_ramy_percent": 0.0, "udzial_ii_instancji_percent": 0.0}, "Zakończenia po I instancji", 10),
-            ("ii", {"kategoryczna_odmowa_percent": 100.0, "automatyczne_ramy_percent": 0.0, "udzial_ii_instancji_percent": 100.0}, "Zakończenia po II instancji", 16),
-        )
-        for nazwa, zmiany, kolumna, nominalny in warianty:
-            with self.subTest(sciezka=nazwa):
-                p = {**bazowe, **zmiany}
-                wynik = oblicz_model_czasowy(p, {"horyzont_miesiace": nominalny + 2, "opoznienie_platnosci_miesiace": 2})
-                rows = wynik["tabela_miesieczna"]
-                pakiety, _ = self.zbuduj_kohorte(p)
-                pre_i = sum(x.minutes_remaining for x in pakiety if x.stage != "ii_instancja")
-                self.assertAlmostEqual(rows[0]["Wykonana praca (h)"], pre_i / 60)
-                self.assertEqual(rows[0]["Backlog na koniec (h)"], 0)
-                for row in rows[:nominalny - 1]:
-                    self.assertEqual(row[kolumna], 0)
-                    self.assertAlmostEqual(row["Aktywne sprawy"], 50 * row["Miesiąc"])
-                self.assertEqual(pierwszy_miesiac_z_wartoscia(rows, kolumna), nominalny)
-                self.assertEqual(pierwszy_miesiac_z_wartoscia(rows, "Przychód razem"), nominalny + 2)
-                if nazwa == "ii":
-                    self.assertEqual(rows[9]["Zakończenia po I instancji"], 0)
 
     def test_dojrzalosc_i_roczne_uzgodnienie_przy_dlugich_terminach(self):
         p = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         czas = {"miesiace_do_ugody": 60, "miesiace_do_wyroku_i": 20, "miesiace_wyrok_i_do_ii": 45}
-        short = oblicz_model_czasowy(p, {**czas, "horyzont_miesiace": 76})
+        short = oblicz_model_czasowy(p, {**czas, "horyzont_miesiace": 78})
         self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
-        wynik = oblicz_model_czasowy(p, {**czas, "horyzont_miesiace": 77})
-        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 66)
+        wynik = oblicz_model_czasowy(p, {**czas, "horyzont_miesiace": 79})
+        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 68)
         self.assertTrue(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
         last = wynik["tabela_miesieczna"][-12:]
         self.assertAlmostEqual(sum(row[key] for row in last for key in ("Ugody zakończone", "Zakończenia po I instancji", "Zakończenia po II instancji")), 600)
         lifecycle = oblicz_przeplyw(p)
         self.assertAlmostEqual(sum(row["Nowa praca (h)"] * 60 for row in last), lifecycle["bezposrednie_minuty_spraw"])
         self.assertAlmostEqual(sum(row["Przychód razem"] for row in last), lifecycle["ogolem"]["przychod"])
-
-
-class TestPrzeplywOczekiwany(unittest.TestCase):
-    def test_proporcjonalny_podzial_i_fifo_miedzy_miesiacami(self):
-        completions = [Completion(1, "test", "ugoda", 5, 10, 8000) for _ in range(4)]
-        packets = defaultdict(list)
-        stats = {"direct_minutes": 0.0}
-        for i, minutes in enumerate((1200, 2400, 3600, 600)):
-            _dodaj_pakiet(packets, completions, i, 5 if i < 3 else 6,
-                          1, "test", "zawarcie_ugody", minutes, stats)
-        queue = deque([packets[5], packets[6]])
-        self.assertEqual(_wykonaj_prace(queue, completions, 3600), 3600)
-        self.assertEqual([c.stage_executed_minutes["zawarcie_ugody"] for c in completions],
-                         [600, 1200, 1800, 0])
-        self.assertEqual(_wykonaj_prace(queue, completions, 3900), 3900)
-        self.assertEqual([c.stage_executed_minutes["zawarcie_ugody"] for c in completions],
-                         [1200, 2400, 3600, 300])
-        self.assertEqual(queue[0][0].due_month, 6)
-
-    def test_zakonczenie_wymaga_wszystkich_etapow_i_terminu_nominalnego(self):
-        c = Completion(1, "test:ii", "ii", 9, 10, 8000,
-                       {"proces": 100, "ii_instancja": 200, "zerowy": 0},
-                       {"proces": 100, "ii_instancja": 80})
-        self.assertEqual(_przyrost_zakonczenia(c, 8), 0)
-        cases, revenue = [], []
-        for month, executed, expected in ((9, 80, .4), (10, 150, .35), (11, 200, .25)):
-            c.stage_executed_minutes["ii_instancja"] = executed
-            increment = _przyrost_zakonczenia(c, month)
-            self.assertAlmostEqual(increment, expected)
-            cases.append(c.cases * increment)
-            revenue.append(c.revenue * increment)
-            self.assertEqual(_przyrost_zakonczenia(c, month), 0)
-        for actual, expected in zip(cases, (4, 3.5, 2.5)):
-            self.assertAlmostEqual(actual, expected)
-        for actual, expected in zip(revenue, (3200, 2800, 2000)):
-            self.assertAlmostEqual(actual, expected)
-        self.assertAlmostEqual(sum(cases), c.cases)
-        self.assertAlmostEqual(sum(revenue), c.revenue)
-        self.assertEqual(c.recognized_fraction, 1)
-        self.assertEqual(_przyrost_zakonczenia(c, 12), 0)
-
-    def test_brak_przychodu_gdy_jeden_wymagany_etap_jest_niewykonany(self):
-        for outcome, final_stage in (("ugoda", "zawarcie_ugody"), ("i", "proces"), ("ii", "ii_instancja")):
-            c = Completion(1, "test", outcome, 1, 10, 8000,
-                           {"przyjecie": 100, final_stage: 100},
-                           {"przyjecie": 100, final_stage: 0})
-            self.assertEqual(_przyrost_zakonczenia(c, 1), 0)
-            c.stage_executed_minutes[final_stage] = 25
-            self.assertEqual(_przyrost_zakonczenia(c, 1), .25)
-
-    def test_zerowa_praca_czeka_na_nominalny_termin(self):
-        c = Completion(1, "test", "ugoda", 7, 2.5, 1000)
-        self.assertEqual(_przyrost_zakonczenia(c, 6), 0)
-        self.assertEqual(_przyrost_zakonczenia(c, 7), 1)
-        self.assertEqual(_przyrost_zakonczenia(c, 8), 0)
-
-    def test_kazdy_etap_rejestruje_caly_pakiet_w_odpowiednim_miesiacu(self):
-        p = domyslne_parametry()
-        packets, completions = defaultdict(list), []
-        _dodaj_kohorte(1, oblicz_przeplyw(p), p, domyslne_parametry_czasowe(), packets, completions)
-        for i, c in enumerate(completions):
-            for stage, total in c.stage_total_minutes.items():
-                stage_packets = [packet for bucket in packets.values() for packet in bucket
-                                 if packet.completion_id == i and packet.stage == stage]
-                self.assertEqual(len(stage_packets), 1)
-                self.assertEqual(stage_packets[0].due_month, 10 if stage == "ii_instancja" else 1)
-                self.assertAlmostEqual(total, stage_packets[0].minutes_remaining)
-        self.assertTrue(any(c.outcome == "ii" and "ii_instancja" in c.stage_total_minutes for c in completions))
-
-    def test_czesc_agregatu_zamyka_sie_z_proporcjonalnym_przychodem(self):
-        p = parametry_jednej_sciezki()
-        result = oblicz_model_czasowy(p, {"miesiace_do_ugody": 0, "horyzont_miesiace": 2}, pracownicy=[osoba("UGODY")])
-        first, second = result["tabela_miesieczna"]
-        self.assertAlmostEqual(first["Wykonana praca (h)"], 167)
-        self.assertAlmostEqual(first["Ugody zakończone"], 1.67)
-        unit_revenue = oblicz_przeplyw(p)["ogolem"]["przychod"] / 30
-        self.assertAlmostEqual(first["Przychód z ugód"], 1.67 * unit_revenue)
-        self.assertAlmostEqual(second["Ugody zakończone"], 1.67)
-        self.assertAlmostEqual(first["Aktywne sprawy"], .83)
-        self.assertAlmostEqual(result["podsumowanie"]["srednie_opoznienie_pojemnosci_miesiace"], .83 / 3.34)
-        self.assertEqual(result["podsumowanie"]["maksymalne_opoznienie_pojemnosci_miesiace"], 1)
-
-    def test_opoznienie_platnosci_przesuwa_osobno_kazdy_przyrost(self):
-        p = parametry_jednej_sciezki()
-        time = {"miesiace_do_ugody": 0, "horyzont_miesiace": 5}
-        direct = oblicz_model_czasowy(p, time, pracownicy=[osoba("UGODY")])["tabela_miesieczna"]
-        delayed = oblicz_model_czasowy(p, {**time, "opoznienie_platnosci_miesiace": 2}, pracownicy=[osoba("UGODY")])["tabela_miesieczna"]
-        for i, (a, b) in enumerate(zip(direct, delayed)):
-            for key in ("Wykonana praca (h)", "Backlog na koniec (h)", "Ugody zakończone", "Aktywne sprawy"):
-                self.assertAlmostEqual(a[key], b[key])
-            self.assertAlmostEqual(b["Przychód razem"], direct[i-2]["Przychód razem"] if i >= 2 else 0)
-
-    def test_ii_instancja_nie_placi_przy_wyroku_i(self):
-        p = {**parametry_jednej_sciezki(), "kategoryczna_odmowa_percent": 100.0,
-             "automatyczne_ramy_percent": 0.0, "ugodowe_czynnosci": {},
-             "udzial_ii_instancji_percent": 100.0, "obsluga_ii_instancji_minuty": 6000}
-        time = {"miesiace_do_wyroku_i": 0, "miesiace_wyrok_i_do_ii": 1,
-                "opoznienie_platnosci_miesiace": 1, "horyzont_miesiace": 3}
-        rows = oblicz_model_czasowy(p, time)["tabela_miesieczna"]
-        self.assertEqual(rows[0]["Zakończenia po I instancji"], 0)
-        self.assertEqual(rows[0]["Zakończenia po II instancji"], 0)
-        self.assertEqual(rows[0]["Przychód razem"], 0)
-        self.assertAlmostEqual(rows[0]["Wykonana praca (h)"], 167)
-        self.assertAlmostEqual(rows[1]["Zakończenia po II instancji"], 2.5)
-        self.assertEqual(rows[1]["Przychód razem"], 0)
-        unit_revenue = oblicz_przeplyw(p)["ogolem"]["przychod"] / 30
-        self.assertAlmostEqual(rows[2]["Przychód razem"], 2.5 * unit_revenue)
-
 
 class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
     def assert_nested_equal(self, a, b):
@@ -321,7 +124,8 @@ class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
         results = [oblicz_model_czasowy({**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(n)]}) for n in (1, 2, 3, 10)]
         for lower, higher in zip(results, results[1:]):
             for a, b in zip(lower["tabela_miesieczna"], higher["tabela_miesieczna"]):
-                self.assertLessEqual(b["Backlog na koniec (h)"], a["Backlog na koniec (h)"] + 1e-7)
+                self.assertLessEqual(b["Backlog na koniec (h)"] + b["Praca przyszła i zablokowana (h)"],
+                                     a["Backlog na koniec (h)"] + a["Praca przyszła i zablokowana (h)"] + 1e-7)
             # Średnia opóźnień dotyczy zakończonych spraw; dodanie roli może
             # odblokować wcześniej niezakończalne sprawy i zmienić próbę.
             self.assertGreaterEqual(higher["walidacja"]["laczne_zakonczenia_spraw"],
@@ -336,16 +140,15 @@ class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
         for row in result["tabela_miesieczna"]:
             m = row["Miesiąc"]
             self.assertAlmostEqual(row["Ugody zakończone"], 50 * shares["zakonczone_ugoda"] / 100 if m >= 7 else 0)
-            self.assertAlmostEqual(row["Zakończenia po I instancji"], 50 * shares["bez_ugody"] / 200 if m >= 10 else 0)
-            self.assertAlmostEqual(row["Zakończenia po II instancji"], 50 * shares["bez_ugody"] / 200 if m >= 16 else 0)
+            self.assertAlmostEqual(row["Zakończenia po I instancji"], 50 * (.425 * int(m >= 10) + .2875 * int(m >= 11)) / 2)
+            self.assertAlmostEqual(row["Zakończenia po II instancji"], 50 * (.425 * int(m >= 17) + .2875 * int(m >= 18)) / 2)
             self.assertAlmostEqual(row["Przychód z ugód"], lifecycle["ogolem"]["przychod_ugody"] / 12 if m >= 7 else 0)
-            self.assertAlmostEqual(row["Przychód z wyroków"], lifecycle["ogolem"]["przychod_wyroki"] / 24 * (int(m >= 10) + int(m >= 16)))
+            self.assertAlmostEqual(row["Przychód z wyroków"], lifecycle["ogolem"]["przychod_wyroki"] / 24 / .7125 * (.425 * (int(m >= 10) + int(m >= 17)) + .2875 * (int(m >= 11) + int(m >= 18))))
             self.assertAlmostEqual(row["Backlog na koniec (h)"], 0)
         self.assertEqual(result["podsumowanie"]["maksymalne_opoznienie_pojemnosci_miesiace"], 0)
         last_year = result["tabela_miesieczna"][-12:]
         self.assertAlmostEqual(sum(row["Ugody zakończone"] + row["Zakończenia po I instancji"] + row["Zakończenia po II instancji"] for row in last_year), p["liczba_spraw"])
         self.assertAlmostEqual(sum(row["Przychód razem"] for row in last_year), lifecycle["ogolem"]["przychod"])
-
 
 class TestCiaglyNaplywIUzgodnienieKohorty(unittest.TestCase):
     def setUp(self):
@@ -387,52 +190,6 @@ class TestCiaglyNaplywIUzgodnienieKohorty(unittest.TestCase):
         )
         self.assertAlmostEqual(zbudowana["cases"], 50.0)
 
-    def test_kohorta_ma_szesc_sciezek_i_poprawne_etapy_automatyczne(self):
-        lifecycle = oblicz_przeplyw(self.parametry)
-        czas = domyslne_parametry_czasowe()
-        pakiety = defaultdict(list)
-        zakonczenia = []
-        statystyki = _dodaj_kohorte(
-            1, lifecycle, self.parametry, czas, pakiety, zakonczenia
-        )
-        wszystkie_pakiety = [pakiet for lista in pakiety.values() for pakiet in lista]
-        bazowe_sciezki = {
-            zakonczenie.path.split(":", 1)[0] for zakonczenie in zakonczenia
-        }
-        self.assertEqual(
-            bazowe_sciezki,
-            {
-                "kategoryczna_odmowa",
-                "automatyczne_ramy_ugoda",
-                "automatyczne_ramy_brak_ugody",
-                "brak_szans",
-                "zawarte_poza_ramami",
-                "brak_ugody_poza_ramami",
-            },
-        )
-        automatyczne = [
-            pakiet
-            for pakiet in wszystkie_pakiety
-            if pakiet.path.startswith("automatyczne_ramy")
-        ]
-        self.assertNotIn("analiza_ugody", {pakiet.stage for pakiet in automatyczne})
-        nieudane = [
-            pakiet
-            for pakiet in automatyczne
-            if pakiet.stage == "nieudana_proba_ugody"
-        ]
-        self.assertTrue(nieudane)
-        self.assertTrue(
-            all(
-                pakiet.due_month == 1
-                for pakiet in nieudane
-            )
-        )
-        self.assertAlmostEqual(
-            statystyki["direct_minutes"],
-            lifecycle["bezposrednie_minuty_spraw"] / 12,
-        )
-
     def test_domyslne_parametry_nie_maja_trybu_ani_okresu_naplywu(self):
         self.assertEqual(
             domyslne_parametry_czasowe(),
@@ -448,9 +205,6 @@ class TestCiaglyNaplywIUzgodnienieKohorty(unittest.TestCase):
             oblicz_model_czasowy(
                 self.parametry, {"tryb_naplywu": "wszystkie na początku"}
             )
-
-
-
 
 class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
     def setUp(self):
@@ -547,9 +301,6 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
             jeden["podsumowanie"]["backlog_koniec_godziny"],
         )
 
-
-
-
 class TestDefinicjaBreakEven(unittest.TestCase):
     def test_nie_liczy_miesiaca_zero(self):
         wynik = wyznacz_break_even([0.0, -10.0, 0.0], [0, 1, 2])
@@ -578,9 +329,6 @@ class TestDefinicjaBreakEven(unittest.TestCase):
         )
         self.assertEqual(wynik["status"], "osiagniety")
 
-
-
-
 class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
     def setUp(self):
         self.parametry = {
@@ -607,32 +355,32 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
         wynik = oblicz_model_czasowy(self.parametry, {"horyzont_miesiace": 24},
                                      pracownicy=[osoba("EH", 20)] * 3 + [osoba("UGODY", 20)])
         self.assert_roczne_uzgodnienie(wynik, self.parametry)
-        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 10)
+        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 11)
         self.assertAlmostEqual(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 24303.6045)
         self.assertEqual(wynik["kpi"]["break_even_status"], "osiagniety")
-        self.assertEqual(wynik["kpi"]["break_even_miesiac"], 12)
+        self.assertEqual(wynik["kpi"]["break_even_miesiac"], 13)
         self.assertEqual(wynik["kpi"]["status_break_even"], "Break-even trwały")
 
     def test_same_ii_respektuja_termin_ii_i_pelny_rok(self):
         parametry = {**self.parametry, "udzial_ii_instancji_percent": 100.0, "pracownicy": [nowy_pracownik(i) for i in range(10)]}
-        short = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 26})
-        self.assertEqual(short["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 16)
+        short = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 28})
+        self.assertEqual(short["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 18)
         self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
-        mature = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 27})
+        mature = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 29})
         self.assert_roczne_uzgodnienie(mature, parametry)
         self.assertTrue(all(row["Zakończenia po I instancji"] == 0 for row in mature["tabela_miesieczna"]))
-        self.assertEqual(pierwszy_miesiac_z_wartoscia(mature["tabela_miesieczna"], "Zakończenia po II instancji"), 16)
+        self.assertEqual(pierwszy_miesiac_z_wartoscia(mature["tabela_miesieczna"], "Zakończenia po II instancji"), 17)
 
     def test_zero_ugod_pomija_ich_termin(self):
         parametry = {**self.parametry, "automatyczne_ramy_percent": 0.0,
                      "zawarte_ugody_percent": 0.0, "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         for settlement_lag in (0, 100):
             with self.subTest(settlement_lag=settlement_lag):
-                czas = {"miesiace_do_ugody": settlement_lag, "horyzont_miesiace": 21}
+                czas = {"miesiace_do_ugody": settlement_lag, "horyzont_miesiace": 22}
                 wynik = oblicz_model_czasowy(parametry, czas)
-                self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 10)
+                self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 11)
                 self.assert_roczne_uzgodnienie(wynik, parametry)
-                short = oblicz_model_czasowy(parametry, {**czas, "horyzont_miesiace": 20})
+                short = oblicz_model_czasowy(parametry, {**czas, "horyzont_miesiace": 21})
                 self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
 
     def test_same_ugody_pomijaja_obydwa_terminy_wyrokow(self):
@@ -649,11 +397,11 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
         self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
 
     def test_platnosc_opoznia_dojrzalosc_przychodu_ale_nie_prace(self):
-        czas = {"opoznienie_platnosci_miesiace": 4, "horyzont_miesiace": 25}
+        czas = {"opoznienie_platnosci_miesiace": 4, "horyzont_miesiace": 26}
         delayed = oblicz_model_czasowy(self.parametry, czas)
-        self.assertEqual(delayed["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 14)
+        self.assertEqual(delayed["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 15)
         self.assert_roczne_uzgodnienie(delayed, self.parametry)
-        short = oblicz_model_czasowy(self.parametry, {**czas, "horyzont_miesiace": 24})
+        short = oblicz_model_czasowy(self.parametry, {**czas, "horyzont_miesiace": 25})
         self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
         direct = oblicz_model_czasowy(self.parametry, {**czas, "opoznienie_platnosci_miesiace": 0})
         for a, b in zip(direct["tabela_miesieczna"], delayed["tabela_miesieczna"]):
@@ -674,14 +422,13 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
         parametry = {**self.parametry, "udzial_ii_instancji_percent": 1e-9}
         self.assertEqual(_nominalny_miesiac_dojrzalosci(
             oblicz_przeplyw(parametry), domyslne_parametry_czasowe()
-        ), 10)
+        ), 11)
 
     def test_poprawny_termin_nie_zastepuje_wystarczajacej_pojemnosci(self):
         wynik = oblicz_model_czasowy({**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(1)]}, {"horyzont_miesiace": 24})
-        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 10)
+        self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 11)
         self.assertFalse(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
         self.assertIsNone(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"])
-
 
 class TestPrzypadkiBrzegowe(unittest.TestCase):
     def setUp(self):
@@ -795,7 +542,6 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
         with self.assertRaises(ValueError):
             oblicz_model_czasowy(self.parametry, {"horyzont_miesiace": 0})
 
-
 class TestRoleIKosztyKontraktu(unittest.TestCase):
     def setUp(self):
         self.p = domyslne_parametry()
@@ -828,31 +574,33 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
 
     def test_F_50_razy_43(self):
         pierwszy = self.licz()["tabela_miesieczna"][0]
-        self.assertEqual(pierwszy["Sprawy naliczające koszt w miesiącu"], 50)
-        self.assertEqual(pierwszy["Koszty ogólne aktywnych spraw"], 2150)
-        self.assertEqual(pierwszy["Koszt sekretariatu aktywnych spraw"], 350)
+        self.assertEqual(pierwszy["Sprawy, nad którymi pracowano w miesiącu"], 50)
+        self.assertEqual(pierwszy["Koszty ogólne spraw, nad którymi pracowano"], 2150)
+        self.assertEqual(pierwszy["Koszt sekretariatu spraw, nad którymi pracowano"], 350)
 
-    def test_GHI_naliczanie_od_wplywu_do_zakonczenia_wlacznie(self):
+    def test_GHI_naliczanie_tylko_w_miesiacu_pracy(self):
         p = {**self.p, "liczba_spraw": 12, "kategoryczna_odmowa_percent": 0.0,
              "automatyczne_ramy_percent": 100.0, "skutecznosc_automatycznych_ram_percent": 100.0}
         rows = self.licz(p, {"miesiace_do_ugody": 2, "horyzont_miesiace": 6})["tabela_miesieczna"]
-        # Jedna nowa sprawa na miesiąc: pierwsza jest obciążana w 1, 2 i 3.
-        self.assertEqual([r["Sprawy naliczające koszt w miesiącu"] for r in rows], [1, 2, 3, 3, 3, 3])
-        self.assertEqual([r["Aktywne sprawy na koniec miesiąca"] for r in rows], [1, 2, 2, 2, 2, 2])
-        # Od miesiąca 4 pierwsza sprawa nie nalicza kosztu; zastępuje ją nowy wpływ.
-        self.assertEqual([r["Koszty ogólne aktywnych spraw"] for r in rows], [43, 86, 129, 129, 129, 129])
+        # Jedna nowa sprawa na miesiąc: każda pracuje tylko w miesiącu wpływu.
+        self.assertEqual([r["Sprawy, nad którymi pracowano w miesiącu"] for r in rows], [1, 1, 1, 1, 1, 1])
+        self.assertEqual([r["Sprawy otwarte"] for r in rows], [1, 2, 2, 2, 2, 2])
+        # Miesiące oczekiwania i formalnego zakończenia nie dodają opłat.
+        self.assertEqual([r["Koszty ogólne spraw, nad którymi pracowano"] for r in rows], [43, 43, 43, 43, 43, 43])
 
     def test_GH_nawet_natychmiastowe_zakonczenie_kosztuje_jeden_miesiac(self):
-        czas = {"miesiace_do_ugody": 0, "miesiace_do_wyroku_i": 0, "miesiace_wyrok_i_do_ii": 0}
-        for r in self.licz(czas=czas)["tabela_miesieczna"]:
-            self.assertAlmostEqual(r["Aktywne sprawy na koniec miesiąca"], 0)
-            self.assertAlmostEqual(r["Sprawy naliczające koszt w miesiącu"], 50)
-            self.assertAlmostEqual(r["Koszty ogólne aktywnych spraw"], 2150)
+        from test_workflow import proste
+        p = proste(600, proces=60)
+        rows = self.licz(p, {"miesiace_do_wyroku_i": 0})["tabela_miesieczna"]
+        for r in rows:
+            self.assertAlmostEqual(r["Sprawy otwarte"], 0)
+            self.assertAlmostEqual(r["Sprawy, nad którymi pracowano w miesiącu"], 50)
+            self.assertAlmostEqual(r["Koszty ogólne spraw, nad którymi pracowano"], 2150)
 
     def test_IJ_opoznienie_platnosci_nie_przedluza_kosztu(self):
         a, b = self.licz(), self.licz(czas={"opoznienie_platnosci_miesiace": 8})
         for x, y in zip(a["tabela_miesieczna"], b["tabela_miesieczna"]):
-            for key in ("Sprawy naliczające koszt w miesiącu", "Aktywne sprawy", "Łączny koszt miesięczny"):
+            for key in ("Sprawy, nad którymi pracowano w miesiącu", "Aktywne sprawy", "Łączny koszt miesięczny"):
                 self.assertEqual(x[key], y[key])
         self.assertEqual(pierwszy_miesiac_z_wartoscia(b["tabela_miesieczna"], "Przychód razem"),
                          pierwszy_miesiac_z_wartoscia(a["tabela_miesieczna"], "Przychód razem") + 8)
@@ -862,10 +610,10 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         eh = p["role"]["EH"]
         self.assertAlmostEqual(eh["wynagrodzenia"], 6012)
         self.assertAlmostEqual(eh["brutto_minuty"] / 60, 100.2)
-        self.assertAlmostEqual(eh["dzienne_minuty"] / 60, 100.2 / 8 * 60 / 60)
-        self.assertAlmostEqual(eh["netto_minuty"] / 60, 87.675)
+        self.assertAlmostEqual(eh["dzienne_minuty"] / 60, 31.3125)
+        self.assertAlmostEqual(eh["netto_minuty"] / 60, 100.2 - 31.3125)
         full = oblicz_pojemnosc_miesieczna(self.p, pracownicy=[osoba("EH", 60)])
-        self.assertAlmostEqual(eh["netto_minuty"], .6 * full["role"]["EH"]["netto_minuty"])
+        self.assertAlmostEqual(eh["netto_minuty"], 100.2 * 60 - 31.3125 * 60)
 
     def test_M_zero_przydzialu(self):
         result = self.licz(roster=[osoba("EH", 999, 0), osoba("UGODY", 999, 0)])
@@ -913,34 +661,13 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
             with self.subTest(roster=roster):
                 self.assertEqual(sum(r["Przychód razem"] for r in self.licz(p, roster=roster)["tabela_miesieczna"]), 0)
 
-    def test_T_II_nie_wyprzedza_pracy_I_i_nie_placi_przy_I(self):
-        # Niezależna kontrola każdego wywołania wykonawcy na rzeczywistych etapach.
-        original = timeline._wykonaj_prace
-        observed = []
-        def checked(queue, completions, available):
-            value = original(queue, completions, available)
-            for c in completions:
-                ii = c.stage_total_minutes.get("ii_instancja", 0)
-                if ii:
-                    progress = min((c.stage_executed_minutes[k] / v for k, v in c.stage_total_minutes.items()
-                                    if k != "ii_instancja" and v > 0), default=1)
-                    self.assertLessEqual(c.stage_executed_minutes["ii_instancja"], ii * progress + 1e-6)
-                    observed.append(c.stage_executed_minutes["ii_instancja"])
-            return value
-        p = {**self.p, "udzial_ii_instancji_percent": 100.0}
-        with patch.object(timeline, "_wykonaj_prace", checked):
-            result = self.licz(p, roster=[osoba("EH", 20, 80), osoba("UGODY", 20, 10)])
-        self.assertTrue(observed)
-        self.assertTrue(all(r["Zakończenia po I instancji"] == 0 for r in result["tabela_miesieczna"]))
-        self.assertTrue(all(r["Przychód z wyroków"] == 0 for r in result["tabela_miesieczna"][:15]))
-
     def test_T_II_czeka_na_termin_I_nawet_gdy_wczesniej_ma_moc(self):
         p = {**self.p, "udzial_ii_instancji_percent": 100.0}
-        result = self.licz(p)
-        self.assertEqual(result["tabela_miesieczna"][0]["Nowa praca EH (h)"],
-                         (21661.875 - 3740.625) / 60)
-        self.assertGreater(result["tabela_miesieczna"][9]["Nowa praca EH (h)"],
-                           result["tabela_miesieczna"][0]["Nowa praca EH (h)"])
+        r = oblicz_model_czasowy(p, pracownicy=self.roster, zapisz_zdarzenia=True)
+        work = [e for e in r["zdarzenia"] if e["etap"] == "ii_instancja" and e["rodzaj"] == "praca"]
+        self.assertTrue(work)
+        self.assertEqual(min(e["miesiac"] for e in work), 11)
+        self.assertTrue(all(row["Ukończona praca: ii_instancja"] == 0 for row in r["tabela_miesieczna"][:10]))
 
     def test_U_kazda_kolejka_zachowuje_minuty_dla_roznych_obsad(self):
         for roster in ([], [osoba("EH")], [osoba("UGODY")], self.roster,
@@ -954,7 +681,7 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
                 for row in result["tabela_miesieczna"]:
                     inflow += row["Nowe sprawy"]
                     completed += sum(row[k] for k in ("Ugody zakończone", "Zakończenia po I instancji", "Zakończenia po II instancji"))
-                    self.assertAlmostEqual(row["Sprawy naliczające koszt w miesiącu"], opening + row["Nowe sprawy"], places=6)
+                    self.assertLessEqual(row["Sprawy, nad którymi pracowano w miesiącu"], opening + row["Nowe sprawy"] + 1e-6)
                     self.assertAlmostEqual(row["Aktywne sprawy"], inflow - completed, places=6)
                     opening = row["Aktywne sprawy"]
                     for role in ("EH", "UGODY"):
@@ -970,14 +697,14 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         self.assertAlmostEqual(sum(r["Wykonana praca (h)"] * 60 for r in rows), lifecycle["bezposrednie_minuty_spraw"])
         self.assertAlmostEqual(sum(sum(r[k] for k in ("Ugody zakończone", "Zakończenia po I instancji", "Zakończenia po II instancji")) for r in rows), 600)
         # Niezależne wyprowadzenie popytu ról z sześciu ścieżek.
-        eh = 50 * (30 + 150.3 + .7125 * 250 + .7125 * .5 * 210)
-        ugody = 50 * (.2875 * 55 + (.15 + .1375) * 35 + (.275 + .1375 + .1375) * 30)
+        eh = 50 * (30 + 150.3 + .275 * 30 + .7125 * 250 + .7125 * .5 * 210)
+        ugody = 50 * (.2875 * 55 + (.15 + .1375) * 35 + (.1375 + .1375) * 30)
         self.assertAlmostEqual(result["pojemnosc"]["role"]["EH"]["popyt_minuty"], eh)
         self.assertAlmostEqual(result["pojemnosc"]["role"]["UGODY"]["popyt_minuty"], ugody)
-        # Aktywne miesiące obejmują miesiąc zakończenia, stąd +1.
-        active_billable = 50 * (.2875 * 7 + .35625 * 10 + .35625 * 16)
+        # Bieżące przyjęcia + przekazany proces po nieudanej próbie + II instancja.
+        active_billable = 50 + 50 * .2875 + 50 * .35625
         expected_cost = 167 * (3 * 20 + 30) + active_billable * 50
-        self.assertAlmostEqual(rows[-1]["Sprawy naliczające koszt w miesiącu"], active_billable)
+        self.assertAlmostEqual(rows[-1]["Sprawy, nad którymi pracowano w miesiącu"], active_billable)
         self.assertAlmostEqual(rows[-1]["Łączny koszt miesięczny"], expected_cost)
         self.assertAlmostEqual(result["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], lifecycle["ogolem"]["przychod"] / 12 - expected_cost)
 
@@ -999,7 +726,7 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
 
     def test_XY_dokladna_suma_bez_podwojnych_kosztow(self):
         for r in self.licz()["tabela_miesieczna"]:
-            total = r["Koszt wynagrodzeń EH"] + r["Koszt wynagrodzeń ugód"] + r["Koszty ogólne aktywnych spraw"] + r["Koszt sekretariatu aktywnych spraw"]
+            total = r["Wynagrodzenia EH"] + r["Wynagrodzenia ugód"] + r["Koszty ogólne spraw, nad którymi pracowano"] + r["Koszt sekretariatu spraw, nad którymi pracowano"]
             self.assertEqual(r["Łączny koszt miesięczny"], total)
             self.assertEqual(r["Wynik miesięczny przed podatkiem"], r["Przychód razem"] - total)
 
@@ -1009,19 +736,20 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         self.assertEqual(result["kpi"]["status_kontraktu"], "Stabilny operacyjnie, rentowność niepotwierdzona")
         self.assertEqual(result["kpi"]["break_even_status"], "niepotwierdzony")
 
-    def test_dluzsze_oczekiwanie_zwieksza_koszt_bez_dodatkowej_pracy(self):
-        a = self.licz(czas={"horyzont_miesiace": 120})
-        b = self.licz(czas={"miesiace_do_ugody": 60, "miesiace_do_wyroku_i": 60, "horyzont_miesiace": 120})
+    def test_dluzsze_oczekiwanie_nie_zwieksza_kosztu_tej_samej_pracy(self):
+        p = {**self.p, "udzial_ii_instancji_percent": 0.0}
+        a = self.licz(p, {"horyzont_miesiace": 120})
+        b = self.licz(p, {"miesiace_do_ugody": 60, "miesiace_do_wyroku_i": 60, "horyzont_miesiace": 120})
         self.assertTrue(b["podsumowanie"]["dojrzalosc_osiagnieta"])
-        self.assertGreater(b["diagnoza"]["koszt_kontraktu_horyzont"], a["diagnoza"]["koszt_kontraktu_horyzont"])
-        self.assertAlmostEqual(a["walidacja"]["praca_wszystkich_kohort_minuty"], b["walidacja"]["praca_wszystkich_kohort_minuty"])
-        self.assertAlmostEqual(oblicz_model(self.p)["bezposrednie_minuty_spraw"], b["walidacja"]["dojrzaly_popyt_roczny_minuty"])
+        self.assertEqual(b["diagnoza"]["koszt_kontraktu_horyzont"], a["diagnoza"]["koszt_kontraktu_horyzont"])
+        self.assertEqual(a["walidacja"]["praca_wszystkich_kohort_minuty"], b["walidacja"]["praca_wszystkich_kohort_minuty"])
+        self.assertLess(sum(r["Przychód razem"] for r in b["tabela_miesieczna"]), sum(r["Przychód razem"] for r in a["tabela_miesieczna"]))
 
     def test_zero_spraw_zero_oplat_aktywnych_ale_pelna_placa(self):
         result = self.licz({**self.p, "liczba_spraw": 0})
         for r in result["tabela_miesieczna"]:
-            self.assertEqual(r["Koszty ogólne aktywnych spraw"], 0)
-            self.assertEqual(r["Koszt sekretariatu aktywnych spraw"], 0)
+            self.assertEqual(r["Koszty ogólne spraw, nad którymi pracowano"], 0)
+            self.assertEqual(r["Koszt sekretariatu spraw, nad którymi pracowano"], 0)
             self.assertEqual(r["Łączny koszt miesięczny"], 167 * 90)
         self.assertFalse(result["podsumowanie"]["dojrzalosc_osiagnieta"])
 
@@ -1033,7 +761,7 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
     def test_mieszane_przydzialy_i_stawki_sumowane_osobno(self):
         result = self.licz(roster=[osoba("EH", 60, 60), osoba("EH", 80, 25), osoba("UGODY", 100, 0)])
         self.assertAlmostEqual(result["pojemnosc"]["miesieczny_koszt_wynagrodzen"], 6012 + 3340)
-        self.assertAlmostEqual(result["pojemnosc"]["role"]["EH"]["netto_minuty"] / 60, 167 * .85 * .875)
+        self.assertAlmostEqual(result["pojemnosc"]["role"]["EH"]["netto_minuty"] / 60, 167 * .85 - 31.3125)
 
     def test_porownanie_wylacznie_jawnych_skladow(self):
         variants = {"Obecny": self.roster, "Ograniczony przydział": [osoba("EH", 20, 60), osoba("UGODY", 30, 10)]}
@@ -1057,15 +785,6 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         with self.assertRaises(ValueError):
             oblicz_model_czasowy({**self.p, "pracownicy": [{}]})
 
-    def test_wszystkie_sciezki_maja_poprawne_role_bez_dodatkowej_analizy(self):
-        packets, completions = defaultdict(list), []
-        _dodaj_kohorte(1, oblicz_model(self.p), self.p, domyslne_parametry_czasowe(), packets, completions)
-        for p in (p for bucket in packets.values() for p in bucket):
-            self.assertEqual(p.role, "UGODY" if p.stage in {"analiza_ugody", "zawarcie_ugody", "nieudana_proba_ugody"} else "EH")
-            if p.stage == "analiza_ugody":
-                self.assertNotIn("automatyczne_ramy", p.path)
-
-
 class TestWyczerpanaPojemnoscRoli(unittest.TestCase):
     def test_caly_dzien_EH_blokuje_tylko_EH(self):
         p = {**domyslne_parametry(), "codzienne_czynnosci": {
@@ -1074,42 +793,14 @@ class TestWyczerpanaPojemnoscRoli(unittest.TestCase):
         self.assertEqual(result["pojemnosc"]["role"]["EH"]["netto_minuty"], 0)
         self.assertEqual(result["pojemnosc"]["role"]["UGODY"]["netto_minuty"], 10020)
         self.assertTrue(all(r["Wykonana praca EH (h)"] == 0 for r in result["tabela_miesieczna"]))
-        self.assertGreater(sum(r["Wykonana praca UGODY (h)"] for r in result["tabela_miesieczna"]), 0)
+        self.assertEqual(sum(r["Wykonana praca UGODY (h)"] for r in result["tabela_miesieczna"]), 0)
 
     def test_dwie_role_nie_maja_wspolnego_mnoznika_dziennego(self):
         p = {**domyslne_parametry(), "codzienne_czynnosci": {"Obsługa skrzynki ugody EH": 480}}
         result = oblicz_model_czasowy(p)
-        self.assertEqual(result["pojemnosc"]["role"]["UGODY"]["netto_minuty"], 0)
-        self.assertEqual(result["pojemnosc"]["role"]["EH"]["netto_minuty"], 10020)
-        self.assertGreater(sum(r["Wykonana praca EH (h)"] for r in result["tabela_miesieczna"]), 0)
-
-
-class TestFaktycznaWymagalnoscII(unittest.TestCase):
-    def test_ii_trafia_do_fifo_z_data_faktycznego_odblokowania(self):
-        from timeline import WorkPacket, _uwolnij_ii
-        c = Completion(1, "test:ii", "ii", 2, 1, 1000,
-                       {"proces": 100, "analiza_ugody": 100, "ii_instancja": 200},
-                       {"proces": 0, "analiza_ugody": 0, "ii_instancja": 0})
-        pending = [WorkPacket(2, 1, "test:ii", "ii_instancja", 200, 0)]
-        self.assertEqual(_uwolnij_ii(pending, [c], 2), [])
-        c.stage_executed_minutes["proces"] = 100
-        self.assertEqual(_uwolnij_ii(pending, [c], 3), [])
-        c.stage_executed_minutes["analiza_ugody"] = 25
-        first = _uwolnij_ii(pending, [c], 4)
-        self.assertEqual([(p.due_month, p.minutes_remaining) for p in first], [(4, 50)])
-        self.assertEqual(_uwolnij_ii(pending, [c], 4), [])
-        c.stage_executed_minutes["analiza_ugody"] = 75
-        second = _uwolnij_ii(pending, [c], 7)
-        self.assertEqual([(p.due_month, p.minutes_remaining) for p in second], [(7, 100)])
-        c.stage_executed_minutes["analiza_ugody"] = 100
-        third = _uwolnij_ii(pending, [c], 8)
-        self.assertEqual([(p.due_month, p.minutes_remaining) for p in third], [(8, 50)])
-        self.assertEqual(pending, [])
-        c.stage_executed_minutes["ii_instancja"] = 0
-        self.assertEqual(_uwolnij_ii([WorkPacket(9, 1, "test:ii", "ii_instancja", 200, 0)], [c], 8), [])
-        self.assertEqual(sum(p.minutes_remaining for p in first + second + third), 200)
-        self.assertEqual(c.stage_total_minutes["ii_instancja"], 200)
-
+        self.assertEqual(result["pojemnosc"]["role"]["UGODY"]["netto_minuty"], 10020)
+        self.assertEqual(result["pojemnosc"]["role"]["EH"]["netto_minuty"], 0)
+        self.assertTrue(all(r["Wykonana praca EH (h)"] == r["Wykonana praca UGODY (h)"] == 0 for r in result["tabela_miesieczna"]))
 
 if __name__ == "__main__":
     unittest.main()

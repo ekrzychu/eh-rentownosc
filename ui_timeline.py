@@ -196,36 +196,35 @@ def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = N
     st.header("Kontrakt w czasie")
     st.caption(
         "Koszt kontraktu obejmuje indywidualne wynagrodzenia za przydzielone godziny "
-        "oraz miesięczne koszty aktywnych spraw. Oba panele korzystają z tej samej obsady; "
+        "oraz koszty spraw z faktycznie wykonaną pracą w miesiącu. Oba panele korzystają z tej samej obsady; "
         "kontrakt płaci indywidualne stawki za przydzielone godziny."
     )
     st.caption(
-        "Zwykła praca EH i ugód jest wymagalna od wpływu. II instancja wymaga "
-        "wykonania pracy I instancji i osiągnięcia terminu jej wyroku. "
-        "Oczekiwanie kalendarzowe nie dodaje minut pracy."
+        "Przyjęcie EH poprzedza ugody lub proces. Po odrzuceniu ugody proces trafia do EH "
+        "od kolejnego miesiąca; II instancja od miesiąca po wyroku I. "
+        "Zegary formalne startują od pierwszej pracy odpowiedniego etapu. "
+        "Etap zerowy wymaga dostępnej roli i jest inicjowany bez opłaty za pracę."
     )
     st.subheader("Koszty kontraktu")
     defaults_cost = _koszty_kontraktu(None)
     cost_columns = st.columns(2)
     with cost_columns[0]:
         overhead = _ustawienie("ogolne_na_aktywna_sprawe",
-            "Koszty ogólne / aktywną sprawę / mies.", defaults_cost["ogolne_na_aktywna_sprawe"],
+            "Koszty ogólne / sprawę z wykonaną pracą / mies.", defaults_cost["ogolne_na_aktywna_sprawe"],
             min_value=0.0, step=1.0)
     with cost_columns[1]:
         secretariat = _ustawienie("sekretariat_na_aktywna_sprawe",
-            "Koszt sekretariatu / aktywną sprawę / mies.", defaults_cost["sekretariat_na_aktywna_sprawe"],
+            "Koszt sekretariatu / sprawę z wykonaną pracą / mies.", defaults_cost["sekretariat_na_aktywna_sprawe"],
             min_value=0.0, step=1.0)
-    st.caption(
-        "Opłata obejmuje miesiąc wpływu, miesiąc rzeczywistego zakończenia oraz wszystkie "
-        "miesiące pomiędzy. Opóźnienie płatności nie przedłuża naliczania kosztów. "
-        "Kwoty dotyczą aktywnej sprawy w miesiącu i nie są stawkami godzinowymi."
-    )
+    st.caption("Koszty naliczane są wyłącznie za miesiące, w których rzeczywiście wykonano pracę nad sprawą. "
+               "Kilka etapów lub obu prawników w jednym miesiącu oznacza jedną opłatę. "
+               "Kolejka, oczekiwanie formalne i opóźnienie płatności nie naliczają opłat.")
     time_parameters = {}
     with st.expander("Założenia czasowe"):
         labels = {
-            "miesiace_do_ugody": "Od wpływu sprawy do ugody (mies.)",
-            "miesiace_do_wyroku_i": "Od wpływu do wyroku I instancji (mies.)",
-            "miesiace_wyrok_i_do_ii": "Od I do II instancji (mies.)",
+            "miesiace_do_ugody": "Od rozpoczęcia pracy ugodowej do ugody (mies.)",
+            "miesiace_do_wyroku_i": "Od rozpoczęcia procesu do wyroku I instancji (mies.)",
+            "miesiace_wyrok_i_do_ii": "Od rozpoczęcia pracy II instancji do wyroku (mies.)",
             "opoznienie_platnosci_miesiace": "Opóźnienie płatności (mies.)",
             "horyzont_miesiace": "Horyzont analizy (mies.)",
         }
@@ -266,10 +265,6 @@ def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = N
         + ". Wyniki i break-even są liczone przed podatkiem dochodowym."
     )
     last = result["tabela_miesieczna"][-1]
-    active = st.columns(2)
-    active[0].metric("Aktywne sprawy na koniec miesiąca", _liczba(last["Aktywne sprawy na koniec miesiąca"], 2))
-    active[1].metric("Sprawy naliczające koszt w miesiącu", _liczba(last["Sprawy naliczające koszt w miesiącu"], 2))
-    st.caption("Zakończenia pomniejszają stan na koniec miesiąca. Sprawy zakończone w tym miesiącu nadal naliczają koszt.")
     table = pd.DataFrame(result["tabela_miesieczna"])
     st.subheader("Skumulowany wynik przed podatkiem")
     st.altair_chart(_cumulative_chart(table, horizon, kpi["pierwsze_przeciecie_miesiac"]), width="stretch")
@@ -291,42 +286,56 @@ def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = N
             st.caption(f"Czynności dzienne: {_liczba(pool['dzienne_minuty'] / 60, 2)} h/mies. · "
                        f"Backlog: {_liczba(last[f'Backlog {role} (h)'], 2)} h")
         st.caption("Pojemność jest rozłączna według ról. Każdy pracownik wnosi 167 h × przydział / 100; "
-                   "czynności dzienne jego roli pomniejszają czas dostępny na sprawy. Niewykorzystany czas jest płatny.")
+                   "czynności dzienne pomniejszają zasób jednego wybranego prawnika EH raz dla projektu. Niewykorzystany czas jest płatny.")
     with st.expander("Szczegóły modelu"):
         st.metric("Stan stabilny", summary["status_stanu_stabilnego"])
         stable = kpi["wynik_miesieczny_w_stanie_stabilnym"]
         st.write("Wynik w stanie stabilnym: " + (f"**{_kwota(stable)}/mies.**" if stable is not None else "**Niepotwierdzony**"))
         st.caption("Potwierdzenie wymaga pełnych 12 miesięcy stabilnego przepływu obu ról, zakończeń, "
-                   "aktywnych spraw i wszystkich kosztów. Krótki rozruch nie potwierdza dojrzałej rentowności.")
+                   "spraw otwartych, pracy i wszystkich kosztów. Krótki rozruch nie potwierdza dojrzałej rentowności.")
         st.metric("Pierwszy dodatni miesiąc", _miesiac(kpi["pierwszy_dodatni_miesiac"]))
+    cases = st.columns(3)
+    cases[0].metric("Sprawy otwarte", _liczba(last["Sprawy otwarte"], 2))
+    cases[1].metric("Sprawy oczekujące na pracę", _liczba(last["Sprawy oczekujące na pracę"], 2))
+    cases[2].metric("Sprawy, nad którymi pracowano w miesiącu", _liczba(last["Sprawy, nad którymi pracowano w miesiącu"], 2))
+    st.caption("Sprawy otwarte obejmują kolejki i oczekiwanie na wynik formalny. "
+               "Przyszła II instancja jest pracą oczekującą na wcześniejszy wyrok, a nie zaległą pracą. "
+               "Czynności dzienne wykonuje raz cały projekt w zasobie EH; są już opłacone w wynagrodzeniach.")
+    if capacity["role"]["EH"]["dzienne_niewykonane_minuty"] > 0:
+        st.warning("Brak pojedynczego pracownika EH z przydziałem wystarczającym na wszystkie czynności dzienne. "
+                   f"Niewykonana część: {_liczba(capacity['role']['EH']['dzienne_niewykonane_minuty'] / 60, 3)} h/mies.")
     with st.expander(f"Rozliczenie kontraktu za {horizon} mies.", expanded=False):
         totals = result["podsumowanie_finansowe"]
-        labels = {"Koszt wynagrodzeń EH": "Łączne wynagrodzenia EH",
-                  "Koszt wynagrodzeń ugód": "Łączne wynagrodzenia ugód",
-                  "Koszty ogólne aktywnych spraw": "Łączne koszty ogólne aktywnych spraw",
-                  "Koszt sekretariatu aktywnych spraw": "Łączny koszt sekretariatu aktywnych spraw",
+        labels = {"Wynagrodzenia EH": "Łączne wynagrodzenia EH",
+                  "Wynagrodzenia ugód": "Łączne wynagrodzenia ugód",
+                  "Koszty ogólne spraw, nad którymi pracowano": "Łączne koszty ogólne spraw z wykonaną pracą",
+                  "Koszt sekretariatu spraw, nad którymi pracowano": "Łączny koszt sekretariatu spraw z wykonaną pracą",
                   "Łączny koszt miesięczny": "Łączny koszt kontraktu",
                   "Przychód razem": "Łączny przychód kontraktu",
                   "Wynik miesięczny przed podatkiem": "Wynik kontraktu przed podatkiem"}
         st.dataframe(pd.DataFrame([{"Pozycja": label, "Kwota": totals[key]} for key, label in labels.items()]),
                      hide_index=True, width="stretch", column_config={"Kwota": st.column_config.NumberColumn(format="%.2f zł")})
-        flows = {"Łączne sprawomiesiące naliczające koszt": totals["Sprawy naliczające koszt w miesiącu"],
+        flows = {"Sprawomiesiące faktycznej pracy": totals["Sprawy, nad którymi pracowano w miesiącu"],
+                 "Sprawy oczekujące na formalne zakończenie": last["Sprawy oczekujące na formalne zakończenie"],
                  "Sprawy zakończone w horyzoncie": result["walidacja"]["laczne_zakonczenia_spraw"],
-                 "Aktywne sprawy na koniec horyzontu": summary["aktywne_sprawy"],
+                 "Sprawy otwarte na koniec horyzontu": summary["aktywne_sprawy"],
                  "Backlog EH (h)": last["Backlog EH (h)"], "Backlog ugód (h)": last["Backlog UGODY (h)"],
                  "Praca przyszła i zablokowana (h)": result["walidacja"]["praca_przyszla_minuty"] / 60}
         st.dataframe(pd.DataFrame([{"Wielkość": key, "Wartość": value} for key, value in flows.items()]),
                      hide_index=True, width="stretch")
-        st.caption(f"Koszty ogólne: {_liczba(totals['Sprawy naliczające koszt w miesiącu'], 6)} sprawomiesiąca × "
-                   f"{_kwota(overhead)} = {_kwota(totals['Koszty ogólne aktywnych spraw'])}. "
-                   "Otwarta sprawa może czekać na formalne zakończenie bez dalszej pracy prawnika i nadal naliczać koszt.")
+        st.caption(f"Koszty ogólne: {_liczba(totals['Sprawy, nad którymi pracowano w miesiącu'], 6)} sprawomiesiąca × "
+                   f"{_kwota(overhead)} = {_kwota(totals['Koszty ogólne spraw, nad którymi pracowano'])}. "
+                   "Sprawy otwarte mogą oczekiwać na formalne zakończenie bez pracy i opłat. "
+                   "Dlatego ich liczba może przekraczać liczbę spraw, nad którymi pracowano.")
     with st.expander("Miesięczne szczegóły finansowe", expanded=False):
-        financial_columns = ["Miesiąc", "Przychód z ugód", "Przychód z wyroków", "Przychód razem",
-            "Koszt wynagrodzeń EH", "Koszt wynagrodzeń ugód", "Koszty ogólne aktywnych spraw",
-            "Koszt sekretariatu aktywnych spraw", "Łączny koszt miesięczny",
+        financial_columns = ["Miesiąc", "Sprawy, nad którymi pracowano w miesiącu", "Przychód z ugód", "Przychód z wyroków", "Przychód razem",
+            "Wynagrodzenia EH", "Wynagrodzenia ugód", "Koszty ogólne spraw, nad którymi pracowano",
+            "Koszt sekretariatu spraw, nad którymi pracowano", "Łączny koszt miesięczny",
             "Wynik miesięczny przed podatkiem", "Wynik skumulowany przed podatkiem"]
         st.dataframe(table[financial_columns], hide_index=True, width="stretch")
     with st.expander("Miesięczne przepływy i pojemność"):
-        st.dataframe(table.drop(columns=["Aktywne sprawy"]), hide_index=True, width="stretch")
+        st.dataframe(table.drop(columns=["Aktywne sprawy"]).rename(columns={"Ugody zakończone": "Zakończone ugodą", "Zakończenia po I instancji": "Zakończone w I instancji", "Zakończenia po II instancji": "Zakończone w II instancji", "Backlog UGODY (h)": "Backlog ugód (h)"}), hide_index=True, width="stretch")
+    st.caption("Zakończone ugodą, zakończone w I instancji i zakończone w II instancji "
+               "pokazano osobno w przepływach miesięcznych. Formalne zakończenie nie musi oznaczać płatności w tym samym miesiącu.")
     st.caption("Zmiany obsady analizuj przez jawne ustawienia pracowników. Wymagana pojemność według ról "
                "zastępuje pojedynczą minimalną liczbę etatów, która nie opisuje zróżnicowanego zespołu.")

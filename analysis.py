@@ -464,7 +464,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
         roznice_role = {r: sciezki_role[odniesienie][r] - sciezki_role[wariant][r] for r in ("EH", "UGODY")}
         if any(wyniki["stawki_wedlug_roli"][r] is None and roznice_role[r] != 0 for r in roznice_role):
             raise ValueError("Brak stawki roli wymaganej w porównywanym wariancie ugód.")
-        oszczednosc_pln = sum(roznice_role[r] / 60 * wyniki["role"][r]["mnoznik_zasobu"]
+        oszczednosc_pln = sum(roznice_role[r] / 60
                               * ((wyniki["stawki_wedlug_roli"][r] or 0) + parametry["koszt_staly_na_godzine"])
                               for r in roznice_role)
         porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ na wynik kohorty przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})

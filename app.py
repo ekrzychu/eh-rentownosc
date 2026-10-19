@@ -156,7 +156,7 @@ with st.sidebar:
         sekretariat_minuty = st.number_input(
             "Czynności sekretariatu (min/sprawę)", min_value=0.0,
             value=domyslne["sekretariat_minuty_na_sprawe"], step=1.0,
-            help="Łącznie raz w cyklu sprawy. Nie zużywa pojemności prawników ani mnożnika czynności dziennych.",
+            help="Łącznie raz w cyklu sprawy. Nie zużywa pojemności prawników i nie zwiększa czynności dziennych.",
         )
         st.caption("Czynności wspólne")
         wspolne_czynnosci = {
@@ -191,7 +191,7 @@ with st.sidebar:
             for rodzaj, minuty in domyslne["dodatkowe_minuty"].items()
         }
         st.divider()
-        st.caption("Czynności dzienne na pracownika")
+        st.caption("Czynności dzienne całego projektu (EH)")
         codzienne_czynnosci = {
             nazwa: st.number_input(nazwa, min_value=0, value=minuty, step=5)
             for nazwa, minuty in domyslne["codzienne_czynnosci"].items()

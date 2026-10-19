@@ -7,7 +7,8 @@ do timeline.py. Ten model wycenia wyłącznie zasób zużyty przez kohortę.
 from math import fsum, isfinite
 
 from config import parametry_modelu, wczytaj_defaults
-from staff import ROLE, nowy_pracownik, minuty_dzienne_wedlug_roli, srednie_stawki_wedlug_roli
+from staff import ROLE, GODZINY_ETATU_MIESIECZNIE, nowy_pracownik, minuty_dzienne_wedlug_roli, srednie_stawki_wedlug_roli
+from workflow import SCIEZKI_UGODOWE, SCIEZKI_BEZ_UGODY, etapy_sprawy
 
 
 MINUTY_DNIA_PRACY = wczytaj_defaults()["organizacja"]["minuty_dnia_pracy"]
@@ -18,13 +19,6 @@ KATEGORIE_SPRAW = {
     "P3": "Pozostałe sprawy",
 }
 
-SCIEZKI_UGODOWE = ("automatyczne_ramy_ugoda", "zawarte_poza_ramami")
-SCIEZKI_BEZ_UGODY = (
-    "kategoryczna_odmowa",
-    "automatyczne_ramy_brak_ugody",
-    "brak_szans",
-    "brak_ugody_poza_ramami",
-)
 SCIEZKI_UGODOWE_LISCIE = SCIEZKI_UGODOWE + SCIEZKI_BEZ_UGODY
 
 
@@ -277,37 +271,22 @@ def oblicz_czynnosci_dzienne_lifecycle(
     bezposrednie_minuty_spraw: float,
     codzienne_czynnosci: dict[str, float],
 ) -> dict[str, float]:
-    """Wycenia pełny płatny czas zasobu dla cyklu życia kohorty.
+    """Roczny stały nakład projektu; liczba godzin spraw nie zmienia kalendarza.
 
-    Ośmiogodzinny dzień pracownika ma 480 płatnych minut. Czynności dzienne
-    mieszczą się w tym limicie, więc jedna osobodniówka dostarcza na sprawy
-    wyłącznie różnicę między 480 minutami a narzutem dziennym.
+    Funkcja opisuje roczny kalendarz 12 × 167 / 8 dni, niezależnie od
+    godzin bezpośrednich. Zerową alokację pustego portfela obsługuje oblicz_model.
     """
-    if bezposrednie_minuty_spraw < 0:
-        raise ValueError("Bezpośredni czas spraw nie może być ujemny.")
-    minuty_na_osobodzien = sum(codzienne_czynnosci.values())
-    if minuty_na_osobodzien < 0:
-        raise ValueError("Czas czynności dziennych nie może być ujemny.")
-    produktywne_minuty = MINUTY_DNIA_PRACY - minuty_na_osobodzien
-    if bezposrednie_minuty_spraw > 0 and produktywne_minuty <= 0:
-        raise ValueError(
-            "Czynności dzienne zużywają cały dzień pracy; "
-            "nie można obsłużyć dodatniej pracy nad sprawami."
-        )
-    ekwiwalent_osobodni = (
-        bezposrednie_minuty_spraw / produktywne_minuty
-        if produktywne_minuty > 0
-        else 0.0
-    )
-    minuty_lifecycle = ekwiwalent_osobodni * minuty_na_osobodzien
-    laczne_minuty_zasobu = bezposrednie_minuty_spraw + minuty_lifecycle
+    if bezposrednie_minuty_spraw < 0 or any(v < 0 for v in codzienne_czynnosci.values()):
+        raise ValueError("Czas pracy nie może być ujemny.")
+    dni = 12 * GODZINY_ETATU_MIESIECZNIE / 8
+    dzienne = dni * fsum(codzienne_czynnosci.values())
     return {
-        "produktywne_minuty_na_osobodzien": max(produktywne_minuty, 0.0),
-        "ekwiwalent_osobodni_kohorty": ekwiwalent_osobodni,
-        "czynnosci_dzienne_lifecycle_minuty": minuty_lifecycle,
-        "czynnosci_dzienne_lifecycle_godziny": minuty_lifecycle / 60,
-        "laczne_minuty_zasobu_lifecycle": laczne_minuty_zasobu,
-        "laczne_godziny_zasobu_lifecycle": laczne_minuty_zasobu / 60,
+        "produktywne_minuty_na_osobodzien": MINUTY_DNIA_PRACY,
+        "ekwiwalent_osobodni_kohorty": dni,
+        "czynnosci_dzienne_lifecycle_minuty": dzienne,
+        "czynnosci_dzienne_lifecycle_godziny": dzienne / 60,
+        "laczne_minuty_zasobu_lifecycle": bezposrednie_minuty_spraw + dzienne,
+        "laczne_godziny_zasobu_lifecycle": (bezposrednie_minuty_spraw + dzienne) / 60,
     }
 
 
@@ -401,20 +380,12 @@ def podsumuj_grupy(grupy: list[dict]) -> dict:
 
 def oblicz_czasy_sciezek_wedlug_roli(parametry: dict) -> dict:
     """Sześć dotychczasowych ścieżek, bez dodatkowego czasu P i II instancji."""
-    wspolne = sum(parametry["wspolne_czynnosci"].values())
-    proces = sum(parametry["procesowe_czynnosci"].values())
-    ugody = sum(parametry["ugodowe_czynnosci"].values())
-    proba = sum(parametry["ugodowe_czynnosci"].get(k, 0) for k in ("Oferta ugody", "Projekt ugody"))
-    analiza = parametry["analiza_mozliwosci_ugody"]
-    return {path: {"EH": wspolne + (proces if path in SCIEZKI_BEZ_UGODY else 0),
-                   "UGODY": ((ugody if path in SCIEZKI_UGODOWE else proba
-                              if path in {"automatyczne_ramy_brak_ugody", "brak_ugody_poza_ramami"} else 0)
-                             + (analiza if path in {"brak_szans", "zawarte_poza_ramami", "brak_ugody_poza_ramami"} else 0))}
-            for path in SCIEZKI_UGODOWE_LISCIE}
+    return {path: {r: fsum(e.minuty for e in etapy_sprawy(parametry, path) if e.rola == r)
+                   for r in ROLE} for path in SCIEZKI_UGODOWE_LISCIE}
 
 
-def _koszty_pracy(minuty: dict, mnozniki: dict, stawki: dict, narzut: float) -> dict:
-    godziny = {r: minuty[r] * mnozniki[r] / 60 for r in ROLE}
+def _koszty_pracy(minuty: dict, stawki: dict, narzut: float) -> dict:
+    godziny = {r: minuty[r] / 60 for r in ROLE}
     if any(godziny[r] > 0 and stawki[r] is None for r in ROLE):
         raise ValueError("Brak stawki wymaganej do wyceny pracy roli.")
     place = {r: godziny[r] * stawki[r] if godziny[r] > 0 else 0.0 for r in ROLE}
@@ -422,9 +393,9 @@ def _koszty_pracy(minuty: dict, mnozniki: dict, stawki: dict, narzut: float) -> 
             "narzut": fsum(godziny.values()) * narzut}
 
 
-def oblicz_grupe(grupa: dict, parametry: dict, minuty: dict, mnozniki: dict, stawki: dict) -> dict:
+def oblicz_grupe(grupa: dict, parametry: dict, minuty: dict, stawki: dict, dzienne_h: float) -> dict:
     """Wycena minut każdej roli; przychód i liczebność pochodzą ze wspólnego przepływu."""
-    niedostepny = any(minuty[r] > 0 and (stawki[r] is None or mnozniki[r] == 0) for r in ROLE)
+    niedostepny = any(minuty[r] > 0 and stawki[r] is None for r in ROLE)
     if grupa["liczba"] == 0 and niedostepny:
         # Pusty segment nie wymaga stawki. Jego hipotetycznej wyceny nie zastępuje zero.
         return {**grupa, "bezposrednie_minuty_wedlug_roli": dict(minuty),
@@ -434,9 +405,11 @@ def oblicz_grupe(grupa: dict, parametry: dict, minuty: dict, mnozniki: dict, sta
                 "wynik_jednostkowy_przed_podatkiem", "minuty_zasobu_pracownika", "godziny_zasobu_pracownika")},
             **{k: 0.0 for k in ("laczny_koszt_narzutu_ogolnego", "laczny_koszt_wynagrodzenia",
                 "laczny_koszt_sekretariatu", "laczny_koszt_calkowity", "laczny_wynik_przed_podatkiem")}}
-    koszt = _koszty_pracy(minuty, mnozniki, stawki, parametry["koszt_staly_na_godzine"])
-    place = fsum(koszt["place"].values())
-    narzut = koszt["narzut"]
+    koszt = _koszty_pracy(minuty, stawki, parametry["koszt_staly_na_godzine"])
+    place_dzienne = dzienne_h * (stawki["EH"] or 0)
+    narzut_dzienny = dzienne_h * parametry["koszt_staly_na_godzine"]
+    place = fsum(koszt["place"].values()) + place_dzienne
+    narzut = koszt["narzut"] + narzut_dzienny
     bezposredni = fsum(minuty[r] / 60 * ((stawki[r] or 0) + parametry["koszt_staly_na_godzine"]) for r in ROLE)
     sekretariat = parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"]
     razem = place + narzut + sekretariat
@@ -444,12 +417,13 @@ def oblicz_grupe(grupa: dict, parametry: dict, minuty: dict, mnozniki: dict, sta
     przychod = grupa["oczekiwane_wynagrodzenie"]
     return {**grupa,
             "bezposrednie_minuty_wedlug_roli": dict(minuty),
-            "godziny_zasobu_wedlug_roli": koszt["godziny"],
-            "koszt_wynagrodzenia_wedlug_roli": koszt["place"],
+            "godziny_zasobu_wedlug_roli": {**koszt["godziny"], "EH": koszt["godziny"]["EH"] + dzienne_h},
+            "koszt_wynagrodzenia_wedlug_roli": {**koszt["place"], "EH": koszt["place"]["EH"] + place_dzienne},
+            "koszt_dziennych_plac": place_dzienne, "koszt_dziennych_narzutu": narzut_dzienny,
             "koszt_bezposredni": bezposredni,
-            "narzut_dzienny_na_sprawe": place + narzut - bezposredni,
-            "minuty_zasobu_pracownika": fsum(koszt["godziny"].values()) * 60,
-            "godziny_zasobu_pracownika": fsum(koszt["godziny"].values()),
+            "narzut_dzienny_na_sprawe": place_dzienne + narzut_dzienny,
+            "minuty_zasobu_pracownika": (fsum(koszt["godziny"].values()) + dzienne_h) * 60,
+            "godziny_zasobu_pracownika": fsum(koszt["godziny"].values()) + dzienne_h,
             "koszt_narzutu_ogolnego": narzut, "koszt_wynagrodzenia": place,
             "koszt_sekretariatu": sekretariat, "koszt_calkowity": razem,
             "wynik_jednostkowy_przed_podatkiem": przychod - razem,
@@ -547,26 +521,36 @@ def oblicz_przeplyw(parametry: dict | None = None) -> dict:
 
 
 def oblicz_model(parametry: dict | None = None) -> dict:
-    """Pełny lifecycle; średnie stawek wspólnej obsady i dzienne obciążenia ról."""
+    """Wycena całego cyklu: bezpośrednia praca ról i stała roczna alokacja dziennych."""
     if parametry is None:
         parametry = domyslne_parametry()
     przeplyw = oblicz_przeplyw(parametry)
     if "pracownicy" not in parametry:
         raise ValueError("Brak wspólnej obsady pracowników do wyceny stawek.")
     stawki = srednie_stawki_wedlug_roli(parametry["pracownicy"])
-    brak = [r for r in ROLE if przeplyw["roczne_minuty_wedlug_roli"][r] > 0 and stawki[r] is None]
+    liczba = parametry["liczba_spraw"]
+    dzienne = fsum(parametry["codzienne_czynnosci"].values())
+    brak = [r for r in ROLE if (przeplyw["roczne_minuty_wedlug_roli"][r] > 0
+            or (r == "EH" and liczba > 0 and dzienne > 0)) and stawki[r] is None]
     if brak:
         raise ValueError("Brak stawki godzinowej wymaganej roli: " + ", ".join(brak)
                          + ". Dodaj pracownika z dodatnim przydziałem do projektu. Kontrakt w czasie pozostaje dostępny.")
-    dzienne = minuty_dzienne_wedlug_roli(parametry["codzienne_czynnosci"])
-    role = {r: oblicz_czynnosci_dzienne_lifecycle(przeplyw["roczne_minuty_wedlug_roli"][r], {r: dzienne[r]})
-            for r in ROLE}
-    mnozniki = {r: MINUTY_DNIA_PRACY / (MINUTY_DNIA_PRACY - dzienne[r])
-                 if dzienne[r] < MINUTY_DNIA_PRACY else 0.0 for r in ROLE}
+    role = {}
     for r in ROLE:
-        role[r].update({"bezposrednie_minuty": przeplyw["roczne_minuty_wedlug_roli"][r],
-                        "mnoznik_zasobu": mnozniki[r], "stawka_godzinowa": stawki[r]})
-    grupy = [oblicz_grupe(g, parametry, przeplyw["minuty_rodzajow_wedlug_roli"][g["rodzaj"]], mnozniki, stawki)
+        direct = przeplyw["roczne_minuty_wedlug_roli"][r]
+        daily = (12 * GODZINY_ETATU_MIESIECZNIE / 8 * dzienne
+                 if r == "EH" and liczba > 0 else 0.0)
+        role[r] = {
+            "bezposrednie_minuty": direct, "mnoznik_zasobu": 1.0,
+            "stawka_godzinowa": stawki[r],
+            "ekwiwalent_osobodni_kohorty": 12 * GODZINY_ETATU_MIESIECZNIE / 8 if r == "EH" and liczba else 0.0,
+            "czynnosci_dzienne_lifecycle_minuty": daily,
+            "czynnosci_dzienne_lifecycle_godziny": daily / 60,
+            "laczne_minuty_zasobu_lifecycle": direct + daily,
+            "laczne_godziny_zasobu_lifecycle": (direct + daily) / 60,
+        }
+    dzienne_h_na_sprawe = role["EH"]["czynnosci_dzienne_lifecycle_godziny"] / liczba if liczba else 0.0
+    grupy = [oblicz_grupe(g, parametry, przeplyw["minuty_rodzajow_wedlug_roli"][g["rodzaj"]], stawki, dzienne_h_na_sprawe)
              for g in przeplyw["grupy"]]
     wedlug_wps = {key: podsumuj_grupy([g for g in grupy if g["grupa_wps"] == key])
                   for key in ("niski_wps", "wysoki_wps")}

@@ -7,6 +7,7 @@ from config import wczytaj_defaults
 ROLE = ("EH", "UGODY")
 ETYKIETY_ROL = {"EH": "Prawnik EH", "UGODY": "Prawnik ugody"}
 GODZINY_ETATU_MIESIECZNIE = wczytaj_defaults()["organizacja"]["godziny_etatu_miesiecznie"]
+CZYNNOSCI_DZIENNE = frozenset(wczytaj_defaults()["czynnosci_dzienne"])
 
 
 def nowy_pracownik(indeks: int) -> dict:
@@ -48,29 +49,37 @@ def waliduj_obsade(pracownicy: list[dict]) -> None:
 
 
 def minuty_dzienne_wedlug_roli(czynnosci: dict) -> dict:
-    role = {
-        "Obsługa skrzynki ugody EH": "UGODY",
-        "Komunikacja z EH i zlecanie opłat w SOSS": "EH",
-        "Umieszczanie dokumentów w SOSS": "EH",
-    }
-    if set(czynnosci) - set(role):
+    if set(czynnosci) - CZYNNOSCI_DZIENNE:
         raise ValueError("Nieznana rola czynności dziennej.")
-    return {rola: sum(v for k, v in czynnosci.items() if role[k] == rola) for rola in ROLE}
+    return {"EH": fsum(czynnosci.values()), "UGODY": 0.0}
 
 
 def pojemnosc_obsady(pracownicy: list[dict], czynnosci: dict) -> dict:
     waliduj_obsade(pracownicy)
-    dzienne = minuty_dzienne_wedlug_roli(czynnosci)
+    wymagane = GODZINY_ETATU_MIESIECZNIE / 8 * minuty_dzienne_wedlug_roli(czynnosci)["EH"]
     wynik = {rola: {"brutto_minuty": 0.0, "dzienne_minuty": 0.0,
-                    "netto_minuty": 0.0, "wynagrodzenia": 0.0} for rola in ROLE}
-    for osoba in pracownicy:
+                    "netto_minuty": 0.0, "wynagrodzenia": 0.0,
+                    "dzienne_wymagane_minuty": wymagane if rola == "EH" else 0.0,
+                    "dzienne_niewykonane_minuty": 0.0,
+                    "opiekun_dziennych": None,
+                    "dodatnio_przydzieleni": 0} for rola in ROLE}
+    kandydaci = []
+    for indeks, osoba in enumerate(pracownicy):
         godziny = GODZINY_ETATU_MIESIECZNIE * osoba["wykorzystanie_percent"] / 100
-        dzienne_minuty = godziny / 8 * dzienne[osoba["rola"]]
         pula = wynik[osoba["rola"]]
         pula["brutto_minuty"] += godziny * 60
-        pula["dzienne_minuty"] += dzienne_minuty
-        pula["netto_minuty"] += max(godziny * 60 - dzienne_minuty, 0.0)
         pula["wynagrodzenia"] += godziny * osoba["stawka"]
+        pula["dodatnio_przydzieleni"] += godziny > 0
+        if osoba["rola"] == "EH" and godziny > 0:
+            kandydaci.append((godziny * 60, -indeks))
+    eh = wynik["EH"]
+    if kandydaci and wymagane > 0:
+        dostepne, ujemny_indeks = max(kandydaci)
+        eh["opiekun_dziennych"] = -ujemny_indeks
+        eh["dzienne_minuty"] = min(wymagane, dostepne)
+    eh["dzienne_niewykonane_minuty"] = max(wymagane - eh["dzienne_minuty"], 0.0)
+    for pula in wynik.values():
+        pula["netto_minuty"] = max(pula["brutto_minuty"] - pula["dzienne_minuty"], 0.0)
     return wynik
 
 

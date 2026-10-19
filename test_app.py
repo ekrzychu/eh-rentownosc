@@ -20,7 +20,7 @@ class TestGlowneWidoki(unittest.TestCase):
         self.assertFalse(app.exception)
         metrics = {x.label: x.value for x in app.metric}
         self.assertEqual(metrics["Stan stabilny"], "Osiągnięty")
-        self.assertEqual(metrics["Break-even finansowy"], "Miesiąc 12")
+        self.assertEqual(metrics["Break-even finansowy"], "Miesiąc 13")
         self.assertTrue(any("Ocena trwałości: **Break-even trwały**" in x.value for x in app.markdown))
         self.assertTrue(any("24 303,60 zł" in x.value for x in app.markdown))
 
@@ -127,9 +127,9 @@ class TestIndywidualniPracownicy(unittest.TestCase):
         self.number("Wykorzystanie pracownika 2 w projekcie (%)").set_value(0.0)
         self.app.segmented_control[0].set_value("Kontrakt w czasie").run()
         self.assertFalse(self.app.exception)
-        df = next(x.value for x in self.app.dataframe if "Koszt wynagrodzeń EH" in x.value.columns)
-        self.assertAlmostEqual(df.iloc[0]["Koszt wynagrodzeń EH"], 6012)
-        self.assertEqual(df.iloc[0]["Koszt wynagrodzeń ugód"], 0)
+        df = next(x.value for x in self.app.dataframe if "Wynagrodzenia EH" in x.value.columns)
+        self.assertAlmostEqual(df.iloc[0]["Wynagrodzenia EH"], 6012)
+        self.assertEqual(df.iloc[0]["Wynagrodzenia ugód"], 0)
 
     def test_N_usuniecie_i_powrot_pracownika_zachowuje_ustawienia(self):
         self.number("Wynagrodzenie pracownika 1 (zł/h)").set_value(72.0)
@@ -153,17 +153,17 @@ class TestIndywidualniPracownicy(unittest.TestCase):
         self.app.run()
         case_cost = next(x.value for x in self.app.metric if x.label == "Koszt / sprawę")
         self.app.segmented_control[0].set_value("Kontrakt w czasie").run()
-        self.number("Koszty ogólne / aktywną sprawę / mies.").set_value(43.0)
-        self.number("Koszt sekretariatu / aktywną sprawę / mies.").set_value(7.0)
+        self.number("Koszty ogólne / sprawę z wykonaną pracą / mies.").set_value(43.0)
+        self.number("Koszt sekretariatu / sprawę z wykonaną pracą / mies.").set_value(7.0)
         self.number("Opóźnienie płatności (mies.)").set_value(3).run()
-        df = next(x.value for x in self.app.dataframe if "Koszt wynagrodzeń EH" in x.value.columns)
-        self.assertEqual(df.iloc[0]["Koszty ogólne aktywnych spraw"], 2150)
-        self.assertEqual(df.iloc[0]["Koszt sekretariatu aktywnych spraw"], 350)
+        df = next(x.value for x in self.app.dataframe if "Wynagrodzenia EH" in x.value.columns)
+        self.assertAlmostEqual(df.iloc[0]["Koszty ogólne spraw, nad którymi pracowano"], df.iloc[0]["Sprawy, nad którymi pracowano w miesiącu"] * 43)
+        self.assertAlmostEqual(df.iloc[0]["Koszt sekretariatu spraw, nad którymi pracowano"], df.iloc[0]["Sprawy, nad którymi pracowano w miesiącu"] * 7)
         self.app.segmented_control[0].set_value("Ekonomika sprawy").run()
         self.assertEqual(next(x.value for x in self.app.metric if x.label == "Koszt / sprawę"), case_cost)
         self.app.segmented_control[0].set_value("Kontrakt w czasie").run()
-        self.assertEqual(self.number("Koszty ogólne / aktywną sprawę / mies.").value, 43)
-        self.assertEqual(self.number("Koszt sekretariatu / aktywną sprawę / mies.").value, 7)
+        self.assertEqual(self.number("Koszty ogólne / sprawę z wykonaną pracą / mies.").value, 43)
+        self.assertEqual(self.number("Koszt sekretariatu / sprawę z wykonaną pracą / mies.").value, 7)
         self.assertEqual(self.number("Opóźnienie płatności (mies.)").value, 3)
         self.assertFalse(self.app.exception)
 
@@ -182,7 +182,7 @@ class TestNiezaleznoscWalidacjiWidokow(unittest.TestCase):
                 ("Umieszczanie dokumentów w SOSS", 240)):
             next(x for x in app.number_input if x.label == label).set_value(value)
         app.run()
-        self.assertTrue(app.error)
+        self.assertFalse(app.error)
         app.segmented_control[0].set_value("Kontrakt w czasie").run()
         self.assertFalse(app.exception)
         self.assertFalse(app.error)
@@ -210,13 +210,13 @@ class TestJednaObsadaObuPaneli(unittest.TestCase):
         self.assertTrue(any('średnia arytmetyczna' in x.value for x in app.caption))
 
     def test_zmiana_plac_EH_i_ugod_aktualizuje_obydwa_panele(self):
-        for indeks, godziny, kolumna in ((1, 433.2375 / 60 * 480 / 420, 'Koszt wynagrodzeń EH'),
-                                         (2, 42.375 / 60 * 480 / 450, 'Koszt wynagrodzeń ugód')):
+        for indeks, godziny, kolumna in ((1, 441.4875 / 60 + 375.75 / 600, 'Wynagrodzenia EH'),
+                                         (2, 34.125 / 60, 'Wynagrodzenia ugód')):
             app = self.app()
             self.liczba(app, f'Wynagrodzenie pracownika {indeks} (zł/h)').set_value(69.88).run()
             self.assertFalse(app.exception)
             koszt = self.kwota(next(x.value for x in app.metric if x.label == 'Koszt / sprawę'))
-            self.assertAlmostEqual(koszt, round(863.4450571428571 + godziny * 10, 2))
+            self.assertAlmostEqual(koszt, round((285367.5 / 60 + 375.75) / 600 * (59.88 + 36) + godziny * 10, 2))
             app.segmented_control[0].set_value('Kontrakt w czasie').run()
             self.assertFalse(app.exception)
             df = next(x.value for x in app.dataframe if kolumna in x.value.columns)
@@ -261,7 +261,7 @@ class TestJednaObsadaObuPaneli(unittest.TestCase):
         app.segmented_control[0].set_value('Kontrakt w czasie').run()
         self.assertTrue(any(x.label == 'Rozliczenie kontraktu za 60 mies.' for x in app.expander))
         df = next(x.value for x in app.dataframe if 'Wielkość' in x.value.columns)
-        self.assertIn('Łączne sprawomiesiące naliczające koszt', list(df['Wielkość']))
+        self.assertIn('Sprawomiesiące faktycznej pracy', list(df['Wielkość']))
 
 
 if __name__ == "__main__":

@@ -39,34 +39,34 @@ class TestWspolneStawkiIRole(unittest.TestCase):
 
     def test_niezalezne_minuty_i_przychod_referencyjny(self):
         r = oblicz_model(self.p)
-        self.assertEqual(niezalezne_minuty_roczne(self.p), {'EH': 259942.5, 'UGODY': 25425.0})
-        self.assertEqual(r['roczne_minuty_wedlug_roli'], {'EH': 259942.5, 'UGODY': 25425.0})
+        self.assertEqual(niezalezne_minuty_roczne(self.p), {'EH': 264892.5, 'UGODY': 20475.0})
+        self.assertEqual(r['roczne_minuty_wedlug_roli'], {'EH': 264892.5, 'UGODY': 20475.0})
         self.assertAlmostEqual(r['bezposrednie_minuty_spraw'], 285367.5)
         self.assertAlmostEqual(r['ogolem']['przychod'], 451963.254)
 
     def test_obciazenia_dzienne_osobno_i_dokladny_koszt(self):
         r = oblicz_model(self.p)
-        h_eh = 259942.5 / 60 * 480 / 420
-        h_ug = 25425.0 / 60 * 480 / 450
+        h_eh = 264892.5 / 60 + 375.75
+        h_ug = 20475.0 / 60
         self.assertAlmostEqual(r['role']['EH']['laczne_godziny_zasobu_lifecycle'], h_eh)
         self.assertAlmostEqual(r['role']['UGODY']['laczne_godziny_zasobu_lifecycle'], h_ug)
-        self.assertAlmostEqual(r['role']['EH']['mnoznik_zasobu'], 480 / 420)
-        self.assertAlmostEqual(r['role']['UGODY']['mnoznik_zasobu'], 480 / 450)
-        self.assertAlmostEqual(r['laczne_godziny_zasobu_lifecycle'] / 600, 9.00547619047619)
+        self.assertAlmostEqual(r['role']['EH']['mnoznik_zasobu'], 1.0)
+        self.assertAlmostEqual(r['role']['UGODY']['mnoznik_zasobu'], 1.0)
+        self.assertAlmostEqual(r['laczne_godziny_zasobu_lifecycle'] / 600, (285367.5 / 60 + 375.75) / 600)
         self.assertAlmostEqual(r['koszt_wynagrodzen_lifecycle'], h_eh * 60 + h_ug * 45)
         self.assertAlmostEqual(r['koszt_lifecycle_razem'], h_eh * 60 + h_ug * 45 + (h_eh + h_ug) * 36)
 
     def test_sześć_sciezek_i_p_bez_zmiany_minut(self):
         r = oblicz_model(self.p)
         expected = {'kategoryczna_odmowa': (280, 0), 'automatyczne_ramy_ugoda': (30, 55),
-                    'automatyczne_ramy_brak_ugody': (280, 35), 'brak_szans': (280, 30),
+                    'automatyczne_ramy_brak_ugody': (280, 35), 'brak_szans': (310, 0),
                     'zawarte_poza_ramami': (30, 85), 'brak_ugody_poza_ramami': (280, 65)}
         for path, (eh, ug) in expected.items():
             self.assertEqual(r['czasy_sciezek_wedlug_roli'][path], {'EH': eh, 'UGODY': ug})
             self.assertEqual(eh + ug, r['czasy_sciezek_ugod'][path])
         for g in r['grupy']:
-            self.assertAlmostEqual(g['bezposrednie_minuty_wedlug_roli']['UGODY'], 42.375)
-            self.assertAlmostEqual(g['bezposrednie_minuty_wedlug_roli']['EH'], 282.9375 + self.p['dodatkowe_minuty'][g['rodzaj']])
+            self.assertAlmostEqual(g['bezposrednie_minuty_wedlug_roli']['UGODY'], 34.125)
+            self.assertAlmostEqual(g['bezposrednie_minuty_wedlug_roli']['EH'], 291.1875 + self.p['dodatkowe_minuty'][g['rodzaj']])
             expected_wage = g['godziny_zasobu_wedlug_roli']['EH'] * 60 + g['godziny_zasobu_wedlug_roli']['UGODY'] * 45
             self.assertAlmostEqual(g['koszt_wynagrodzenia'], expected_wage)
 
@@ -105,15 +105,15 @@ class TestWspolneStawkiIRole(unittest.TestCase):
         self.assertEqual(r['role']['UGODY']['laczne_godziny_zasobu_lifecycle'], 0)
         p = {**self.p, 'kategoryczna_odmowa_percent': 0.0, 'automatyczne_ramy_percent': 100.0,
              'skutecznosc_automatycznych_ram_percent': 100.0, 'pracownicy': [osoba('UGODY', 45)],
-             'wspolne_czynnosci': {}, 'dodatkowe_minuty': {'P1': 0, 'P2': 0, 'P3': 0}}
+             'wspolne_czynnosci': {}, 'codzienne_czynnosci': {}, 'dodatkowe_minuty': {'P1': 0, 'P2': 0, 'P3': 0}}
         r = oblicz_model(p)
         self.assertIsNone(r['stawki_wedlug_roli']['EH'])
-        self.assertAlmostEqual(r['koszt_wynagrodzen_lifecycle'], 600 * 55 / 60 * 480 / 450 * 45)
+        self.assertAlmostEqual(r['koszt_wynagrodzen_lifecycle'], 600 * 55 / 60 * 45)
 
     def test_pusty_segment_z_niewycenialna_rola_ma_brak_wyceny(self):
         p = {**self.p, 'kategoryczna_odmowa_percent': 0.0, 'automatyczne_ramy_percent': 100.0,
              'skutecznosc_automatycznych_ram_percent': 100.0, 'pracownicy': [osoba('UGODY', 45)],
-             'wspolne_czynnosci': {}, 'udzialy_rodzajow': {'P1': 100, 'P2': 0, 'P3': 0},
+             'wspolne_czynnosci': {}, 'codzienne_czynnosci': {}, 'udzialy_rodzajow': {'P1': 100, 'P2': 0, 'P3': 0},
              'dodatkowe_minuty': {'P1': 0, 'P2': 0, 'P3': 90}}
         r = oblicz_model(p)
         for g in r['grupy']:
@@ -155,13 +155,13 @@ class TestWspolneStawkiIRole(unittest.TestCase):
             zmiana = deepcopy(p)
             zmiana[key][nazwa] -= 1
             w = 60 if rola == 'EH' else 45
-            mnoznik = 480 / (420 if rola == 'EH' else 450)
+            mnoznik = 1.0
             self.assertAlmostEqual(bazowy['koszt_lifecycle_razem'] - oblicz_model(zmiana)['koszt_lifecycle_razem'],
                                    liczba_spraw / 60 * mnoznik * (w + 36))
 
     def test_ugody_porownuja_wlasciwe_stawki_i_mnozniki(self):
         porownanie = ekonomika_ugod(self.p)['porownania'][0]
-        expected = (250 + 105) / 60 * 480 / 420 * (60 + 36) + (35 - 55) / 60 * 480 / 450 * (45 + 36)
+        expected = (250 + 105) / 60 * 1.0 * (60 + 36) + (35 - 55) / 60 * 1.0 * (45 + 36)
         self.assertAlmostEqual(porownanie['Różnica PLN na sprawę'], expected)
 
 
@@ -170,31 +170,27 @@ class TestNiezaleznaRekonsyliacja(unittest.TestCase):
     def setUpClass(cls):
         cls.warianty = scenariusze()
 
-    def test_scenariusze_A_G_nie_zmienily_przeplywow_po_naprawie_lifecycle(self):
-        oczekiwane = {'A': -338578.75394139247, 'B': -2972228.455115,
-                      'C': -1803737.4297, 'D': -488622.7422, 'E': -2403735.0297,
-                      'F': -1903937.4297, 'G': -1903937.4297}
-        for nazwa, wynik in oczekiwane.items():
-            self.assertAlmostEqual(self.warianty[nazwa]['podsumowanie']['Wynik'], wynik, places=5)
+    def test_dziesiec_scenariuszy_i_niezmiennosc_przeplywow_przy_oplacie(self):
+        self.assertEqual(set(self.warianty), {str(s) for s in range(1, 11)})
         sprawdz_niezaleznosc(self.warianty)
 
     def test_punkty_kontrolne_i_pelne_skladniki(self):
         for w in self.warianty.values():
-            self.assertEqual([r['Miesiąc'] for r in w['punkty_kontrolne']], [1, 6, 10, 16, 24, 36, 60])
+            self.assertEqual([r['Miesiąc'] for r in w['punkty_kontrolne']], [12, 24, 60])
             for row in w['punkty_kontrolne']:
                 self.assertAlmostEqual(row['Koszt całkowity'], row['Wynagrodzenia EH'] + row['Wynagrodzenia ugód'] + row['Koszty ogólne'] + row['Sekretariat'])
                 self.assertAlmostEqual(row['Wynik'], row['Przychód'] - row['Koszt całkowity'], places=6)
-                self.assertAlmostEqual(row['Koszty ogólne'], row['Sprawomiesiące'] * w['koszty']['ogolne_na_aktywna_sprawe'], places=6)
+                self.assertAlmostEqual(row['Koszty ogólne'], row['Sprawomiesiące faktycznej pracy'] * w['koszty']['ogolne_na_aktywna_sprawe'], places=6)
 
-    def test_c_dojrzaly_przeplyw_i_e_dodatkowa_osoba_nie_tworzy_pracy(self):
-        c, e = self.warianty['C'], self.warianty['E']
-        for w in (c, e):
-            ostatni_rok = w['miesiace'][-12:]
-            self.assertAlmostEqual(fsum(r['Przychód razem'] for r in ostatni_rok), 451963.254)
-            self.assertAlmostEqual(fsum(r['Wykonana praca EH (h)'] * 60 for r in ostatni_rok), 259942.5)
-            self.assertAlmostEqual(fsum(r['Wykonana praca UGODY (h)'] * 60 for r in ostatni_rok), 25425)
-        self.assertEqual(c['podsumowanie']['Przychód'], e['podsumowanie']['Przychód'])
-        self.assertEqual(c['podsumowanie']['Sprawomiesiące'], e['podsumowanie']['Sprawomiesiące'])
+    def test_stabilny_przeplyw_i_krotszy_czas_nie_tworzy_pracy(self):
+        for s in ('3', '4', '5', '6'):
+            last = self.warianty[s]['miesiace'][-12:]
+            scale = .5 if s == '6' else 1
+            self.assertAlmostEqual(fsum(r['Przychód razem'] for r in last), 451963.254)
+            self.assertAlmostEqual(fsum(r['Wykonana praca EH (h)'] * 60 for r in last), 264892.5 * scale)
+            self.assertAlmostEqual(fsum(r['Wykonana praca UGODY (h)'] * 60 for r in last), 20475 * scale)
+        for s in ('4', '5', '6'):
+            self.assertEqual(self.warianty['3']['podsumowanie']['Przychód'], self.warianty[s]['podsumowanie']['Przychód'])
 
 
 if __name__ == '__main__':

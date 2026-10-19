@@ -1,0 +1,74 @@
+[
+  {
+    "Wariant": "Przeciążenie EH",
+    "Miesiące": 60,
+    "Sekundy": 0.10755291700024827,
+    "Backlog (h)": 9429.159937499999,
+    "Przyszła praca (h)": 5292.5728125000005,
+    "Status": "Niewystarczająca pojemność według roli"
+  },
+  {
+    "Wariant": "Przeciążenie EH",
+    "Miesiące": 120,
+    "Sekundy": 0.36271016699993197,
+    "Backlog (h)": 19019.223255208333,
+    "Przyszła praca (h)": 10428.370348958331,
+    "Status": "Niewystarczająca pojemność według roli"
+  },
+  {
+    "Wariant": "Przeciążenie EH",
+    "Miesiące": 360,
+    "Sekundy": 3.7787255000002915,
+    "Backlog (h)": 57349.022015625,
+    "Przyszła praca (h)": 31010.416838541667,
+    "Status": "Niewystarczająca pojemność według roli"
+  },
+  {
+    "Wariant": "Stabilny operacyjnie",
+    "Miesiące": 60,
+    "Sekundy": 0.06983183400006965,
+    "Backlog (h)": 0.0,
+    "Przyszła praca (h)": 708.4895833333334,
+    "Status": "Stabilny, ale nierentowny"
+  },
+  {
+    "Wariant": "Stabilny operacyjnie",
+    "Miesiące": 120,
+    "Sekundy": 0.14244041700021626,
+    "Backlog (h)": 0.0,
+    "Przyszła praca (h)": 708.4895833333334,
+    "Status": "Stabilny, ale nierentowny"
+  },
+  {
+    "Wariant": "Stabilny operacyjnie",
+    "Miesiące": 360,
+    "Sekundy": 0.44293629200001305,
+    "Backlog (h)": 0.0,
+    "Przyszła praca (h)": 708.4895833333334,
+    "Status": "Stabilny, ale nierentowny"
+  },
+  {
+    "Wariant": "Brak pracowników",
+    "Miesiące": 60,
+    "Sekundy": 0.13661566599967045,
+    "Backlog (h)": 14740.0,
+    "Przyszła praca (h)": 9040.625,
+    "Status": "Niewystarczająca pojemność według roli"
+  },
+  {
+    "Wariant": "Brak pracowników",
+    "Miesiące": 120,
+    "Sekundy": 0.46322583300025144,
+    "Backlog (h)": 29480.0,
+    "Przyszła praca (h)": 18081.25,
+    "Status": "Niewystarczająca pojemność według roli"
+  },
+  {
+    "Wariant": "Brak pracowników",
+    "Miesiące": 360,
+    "Sekundy": 4.153484542000115,
+    "Backlog (h)": 88440.0,
+    "Przyszła praca (h)": 54243.75,
+    "Status": "Niewystarczająca pojemność według roli"
+  }
+]

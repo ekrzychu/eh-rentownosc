@@ -130,6 +130,13 @@ def _renderuj_strukture(wyniki: dict) -> None:
             },
         )
 
+    st.caption(
+        f"Roczna alokacja czynności dziennych: {_liczba(wyniki['ekwiwalent_osobodni_kohorty'], 3)} dni; "
+        f"{_liczba(wyniki['czynnosci_dzienne_lifecycle_godziny'], 4)} h rocznie; "
+        f"koszt {_kwota(wyniki['czynnosci_dzienne_lifecycle_koszt'])}, "
+        f"czyli {_kwota(wyniki['narzut_dzienny_na_sprawe'])} / sprawę. "
+        "Wynagrodzenia i narzut w tabeli obejmują tę alokację po jednym razie."
+    )
     czas = st.columns(3, gap="large")
     czas[0].metric(
         "Bezpośredni czas / sprawę",
@@ -143,8 +150,8 @@ def _renderuj_strukture(wyniki: dict) -> None:
         "Czynności dzienne kohorty",
         f"{_liczba(wyniki['czynnosci_dzienne_lifecycle_godziny'], 1)} h",
         help=(
-            "Czynności dzienne mieszczą się w płatnym dniu pracy i zwiększają "
-            "czas zasobu potrzebny do wykonania pracy bezpośredniej."
+            "Stałe czynności całego projektu: 12 × 167 / 8 dni rocznie × suma minut dziennych. "
+            "Koszt EH i narzutu godzinowego jest rozdzielany raz na roczny portfel."
         ),
     )
 
@@ -413,7 +420,8 @@ def renderuj_ekonomike_sprawy(parametry: dict, wyniki: dict | None = None) -> No
 
     st.caption("Stawka roli to średnia arytmetyczna stawek osób z dodatnim przydziałem do projektu. "
                "Procent przydziału nie waży średniej ani nie ogranicza czasu lifecycle. "
-               "Czynności dzienne EH i ugód mają odrębne mnożniki zasobu.")
+               "Czynności dzienne są stałą pracą całego projektu przypisaną EH. "
+               "Ich koszt jest alokowany raz na roczny portfel, bez mnożenia godzin bezpośrednich.")
     _renderuj_strukture(wyniki)
     wrazliwosc = _renderuj_dzwignie(parametry)
 

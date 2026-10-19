@@ -1,0 +1,23 @@
+{
+  "punkt_wyjscia": "99a2f1e",
+  "testy_przed_zmiana": 216,
+  "testy_koncowe": {
+    "test_model": 58,
+    "test_analysis": 37,
+    "test_timeline": 65,
+    "test_reconciliation": 19,
+    "test_workflow": 38,
+    "test_app": 15,
+    "test_ui_timeline": 4
+  },
+  "suma_testow": 236,
+  "wynik_testow": "OK",
+  "czas_pelnego_zestawu_s": 28.23,
+  "diagnostyka_10_scenariuszy": "OK",
+  "niezalezny_audyt_40_konfiguracji": "OK",
+  "odtworzenie_600_miesiecy_starego_modelu": "OK",
+  "streamlit_apptests": "OK",
+  "chrome_i_ogledziny_zrzutow_obu_paneli": "OK",
+  "git_diff_check": "OK",
+  "status": "READY FOR INDEPENDENT AUDIT"
+}

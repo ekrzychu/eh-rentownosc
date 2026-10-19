@@ -145,7 +145,7 @@ class TestSilnikProgow(unittest.TestCase):
         self.assertAlmostEqual(po_zmianie["bezposrednie_minuty_spraw"], bazowe["bezposrednie_minuty_spraw"] / 2)
         self.assertAlmostEqual(
             po_zmianie["czynnosci_dzienne_lifecycle_minuty"],
-            bazowe["czynnosci_dzienne_lifecycle_minuty"] / 2,
+            bazowe["czynnosci_dzienne_lifecycle_minuty"],
         )
         self.assertEqual(zmienione["udzial_ii_instancji_percent"], self.parametry["udzial_ii_instancji_percent"])
         self.assertEqual(zmienione["obsluga_ii_instancji_minuty"], self.parametry["obsluga_ii_instancji_minuty"] / 2)
@@ -458,7 +458,7 @@ class TestUgodyIPojemnosc(unittest.TestCase):
             # Różnica EH: proces i oczekiwana II instancja. Różnica ugód: nieudana próba minus pełna ugoda.
             eh = 250 + 105
             ugody = 35 - 55
-            oczekiwana_roznica_pln = eh / 60 * 480 / 420 * (59.88 + 36) + ugody / 60 * 480 / 450 * (59.88 + 36)
+            oczekiwana_roznica_pln = eh / 60 * (59.88 + 36) + ugody / 60 * (59.88 + 36)
             oczekiwany_wplyw_portfela = (
                 oczekiwana_roznica_pln
                 * parametry["liczba_spraw"]

@@ -1,43 +1,58 @@
-"""Niezależny bilans arytmetyczny, bez funkcji pojemności i kolejek modelu."""
+"""Powtarzalny niezależny audyt bilansów i pomiar czasu 60/120/360 miesięcy."""
+
+import json
 from math import isclose
+from pathlib import Path
 from random import Random
-from model import domyslne_parametry, oblicz_model
+from time import perf_counter
+
+from diagnostic_costs import niezalezne_minuty_roczne, uzgodnij
+from model import domyslne_parametry, _skaluj_bezposrednie_czasy
 from timeline import oblicz_model_czasowy
-rng = Random(19102026)
-for scenario in range(30):
-    p = {**domyslne_parametry(), 'liczba_spraw': rng.randrange(0, 1000),
-         'udzial_ii_instancji_percent': rng.choice([0., 50., 100.])}
-    roster = [{'rola': rng.choice(['EH', 'UGODY']), 'stawka': rng.randrange(0, 120),
-               'wykorzystanie_percent': rng.choice([0., 15., 60., 100.])}
-              for _ in range(rng.randrange(0, 9))]
-    costs = {'ogolne_na_aktywna_sprawe': rng.randrange(0, 80),
-             'sekretariat_na_aktywna_sprawe': rng.randrange(0, 40)}
-    horizon = rng.randrange(12, 60)
-    result = oblicz_model_czasowy(p, {'horyzont_miesiace': horizon,
-        'miesiace_do_ugody': rng.randrange(0, 30), 'miesiace_do_wyroku_i': rng.randrange(0, 30),
-        'miesiace_wyrok_i_do_ii': rng.randrange(0, 20), 'opoznienie_platnosci_miesiace': rng.randrange(0, 12)},
-        pracownicy=roster, koszty_kontraktu=costs)
-    salary = sum(167 * e['wykorzystanie_percent'] / 100 * e['stawka'] for e in roster)
-    role_cap = {role: sum(167 * e['wykorzystanie_percent'] / 100 * (1 - daily / 480)
-                         for e in roster if e['rola'] == role)
-                for role, daily in [('EH', 60), ('UGODY', 30)]}
-    inflow = completions = balance = 0.
-    previous_active = 0.
-    for row in result['tabela_miesieczna']:
-        billable = previous_active + p['liczba_spraw'] / 12
-        overhead = billable * costs['ogolne_na_aktywna_sprawe']
-        secretariat = billable * costs['sekretariat_na_aktywna_sprawe']
-        cost = salary + overhead + secretariat
-        inflow += p['liczba_spraw'] / 12
-        completions += sum(row[k] for k in ('Ugody zakończone', 'Zakończenia po I instancji', 'Zakończenia po II instancji'))
-        balance += row['Przychód razem'] - cost
-        assert isclose(row['Łączny koszt miesięczny'], cost, abs_tol=1e-6)
-        assert isclose(row['Wynik skumulowany przed podatkiem'], balance, abs_tol=1e-6)
-        assert isclose(row['Aktywne sprawy'], inflow - completions, abs_tol=1e-6)
-        previous_active = inflow - completions
-        for role in ('EH', 'UGODY'):
-            assert row[f'Wykonana praca {role} (h)'] <= role_cap[role] + 1e-7
-    w = result['walidacja']
-    expected_work = oblicz_model(p)['bezposrednie_minuty_spraw'] * horizon / 12
-    assert isclose(w['praca_wykonana_minuty'] + w['backlog_minuty'] + w['praca_przyszla_minuty'], expected_work, abs_tol=1e-5)
-print('30 scenariuszy: niezależne bilanse kosztów, aktywności, pojemności ról i wszystkich minut — OK')
+
+
+def main():
+    rng = Random(19102026)
+    for scenario in range(40):
+        p = domyslne_parametry()
+        p.update(liczba_spraw=rng.randrange(0, 1000),
+                 udzial_ii_instancji_percent=rng.choice([0., 50., 100.]))
+        p['pracownicy'] = [{'rola': rng.choice(['EH', 'UGODY']), 'stawka': rng.randrange(0, 120),
+                          'wykorzystanie_percent': rng.choice([0., 15., 60., 100.])}
+                         for _ in range(rng.randrange(0, 9))]
+        daily = rng.choice([0, 90, 480])
+        p['codzienne_czynnosci'] = {'Obsługa skrzynki ugody EH': daily}
+        p = _skaluj_bezposrednie_czasy(p, rng.choice([0, .5, 1, 2]))
+        costs = {'ogolne_na_aktywna_sprawe': rng.randrange(0, 80),
+                 'sekretariat_na_aktywna_sprawe': rng.randrange(0, 40)}
+        horizon = rng.randrange(12, 60)
+        result = oblicz_model_czasowy(p, {'horyzont_miesiace': horizon,
+            'miesiace_do_ugody': rng.randrange(0, 30), 'miesiace_do_wyroku_i': rng.randrange(0, 30),
+            'miesiace_wyrok_i_do_ii': rng.randrange(0, 20), 'opoznienie_platnosci_miesiace': rng.randrange(0, 12)},
+            zapisz_zdarzenia=True, koszty_kontraktu=costs)
+        uzgodnij(p, costs, result)
+        w = result['walidacja']
+        expected = sum(niezalezne_minuty_roczne(p).values()) * horizon / 12
+        assert isclose(w['praca_wykonana_minuty'] + w['backlog_minuty'] + w['praca_przyszla_minuty'], expected, abs_tol=1e-5)
+    print('40 scenariuszy: niezależne bilanse kosztów, spraw, zdarzeń i minut — OK')
+    timings = []
+    for name in ('Przeciążenie EH', 'Stabilny operacyjnie', 'Brak pracowników'):
+        for horizon in (60, 120, 360):
+            p = domyslne_parametry()
+            if name == 'Stabilny operacyjnie':
+                p['pracownicy'] = [dict(p['pracownicy'][0]) for _ in range(3)] + [p['pracownicy'][1]]
+            elif name == 'Brak pracowników':
+                p['pracownicy'] = []
+            start = perf_counter()
+            result = oblicz_model_czasowy(p, {'horyzont_miesiace': horizon})
+            elapsed = perf_counter() - start
+            timings.append({'Wariant': name, 'Miesiące': horizon, 'Sekundy': elapsed,
+                            'Backlog (h)': result['podsumowanie']['backlog_koniec_godziny'],
+                            'Przyszła praca (h)': result['walidacja']['praca_przyszla_minuty'] / 60,
+                            'Status': result['kpi']['status_kontraktu']})
+            print(f'{name}, {horizon} mies.: {elapsed:.3f} s')
+    Path('audit_results/wydajnosc.json').write_text(json.dumps(timings, ensure_ascii=False, indent=2) + '\n')
+
+
+if __name__ == '__main__':
+    main()

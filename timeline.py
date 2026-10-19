@@ -1,13 +1,16 @@
-"""Ciągły, pojemnościowy model ekonomii operacyjnej w czasie.
+"""Model pracy FIFO, formalnych zegarów i płatności w czasie.
 
 ``oblicz_przeplyw`` jest wspólnym źródłem oczekiwanej pracy i przychodu
-kohorty referencyjnej, bez wyceny lifecycle. Ten moduł tworzy co miesiąc proporcjonalną kohortę, układa jej
-pracę w kolejce FIFO i pobiera pełny koszt dostarczonej obsady. Koszt okresowy
+kohorty referencyjnej, bez wyceny lifecycle. Harmonogram zachowuje tożsamość
+ważonych spraw, rozłączne role i zależności etapów. Koszt okresowy
 nie jest zatem uzgadniany z kosztem pracy zużytej przez pojedynczą kohortę.
 """
 
-from collections import defaultdict, deque
+from collections import defaultdict
+from heapq import heappush, heappop
 from dataclasses import dataclass, field
+from functools import lru_cache
+from workflow import Etap, etapy_sprawy
 from math import fsum, isclose, isfinite
 
 from config import wczytaj_defaults
@@ -25,32 +28,69 @@ from model import (
 TOLERANCJA = 1e-8
 
 
+@lru_cache(maxsize=1024)
+def _plan_minut(etapy: tuple[Etap, ...]) -> tuple:
+    """Wspólne sumy odcinków na jedną sprawę, liczone raz dla danego planu.
+
+    Kolejność pól: przyszłe EH, przyszłe UGODY, dalszy bieżący odcinek,
+    przyszła II instancja. Wagi i pozostała praca należą do konkretnej sprawy.
+    """
+    wynik = []
+    for indeks, etap in enumerate(etapy):
+        dalsze = etapy[indeks + 1:]
+        odcinek = []
+        poprzedni = etap
+        for nastepny in dalsze:
+            if poprzedni.zegar or nastepny.rola != etap.rola:
+                break
+            odcinek.append(nastepny.minuty)
+            poprzedni = nastepny
+        wynik.append((fsum(e.minuty for e in dalsze if e.rola == "EH"),
+                      fsum(e.minuty for e in dalsze if e.rola == "UGODY"),
+                      fsum(odcinek),
+                      fsum(e.minuty for e in dalsze if e.nazwa == "ii_instancja")))
+    return tuple(wynik)
+
+
 @dataclass
-class WorkPacket:
-    """Porcja bezpośredniej pracy dostępna w kolejce od wskazanego miesiąca."""
+class Sprawa:
+    """Stała tożsamość reprezentanta o wadze (0, 1], bez zaokrąglania portfela.
 
-    due_month: int
-    cohort_month: int
-    path: str
-    stage: str
-    minutes_remaining: float
-    completion_id: int
-    role: str = "EH"
+    Waga oznacza oczekiwaną liczbę identycznych spraw. Częściowa praca
+    zmniejsza pozostałe minuty tego samego reprezentanta, nigdy jego wagę.
+    """
+    identyfikator: int
+    wplyw: int
+    sciezka: str
+    wynik: str
+    waga: float
+    przychod: float
+    etapy: tuple[Etap, ...]
+    indeks: int = 0
+    pozostale: float = 0.0
+    dostepna_od: int = 1
+    starty: dict = field(default_factory=dict)
+    konce_pracy: dict = field(default_factory=dict)
+    termin: int | None = None
+    plan: tuple = field(init=False, repr=False)
 
+    def __post_init__(self):
+        self.plan = _plan_minut(self.etapy)
 
-@dataclass
-class Completion:
-    """Oczekiwana grupa spraw; postęp wszystkich etapów wyznacza zakończenia."""
+    @property
+    def etap(self):
+        return self.etapy[self.indeks]
 
-    cohort_month: int
-    path: str
-    outcome: str
-    nominal_month: int
-    cases: float
-    revenue: float
-    stage_total_minutes: dict[str, float] = field(default_factory=dict)
-    stage_executed_minutes: dict[str, float] = field(default_factory=dict)
-    recognized_fraction: float = 0.0
+    def przyszle_minuty(self, rola):
+        return self.plan[self.indeks][0 if rola == "EH" else 1] * self.waga
+
+    def minuty_kolejki(self):
+        """Cały bieżący odcinek jednej roli, do zmiany roli lub wyniku formalnego.
+
+        Przyjęcie i bezpośredni proces tworzą jedną kolejkę EH. Ich kolejność
+        wykonania i inicjacja zegara pozostają odrębnymi zdarzeniami.
+        """
+        return self.pozostale + self.plan[self.indeks][2] * self.waga
 
 
 def domyslne_parametry_czasowe() -> dict:
@@ -182,16 +222,23 @@ def oblicz_pojemnosc_miesieczna(
             raise ValueError("Brak wspólnej obsady pracowników kontraktu.")
         pracownicy = parametry["pracownicy"]
     pools = pojemnosc_obsady(pracownicy, parametry["codzienne_czynnosci"])
-    packets, completions = defaultdict(list), []
-    _dodaj_kohorte(1, lifecycle, parametry, domyslne_parametry_czasowe(), packets, completions)
+    wymagane_role = {"EH"} if parametry["liczba_spraw"] > 0 else set()
+    if any(lifecycle["udzialy_ugod"][path] > 0 for path in (
+            "automatyczne_ramy_ugoda", "automatyczne_ramy_brak_ugody",
+            "zawarte_poza_ramami", "brak_ugody_poza_ramami")) and parametry["liczba_spraw"] > 0:
+        wymagane_role.add("UGODY")
     for role in ROLE:
         pool = pools[role]
-        demand = fsum(p.minutes_remaining for bucket in packets.values() for p in bucket if p.role == role)
+        demand = lifecycle["roczne_minuty_wedlug_roli"][role] / 12
         pool["popyt_minuty"] = demand
         pool["niedobor_minuty"] = max(demand - pool["netto_minuty"], 0.0)
+        pool["wymagana_rola"] = role in wymagane_role
         tolerance = max(TOLERANCJA, demand * 1e-9)
-        pool["status"] = ("Niewystarczająca" if demand > pool["netto_minuty"] + tolerance
-                          else "Na granicy" if abs(demand - pool["netto_minuty"]) <= tolerance
+        brak_roli = role in wymagane_role and pool["netto_minuty"] <= 0
+        pool["status"] = ("Niewystarczająca" if brak_roli
+                          or pool["dzienne_niewykonane_minuty"] > TOLERANCJA
+                          or demand > pool["netto_minuty"] + tolerance
+                          else "Na granicy" if demand > 0 and abs(demand - pool["netto_minuty"]) <= tolerance
                           else "Stabilna")
     statuses = [pool["status"] for pool in pools.values()]
     status = ("Niewystarczająca" if "Niewystarczająca" in statuses else
@@ -219,285 +266,6 @@ def _koszty_kontraktu(zmiany: dict | None) -> dict:
                 or not isfinite(wartosc) or wartosc < 0):
             raise ValueError(f"Koszt {nazwa} musi być nieujemną skończoną kwotą.")
     return koszty
-
-
-def _dodaj_pakiet(
-    due_packets: dict[int, list[WorkPacket]],
-    completions: list[Completion],
-    completion_id: int,
-    due_month: int,
-    cohort_month: int,
-    path: str,
-    stage: str,
-    minutes_value: float,
-    cohort_stats: dict,
-) -> None:
-    if minutes_value <= TOLERANCJA:
-        return
-    packet = WorkPacket(
-        due_month=due_month,
-        cohort_month=cohort_month,
-        path=path,
-        stage=stage,
-        minutes_remaining=minutes_value,
-        completion_id=completion_id,
-        role="UGODY" if stage in {"analiza_ugody", "zawarcie_ugody", "nieudana_proba_ugody"} else "EH",
-    )
-    due_packets[due_month].append(packet)
-    completion = completions[completion_id]
-    completion.stage_total_minutes[stage] = (
-        completion.stage_total_minutes.get(stage, 0.0) + minutes_value
-    )
-    completion.stage_executed_minutes.setdefault(stage, 0.0)
-    cohort_stats["direct_minutes"] += minutes_value
-
-
-def _dodaj_kohorte(
-    cohort_month: int,
-    lifecycle: dict,
-    parametry: dict,
-    czas: dict,
-    due_packets: dict[int, list[WorkPacket]],
-    completions: list[Completion],
-) -> dict:
-    """Zleca pracę przy wpływie, a II instancję w terminie wyroku I.
-
-    Terminy nominalne blokują zakończenie, nie rozkładają minut pracy.
-    Kohorta zużywa dokładnie 1/12 pracy i przychodu referencyjnego lifecycle.
-    """
-    shares = lifecycle["udzialy_ugod"]
-    second_instance_share = parametry["udzial_ii_instancji_percent"] / 100
-    common_minutes = sum(parametry["wspolne_czynnosci"].values())
-    process_minutes = sum(parametry["procesowe_czynnosci"].values())
-    settlement_analysis_minutes = parametry["analiza_mozliwosci_ugody"]
-    settlement_minutes = sum(parametry["ugodowe_czynnosci"].values())
-    failed_offer_minutes = (
-        parametry["ugodowe_czynnosci"].get("Oferta ugody", 0)
-        + parametry["ugodowe_czynnosci"].get("Projekt ugody", 0)
-    )
-    second_instance_minutes = parametry["obsluga_ii_instancji_minuty"]
-    cohort_stats = {"direct_minutes": 0.0, "revenue": 0.0, "cases": 0.0}
-
-    def new_completion(
-        path: str,
-        outcome: str,
-        nominal_month: int,
-        cases: float,
-        revenue: float,
-    ) -> int:
-        completion_id = len(completions)
-        completions.append(
-            Completion(
-                cohort_month=cohort_month,
-                path=path,
-                outcome=outcome,
-                nominal_month=nominal_month,
-                cases=cases,
-                revenue=revenue,
-            )
-        )
-        cohort_stats["revenue"] += revenue
-        cohort_stats["cases"] += cases
-        return completion_id
-
-    for group in lifecycle["grupy"]:
-        group_cases = group["liczba"] / 12
-        extra_minutes = parametry["dodatkowe_minuty"][group["rodzaj"]]
-        for path in SCIEZKI_UGODOWE:
-            cases = group_cases * shares[path] / 100
-            if cases <= TOLERANCJA:
-                continue
-            nominal = cohort_month + czas["miesiace_do_ugody"]
-            completion_id = new_completion(
-                path,
-                "ugoda",
-                nominal,
-                cases,
-                cases * group["wynagrodzenie_ugoda"],
-            )
-            _dodaj_pakiet(
-                due_packets, completions, completion_id, cohort_month,
-                cohort_month, path, "przyjecie", cases * common_minutes, cohort_stats,
-            )
-            if path == "zawarte_poza_ramami":
-                _dodaj_pakiet(
-                    due_packets, completions, completion_id, cohort_month,
-                    cohort_month, path, "analiza_ugody",
-                    cases * settlement_analysis_minutes, cohort_stats,
-                )
-            _dodaj_pakiet(
-                due_packets, completions, completion_id, cohort_month,
-                cohort_month, path, "zawarcie_ugody",
-                cases * settlement_minutes, cohort_stats,
-            )
-            _dodaj_pakiet(
-                due_packets, completions, completion_id, cohort_month,
-                cohort_month, path, "praca_dodatkowa_p",
-                cases * extra_minutes, cohort_stats,
-            )
-
-        for path in SCIEZKI_BEZ_UGODY:
-            path_cases = group_cases * shares[path] / 100
-            for second_instance, cases in (
-                (False, path_cases * (1 - second_instance_share)),
-                (True, path_cases * second_instance_share),
-            ):
-                if cases <= TOLERANCJA:
-                    continue
-                first_judgment = cohort_month + czas["miesiace_do_wyroku_i"]
-                nominal = first_judgment + (
-                    czas["miesiace_wyrok_i_do_ii"] if second_instance else 0
-                )
-                outcome = "ii" if second_instance else "i"
-                branch_path = f"{path}:{outcome}"
-                completion_id = new_completion(
-                    branch_path,
-                    outcome,
-                    nominal,
-                    cases,
-                    cases * group["wynagrodzenie_wyrok"],
-                )
-                _dodaj_pakiet(
-                    due_packets, completions, completion_id, cohort_month,
-                    cohort_month, branch_path, "przyjecie",
-                    cases * common_minutes, cohort_stats,
-                )
-                if path in {"brak_szans", "brak_ugody_poza_ramami"}:
-                    _dodaj_pakiet(
-                        due_packets, completions, completion_id, cohort_month,
-                        cohort_month, branch_path, "analiza_ugody",
-                        cases * settlement_analysis_minutes, cohort_stats,
-                    )
-                if path in {
-                    "automatyczne_ramy_brak_ugody",
-                    "brak_ugody_poza_ramami",
-                }:
-                    _dodaj_pakiet(
-                        due_packets, completions, completion_id, cohort_month,
-                        cohort_month, branch_path, "nieudana_proba_ugody",
-                        cases * failed_offer_minutes, cohort_stats,
-                    )
-                _dodaj_pakiet(
-                    due_packets, completions, completion_id, cohort_month,
-                    cohort_month, branch_path, "proces",
-                    cases * process_minutes, cohort_stats,
-                )
-                _dodaj_pakiet(
-                    due_packets, completions, completion_id, cohort_month,
-                    cohort_month, branch_path, "praca_dodatkowa_p",
-                    cases * extra_minutes, cohort_stats,
-                )
-                if second_instance:
-                    _dodaj_pakiet(
-                        due_packets, completions, completion_id, first_judgment,
-                        cohort_month, branch_path, "ii_instancja",
-                        cases * second_instance_minutes, cohort_stats,
-                    )
-    return cohort_stats
-
-
-def _uwolnij_ii(pending: list[WorkPacket], completions: list[Completion], month: int) -> list[WorkPacket]:
-    """Przenosi do kolejki tylko nową część II instancji odblokowaną po I."""
-    released = []
-    for packet in pending:
-        if month < packet.due_month:
-            continue
-        completion = completions[packet.completion_id]
-        total = completion.stage_total_minutes["ii_instancja"]
-        already_released = total - packet.minutes_remaining
-        unlocked = total * _postep_etapow(completion, bez_ii=True)
-        minutes = min(packet.minutes_remaining, max(unlocked - already_released, 0.0))
-        if minutes > TOLERANCJA:
-            released.append(WorkPacket(month, packet.cohort_month, packet.path,
-                                       packet.stage, minutes, packet.completion_id, "EH"))
-            packet.minutes_remaining -= minutes
-    pending[:] = [p for p in pending if p.minutes_remaining > TOLERANCJA]
-    return released
-
-
-def _dolacz_do_kolejki(queue: deque[list[WorkPacket]], packets: list[WorkPacket]) -> None:
-    if not packets:
-        return
-    if queue and queue[-1][0].due_month == packets[0].due_month:
-        queue[-1].extend(packets)
-    else:
-        queue.append(packets)
-
-
-def _postep_etapow(completion: Completion, *, bez_ii: bool = False) -> float:
-    return min((min(completion.stage_executed_minutes[stage] / total, 1.0)
-                for stage, total in completion.stage_total_minutes.items()
-                if total > 0 and not (bez_ii and stage == "ii_instancja")), default=1.0)
-
-
-def _dostepne_minuty(packet: WorkPacket, completions: list[Completion]) -> float:
-    if packet.stage != "ii_instancja":
-        return packet.minutes_remaining
-    c = completions[packet.completion_id]
-    # Ułamki grupy mogą wejść do II instancji dopiero po pełnej I instancji.
-    unlocked = c.stage_total_minutes[packet.stage] * _postep_etapow(c, bez_ii=True)
-    return min(packet.minutes_remaining, max(unlocked - c.stage_executed_minutes[packet.stage], 0.0))
-
-
-def _wykonaj_prace(
-    queue: deque[list[WorkPacket]], completions: list[Completion], available_minutes: float,
-) -> float:
-    """FIFO dostępnych pakietów; proporcjonalny przydział w tej samej dacie.
-
-    Zablokowana II instancja nie zatrzymuje pracy stanowiącej jej warunek.
-    Ponowny przebieg wykorzystuje moc zwolnioną po wykonaniu tych warunków.
-    """
-    executed_parts = []
-    remaining_capacity = available_minutes
-    while remaining_capacity > TOLERANCJA:
-        pass_executed = 0.0
-        for bucket in list(queue):
-            eligible = [_dostepne_minuty(p, completions) for p in bucket]
-            work = fsum(eligible)
-            if work <= TOLERANCJA:
-                continue
-            fraction = min(remaining_capacity / work, 1.0)
-            pieces = []
-            for packet, minutes in zip(bucket, eligible):
-                executed = minutes * fraction
-                packet.minutes_remaining = max(packet.minutes_remaining - executed, 0.0)
-                completions[packet.completion_id].stage_executed_minutes[packet.stage] += executed
-                pieces.append(executed)
-            executed = fsum(pieces)
-            executed_parts.append(executed)
-            pass_executed += executed
-            remaining_capacity = max(remaining_capacity - executed, 0.0)
-            if all(p.minutes_remaining <= TOLERANCJA for p in bucket):
-                queue.remove(bucket)
-            if remaining_capacity <= TOLERANCJA:
-                break
-            # Wykonanie zwykłej pracy mogło odblokować starszą II instancję.
-            break
-        if pass_executed <= TOLERANCJA:
-            break
-    return fsum(executed_parts)
-
-
-def _przyrost_zakonczenia(completion: Completion, month: int) -> float:
-    """Zwraca nowy ułamek grupy, który przeszedł wszystkie wymagane etapy.
-
-    Ułamki opisują w pełni zakończone oczekiwane sprawy, a nie częściową zapłatę
-    za pojedynczą niezakończoną sprawę. Termin nominalny nadal blokuje wynik.
-    """
-    if month < completion.nominal_month or completion.recognized_fraction >= 1.0:
-        return 0.0
-    progress = min(
-        (
-            1.0 if isclose(completion.stage_executed_minutes[stage], total, rel_tol=1e-12, abs_tol=0.0)
-            else max(0.0, min(completion.stage_executed_minutes[stage] / total, 1.0))
-            for stage, total in completion.stage_total_minutes.items()
-            if total > 0.0
-        ),
-        default=1.0,
-    )
-    increment = max(progress - completion.recognized_fraction, 0.0)
-    completion.recognized_fraction += increment
-    return increment
 
 
 def _status_break_even(
@@ -549,10 +317,12 @@ def _nominalny_miesiac_dojrzalosci(lifecycle: dict, czas: dict) -> int | None:
         return None
     shares = lifecycle["udzialy_ugod"]
     ii_share = lifecycle["udzial_ii_instancji_w_portfelu"]
+    failed_share = shares["automatyczne_ramy_brak_ugody"] + shares["brak_ugody_poza_ramami"]
+    handoff = 1 if failed_share > TOLERANCJA else 0
     outcome_lags = (
         (shares["zakonczone_ugoda"], czas["miesiace_do_ugody"]),
-        (shares["bez_ugody"] - ii_share, czas["miesiace_do_wyroku_i"]),
-        (ii_share, czas["miesiace_do_wyroku_i"] + czas["miesiace_wyrok_i_do_ii"]),
+        (shares["bez_ugody"] - ii_share, handoff + czas["miesiace_do_wyroku_i"]),
+        (ii_share, handoff + czas["miesiace_do_wyroku_i"] + 1 + czas["miesiace_wyrok_i_do_ii"]),
     )
     active_lags = [lag for share, lag in outcome_lags if share > TOLERANCJA]
     if not active_lags:
@@ -562,9 +332,9 @@ def _nominalny_miesiac_dojrzalosci(lifecycle: dict, czas: dict) -> int | None:
 
 def podsumuj_finanse_kontraktu(rows: list[dict]) -> dict:
     """Jawne uzgodnienie całego horyzontu; wszystkie składniki pochodzą z miesięcy."""
-    columns = ("Koszt wynagrodzeń EH", "Koszt wynagrodzeń ugód", "Koszty ogólne aktywnych spraw",
-               "Koszt sekretariatu aktywnych spraw", "Łączny koszt miesięczny", "Przychód razem",
-               "Wynik miesięczny przed podatkiem", "Sprawy naliczające koszt w miesiącu")
+    columns = ("Wynagrodzenia EH", "Wynagrodzenia ugód", "Koszty ogólne spraw, nad którymi pracowano",
+               "Koszt sekretariatu spraw, nad którymi pracowano", "Łączny koszt miesięczny", "Przychód razem",
+               "Wynik miesięczny przed podatkiem", "Sprawy, nad którymi pracowano w miesiącu")
     result = {column: fsum(row[column] for row in rows) for column in columns}
     components = fsum(result[column] for column in columns[:4])
     if not isclose(components, result["Łączny koszt miesięczny"], rel_tol=1e-10, abs_tol=1e-6):
@@ -578,8 +348,15 @@ def podsumuj_finanse_kontraktu(rows: list[dict]) -> dict:
 def oblicz_model_czasowy(
     parametry: dict | None = None, parametry_czasowe: dict | None = None,
     *, pracownicy: list[dict] | None = None, koszty_kontraktu: dict | None = None,
+    zapisz_zdarzenia: bool = False,
 ) -> dict:
-    """Symuluje ciągły napływ, kolejkę pracy, przychody i koszt obsady."""
+    """Miesiące numerujemy od 1; termin = inicjacja etapu + opóźnienie.
+
+    Wpływ → uwolnienie kolejek → praca FIFO z natychmiastowym przekazaniem
+    przyjęcia EH do następnego etapu → wyniki formalne na koniec miesiąca
+    → płatności → koszty. Odrzucenie ugody i wyrok I uwalniają kolejny etap
+    od następnego miesiąca. Formalne czekanie nie zużywa minut ani opłat.
+    """
     if parametry is None:
         parametry = domyslne_parametry()
     czas = _parametry_czasowe(parametry_czasowe)
@@ -589,201 +366,253 @@ def oblicz_model_czasowy(
     costs = _koszty_kontraktu(koszty_kontraktu)
     horizon = czas["horyzont_miesiace"]
     monthly_inflow = miesieczny_naplyw(lifecycle["ogolem"]["liczba_spraw"])
-    due_packets: dict[int, list[WorkPacket]] = defaultdict(list)
-    completions: list[Completion] = []
-    queues = {role: deque() for role in ROLE}
-    pending_ii: list[WorkPacket] = []
-    payments: dict[int, dict[str, float]] = defaultdict(
-        lambda: {"ugoda": 0.0, "wyrok": 0.0}
-    )
-    cohort_validations = []
+    queues = {r: [] for r in ROLE}
+    formal_outcomes = []
+    active: dict[int, Sprawa] = {}
+    deferred = defaultdict(list)
+    payments = defaultdict(lambda: {"ugoda": 0.0, "wyrok": 0.0})
+    events = []
     rows = []
-    cumulative_inflow = 0.0
-    cumulative_completed = 0.0
-    cumulative_result = 0.0
-    completed_delay_weight = 0.0
-    completed_cases_for_delay = 0.0
+    next_id = 0
+    cumulative_inflow = cumulative_completed = cumulative_result = 0.0
+    completed_delay_weight = completed_cases_for_delay = 0.0
     maximum_capacity_delay = 0
-    total_due_minutes = 0.0
-    total_executed_minutes = 0.0
+    total_due_minutes = total_executed_minutes = 0.0
+    lags = {"ugoda": czas["miesiace_do_ugody"], "i": czas["miesiace_do_wyroku_i"],
+            "ii": czas["miesiace_wyrok_i_do_ii"]}
+    # Kolejność kanoniczna uniezależnia harmonogram od kolejności słowników.
+    templates = []
+    for group in sorted(lifecycle["grupy"], key=lambda g: (g["rodzaj"], g["grupa_wps"])):
+        for path in sorted(SCIEZKI_UGODOWE + SCIEZKI_BEZ_UGODY):
+            cases = group["liczba"] / 12 * lifecycle["udzialy_ugod"][path] / 100
+            outcomes = [("ugoda", 1.0)] if path in SCIEZKI_UGODOWE else [
+                ("i", 1 - parametry["udzial_ii_instancji_percent"] / 100),
+                ("ii", parametry["udzial_ii_instancji_percent"] / 100)]
+            for outcome, share in outcomes:
+                count = cases * share
+                if count <= 0:
+                    continue
+                stages = etapy_sprawy(parametry, path, parametry["dodatkowe_minuty"][group["rodzaj"]], outcome == "ii")
+                unit_revenue = group["wynagrodzenie_ugoda" if outcome == "ugoda" else "wynagrodzenie_wyrok"]
+                # Jednostkowe reprezentanty i reszta: zachowujemy dokładną wagę,
+                # bez udawania ułamkowego zakończenia częściowo wykonanej sprawy.
+                whole = int(count)
+                weights = [1.0] * whole
+                if count > whole:
+                    weights.append(count - whole)
+                templates.extend((path, outcome, w, unit_revenue * w, stages) for w in weights)
+    cohort_reference = {"przychod": lifecycle["ogolem"]["przychod"] / 12,
+                        "bezposrednie_minuty": lifecycle["bezposrednie_minuty_spraw"] / 12,
+                        "liczba_spraw": monthly_inflow}
+    cohort_stats = {"revenue": fsum(t[3] for t in templates),
+                    "direct_minutes": fsum(t[2] * fsum(e.minuty for e in t[4]) for t in templates),
+                    "cases": fsum(t[2] for t in templates)}
+    for name, built in (("przychod", "revenue"), ("bezposrednie_minuty", "direct_minutes"), ("liczba_spraw", "cases")):
+        if not isclose(cohort_stats[built], cohort_reference[name], rel_tol=1e-10, abs_tol=1e-6):
+            raise RuntimeError(f"Miesięczna kohorta nie uzgadnia pola {name}.")
+
+    def event(kind, c, minutes=0.0):
+        if zapisz_zdarzenia:
+            events.append({"miesiac": month, "rodzaj": kind, "sprawa": c.identyfikator,
+                           "waga": c.waga, "sciezka": c.sciezka, "wynik": c.wynik,
+                           "etap": c.etap.nazwa, "rola": c.etap.rola, "minuty": minutes})
+
+    def enqueue(c, kontynuacja=False):
+        c.dostepna_od = month
+        heappush(queues[c.etap.rola], (month, c.wplyw, c.identyfikator))
+        if not kontynuacja:
+            role_work[c.etap.rola]["new"] += c.minuty_kolejki()
+
+    def advance(c, next_month=False):
+        poprzednia_rola = c.etap.rola
+        c.indeks += 1
+        c.pozostale = c.waga * c.etap.minuty
+        c.termin = None
+        c.dostepna_od = month + int(next_month)
+        if next_month:
+            deferred[month + 1].append(c)
+        else:
+            enqueue(c, kontynuacja=poprzednia_rola == c.etap.rola)
 
     for month in range(1, horizon + 1):
-        billable_active_cases = max(cumulative_inflow - cumulative_completed, 0.0) + monthly_inflow
-        cohort_stats = _dodaj_kohorte(
-            month, lifecycle, parametry, czas, due_packets, completions
-        )
-        cohort_validations.append(cohort_stats)
+        role_work = {r: {"start": rows[-1][f"Backlog {r} (h)"] * 60 if rows else 0.0,
+                         "new": 0.0, "executed": 0.0} for r in ROLE}
+        work_cases_start = rows[-1]["Sprawy oczekujące na pracę"] if rows else 0.0
+        for c in deferred.pop(month, []):
+            enqueue(c)
+        for path, outcome, weight, revenue, stages in templates:
+            c = Sprawa(next_id, month, path, outcome, weight, revenue, stages,
+                       pozostale=weight * stages[0].minuty, dostepna_od=month)
+            active[next_id] = c
+            next_id += 1
+            enqueue(c)
         cumulative_inflow += monthly_inflow
-
-        planned_packets = due_packets.pop(month, [])
-        pending_ii.extend(p for p in planned_packets if p.stage == "ii_instancja")
-        new_packets = [p for p in planned_packets if p.stage != "ii_instancja"]
-        role_work = {}
-        # Najpierw ugody, potem EH: I instancja uwzględnia też wymaganą pracę ugód.
-        for role in ("UGODY", "EH"):
-            queue = queues[role]
-            start = fsum(p.minutes_remaining for bucket in queue for p in bucket)
-            packets = [p for p in new_packets if p.role == role]
-            if role == "EH":
-                packets += _uwolnij_ii(pending_ii, completions, month)
-            new = fsum(p.minutes_remaining for p in packets)
-            _dolacz_do_kolejki(queue, packets)
-            available = capacity["role"][role]["netto_minuty"]
-            executed = _wykonaj_prace(queue, completions, available)
-            if role == "EH":
-                # Zwykła praca wykonana teraz może odblokować II instancję
-                # jeszcze w tym miesiącu. Koszt i limit godzin nie zmieniają się.
-                released = _uwolnij_ii(pending_ii, completions, month)
-                new += fsum(p.minutes_remaining for p in released)
-                _dolacz_do_kolejki(queue, released)
-                executed += _wykonaj_prace(queue, completions, max(available - executed, 0.0))
-            end = fsum(p.minutes_remaining for bucket in queue for p in bucket)
-            if not isclose(start + new - executed, end, rel_tol=1e-10, abs_tol=1e-6):
-                raise RuntimeError(f"Kolejka {role} nie zachowuje minut.")
-            role_work[role] = {"start": start, "new": new, "executed": executed, "end": end}
-        backlog_start_minutes = fsum(w["start"] for w in role_work.values())
-        new_due_minutes = fsum(w["new"] for w in role_work.values())
-        executed_minutes = fsum(w["executed"] for w in role_work.values())
-        total_available_work_minutes = backlog_start_minutes + new_due_minutes
-        total_due_minutes += new_due_minutes
-        total_executed_minutes += executed_minutes
-        direct_capacity = capacity["pojemnosc_na_sprawy_minuty"]
-
-        settlements = 0.0
-        first_instance_endings = 0.0
-        second_instance_endings = 0.0
-        for completion in completions:
-            increment = _przyrost_zakonczenia(completion, month)
-            if increment > 0.0:
-                completed_cases = completion.cases * increment
-                cumulative_completed += completed_cases
-                capacity_delay = month - completion.nominal_month
-                completed_delay_weight += capacity_delay * completed_cases
-                completed_cases_for_delay += completed_cases
-                maximum_capacity_delay = max(maximum_capacity_delay, capacity_delay)
-                if completion.outcome == "ugoda":
-                    settlements += completed_cases
-                    revenue_type = "ugoda"
-                elif completion.outcome == "i":
-                    first_instance_endings += completed_cases
-                    revenue_type = "wyrok"
-                else:
-                    second_instance_endings += completed_cases
-                    revenue_type = "wyrok"
-                payment_month = month + czas["opoznienie_platnosci_miesiace"]
-                payments[payment_month][revenue_type] += completion.revenue * increment
-
+        available = {r: capacity["role"][r]["netto_minuty"] for r in ROLE}
+        worked = set()
+        stage_finished = defaultdict(float)
+        while True:
+            candidates = []
+            for r in ROLE:
+                if not queues[r] or capacity["role"][r]["netto_minuty"] <= 0:
+                    continue
+                c = active[queues[r][0][2]]
+                if c.pozostale == 0 or available[r] > 0:
+                    candidates.append((queues[r][0], r))
+            if not candidates:
+                break
+            _, r = min(candidates)
+            _, _, ident = heappop(queues[r])
+            c = active[ident]
+            stage = c.etap
+            if stage.nazwa not in c.starty:
+                c.starty[stage.nazwa] = month
+                if stage.zegar:
+                    c.termin = month + lags[stage.zegar]
+                event("inicjacja", c)
+            executed = min(c.pozostale, available[r])
+            if executed > 0:
+                event("praca", c, executed)
+                worked.add(ident)
+                role_work[r]["executed"] += executed
+                available[r] = max(available[r] - executed, 0.0)
+                c.pozostale = max(c.pozostale - executed, 0.0)
+            if c.pozostale > 0:
+                heappush(queues[r], (c.dostepna_od, c.wplyw, ident))
+                continue
+            c.konce_pracy[stage.nazwa] = month
+            stage_finished[stage.nazwa] += c.waga
+            event("koniec_pracy", c)
+            if stage.zegar is None:
+                advance(c, next_month=stage.nazwa == "proba_ugody")
+            else:
+                # Termin jest ustalony przy inicjacji; do menedżera wyników
+                # trafia dopiero po zakończeniu całej wymaganej pracy etapu.
+                heappush(formal_outcomes, (max(c.termin, month), ident))
+        worked_count = fsum(active[i].waga for i in worked)
+        settlements = first_instance_endings = second_instance_endings = 0.0
+        while formal_outcomes and formal_outcomes[0][0] <= month:
+            _, ident = heappop(formal_outcomes)
+            c = active[ident]
+            if c.etap.zegar == "i" and c.wynik == "ii":
+                event("wyrok_i", c)
+                advance(c, next_month=True)
+                continue
+            event("zakonczenie", c)
+            cumulative_completed += c.waga
+            if c.wynik == "ugoda":
+                settlements += c.waga
+            elif c.wynik == "i":
+                first_instance_endings += c.waga
+            else:
+                second_instance_endings += c.waga
+            nominal_lag = (lags["ugoda"] if c.wynik == "ugoda" else lags["i"]
+                + int(any(e.nazwa == "proba_ugody" for e in c.etapy))
+                + (1 + lags["ii"] if c.wynik == "ii" else 0))
+            delay = month - c.wplyw - nominal_lag
+            completed_delay_weight += delay * c.waga
+            completed_cases_for_delay += c.waga
+            maximum_capacity_delay = max(maximum_capacity_delay, delay)
+            payments[month + czas["opoznienie_platnosci_miesiace"]]["ugoda" if c.wynik == "ugoda" else "wyrok"] += c.przychod
+            del active[ident]
         settlement_revenue = payments[month]["ugoda"]
         judgment_revenue = payments[month]["wyrok"]
         revenue = settlement_revenue + judgment_revenue
-        overhead_cost = billable_active_cases * costs["ogolne_na_aktywna_sprawe"]
-        secretariat_cost = billable_active_cases * costs["sekretariat_na_aktywna_sprawe"]
+        overhead_cost = worked_count * costs["ogolne_na_aktywna_sprawe"]
+        secretariat_cost = worked_count * costs["sekretariat_na_aktywna_sprawe"]
         wage_cost = capacity["miesieczny_koszt_wynagrodzen"]
         operation_cost = wage_cost + overhead_cost + secretariat_cost
         monthly_result = revenue - operation_cost
         cumulative_result += monthly_result
-        backlog_end_minutes_month = fsum(
-            packet.minutes_remaining for queue in queues.values() for bucket in queue for packet in bucket
-        )
-        if not isclose(
-            backlog_start_minutes + new_due_minutes - executed_minutes,
-            backlog_end_minutes_month,
-            rel_tol=1e-10,
-            abs_tol=1e-6,
-        ):
-            raise RuntimeError("Miesięczne rozliczenie backlogu nie jest domknięte.")
+        for r in ROLE:
+            role_work[r]["end"] = fsum(active[i].minuty_kolejki() for _, _, i in queues[r])
+            w = role_work[r]
+            if not isclose(w["start"] + w["new"] - w["executed"], w["end"], rel_tol=1e-10, abs_tol=1e-6):
+                raise RuntimeError(f"Kolejka {r} nie zachowuje minut.")
+        backlog_start_minutes = fsum(w["start"] for w in role_work.values())
+        new_due_minutes = fsum(w["new"] for w in role_work.values())
+        executed_minutes = fsum(w["executed"] for w in role_work.values())
+        backlog_end_minutes_month = fsum(w["end"] for w in role_work.values())
+        total_due_minutes += new_due_minutes
+        total_executed_minutes += executed_minutes
+        direct_capacity = capacity["pojemnosc_na_sprawy_minuty"]
         used_minutes = capacity["czynnosci_dzienne_minuty"] + executed_minutes
         if used_minutes > capacity["pojemnosc_brutto_minuty"] + TOLERANCJA:
             raise RuntimeError("Wykonano pracę ponad limit płatnych godzin FTE.")
         unused_minutes = max(capacity["pojemnosc_brutto_minuty"] - used_minutes, 0.0)
-        utilization = (
-            used_minutes / capacity["pojemnosc_brutto_minuty"] * 100
-            if capacity["pojemnosc_brutto_minuty"] > TOLERANCJA
-            else None
-        )
-        active_cases = max(cumulative_inflow - cumulative_completed, 0.0)
-        rows.append(
-            {
-                "Miesiąc": month,
-                "Nowe sprawy": monthly_inflow,
-                "II instancja oczekująca na pracę I (h)": fsum(p.minutes_remaining for p in pending_ii) / 60,
-                "Aktywne sprawy": active_cases,
-                "Aktywne sprawy na koniec miesiąca": active_cases,
-                "Sprawy naliczające koszt w miesiącu": billable_active_cases,
-                **{f"{label} {role} (h)": role_work[role][key] / 60
-                   for role in ROLE for label, key in (("Backlog początek", "start"), ("Nowa praca", "new"), ("Wykonana praca", "executed"), ("Backlog", "end"))},
-                **{f"Pojemność {role} (h)": capacity["role"][role]["netto_minuty"] / 60 for role in ROLE},
-                "Ugody zakończone": settlements,
-                "Zakończenia po I instancji": first_instance_endings,
-                "Zakończenia po II instancji": second_instance_endings,
-                "Przychód z ugód": settlement_revenue,
-                "Przychód z wyroków": judgment_revenue,
-                "Przychód razem": revenue,
-                "Pojemność brutto (h)": capacity["pojemnosc_brutto_minuty"] / 60,
-                "Czynności dzienne (h)": capacity["czynnosci_dzienne_minuty"] / 60,
-                "Dostępna pojemność na sprawy (h)": direct_capacity / 60,
-                "Backlog na początku (h)": backlog_start_minutes / 60,
-                "Nowa praca (h)": new_due_minutes / 60,
-                "Praca oczekująca (h)": total_available_work_minutes / 60,
-                "Wykonana praca (h)": executed_minutes / 60,
-                "Wykorzystane płatne godziny": used_minutes / 60,
-                "Backlog na koniec (h)": backlog_end_minutes_month / 60,
-                "Wykorzystanie pojemności (%)": utilization,
-                "Niewykorzystana pojemność (h)": unused_minutes / 60,
-                "Koszt wynagrodzeń EH": capacity["role"]["EH"]["wynagrodzenia"],
-                "Koszt wynagrodzeń ugód": capacity["role"]["UGODY"]["wynagrodzenia"],
-                "Koszty ogólne aktywnych spraw": overhead_cost,
-                "Koszt sekretariatu aktywnych spraw": secretariat_cost,
-                "Miesięczny koszt wynagrodzeń": wage_cost,
-                "Łączny koszt miesięczny": operation_cost,
-                "Wynik miesięczny przed podatkiem": monthly_result,
-                "Wynik skumulowany przed podatkiem": cumulative_result,
-            }
-        )
-
+        utilization = used_minutes / capacity["pojemnosc_brutto_minuty"] * 100 if capacity["pojemnosc_brutto_minuty"] > 0 else None
+        queued = {i for queue in queues.values() for _, _, i in queue}
+        weights, outstanding, waiting, blocked_second = [], [], [], []
+        future_parts = {r: [] for r in ROLE}
+        # Jeden przegląd portfela uzgadnia rzeczywisty stan wszystkich spraw;
+        # nie wyprowadzamy przyszłej pracy jako reszty równania bilansowego.
+        for c in active.values():
+            weights.append(c.waga)
+            future = {r: c.przyszle_minuty(r) for r in ROLE}
+            unfinished = c.pozostale > 0 or any(v > 0 for v in future.values())
+            if unfinished or c.etap.nazwa not in c.konce_pracy:
+                outstanding.append(c.waga)
+            if c.termin is not None and c.etap.nazwa in c.konce_pracy:
+                waiting.append(c.waga)
+            future[c.etap.rola] += c.pozostale
+            if c.identyfikator in queued:
+                future[c.etap.rola] -= c.minuty_kolejki()
+            for r in ROLE:
+                future_parts[r].append(future[r])
+            blocked_second.append(c.waga * c.plan[c.indeks][3])
+        active_cases = fsum(weights)
+        outstanding_cases = fsum(outstanding)
+        formal_waiting = fsum(waiting)
+        blocked_ii_minutes = fsum(blocked_second)
+        if not isclose(cumulative_inflow - cumulative_completed, active_cases, rel_tol=1e-10, abs_tol=1e-6):
+            raise RuntimeError("Sprawy otwarte nie uzgadniają się z wpływem i zakończeniami.")
+        future_by_role = {r: fsum(future_parts[r]) for r in ROLE}
+        future_minutes = fsum(future_by_role.values())
+        all_cohort_minutes = cohort_stats["direct_minutes"] * month
+        if not isclose(total_executed_minutes + backlog_end_minutes_month + future_minutes,
+                       all_cohort_minutes, rel_tol=1e-10, abs_tol=1e-5):
+            raise RuntimeError("Praca wykonana, zaległa i przyszła nie uzgadnia się z kohortami.")
+        rows.append({
+            "Miesiąc": month, "Nowe sprawy": monthly_inflow,
+            "Sprawy otwarte": active_cases,
+            "Aktywne sprawy": active_cases,
+            "Sprawy oczekujące na pracę": outstanding_cases,
+            "Sprawy oczekujące na pracę na początku": work_cases_start,
+            "Sprawy, nad którymi pracowano w miesiącu": worked_count,
+            "Sprawy oczekujące na formalne zakończenie": formal_waiting,
+            "Praca przyszła i zablokowana (h)": future_minutes / 60,
+            "II instancja oczekująca na pracę I (h)": blocked_ii_minutes / 60,
+            **{f"{label} {r} (h)": role_work[r][key] / 60 for r in ROLE
+               for label, key in (("Backlog początek", "start"), ("Nowa praca", "new"), ("Wykonana praca", "executed"), ("Backlog", "end"))},
+            **{f"Pojemność {r} (h)": capacity["role"][r]["netto_minuty"] / 60 for r in ROLE},
+            **{f"Ukończona praca: {stage}": stage_finished[stage] for stage in ("przyjecie", "ugoda", "proba_ugody", "proces", "ii_instancja")},
+            "Ugody zakończone": settlements,
+            "Zakończenia po I instancji": first_instance_endings,
+            "Zakończenia po II instancji": second_instance_endings,
+            "Przychód z ugód": settlement_revenue, "Przychód z wyroków": judgment_revenue,
+            "Przychód razem": revenue,
+            "Pojemność brutto (h)": capacity["pojemnosc_brutto_minuty"] / 60,
+            "Czynności dzienne (h)": capacity["czynnosci_dzienne_minuty"] / 60,
+            "Niewykonane czynności dzienne (h)": capacity["role"]["EH"]["dzienne_niewykonane_minuty"] / 60,
+            "Dostępna pojemność na sprawy (h)": direct_capacity / 60,
+            "Backlog na początku (h)": backlog_start_minutes / 60,
+            "Nowa praca (h)": new_due_minutes / 60,
+            "Praca oczekująca (h)": (backlog_start_minutes + new_due_minutes) / 60,
+            "Wykonana praca (h)": executed_minutes / 60,
+            "Wykorzystane płatne godziny": used_minutes / 60,
+            "Backlog na koniec (h)": backlog_end_minutes_month / 60,
+            "Wykorzystanie pojemności (%)": utilization,
+            "Niewykorzystana pojemność (h)": unused_minutes / 60,
+            "Wynagrodzenia EH": capacity["role"]["EH"]["wynagrodzenia"],
+            "Wynagrodzenia ugód": capacity["role"]["UGODY"]["wynagrodzenia"],
+            "Koszty ogólne spraw, nad którymi pracowano": overhead_cost,
+            "Koszt sekretariatu spraw, nad którymi pracowano": secretariat_cost,
+            "Miesięczny koszt wynagrodzeń": wage_cost, "Łączny koszt miesięczny": operation_cost,
+            "Wynik miesięczny przed podatkiem": monthly_result,
+            "Wynik skumulowany przed podatkiem": cumulative_result,
+        })
     backlog_end_minutes = rows[-1]["Backlog na koniec (h)"] * 60
-    if not isclose(
-        total_executed_minutes + backlog_end_minutes,
-        total_due_minutes,
-        rel_tol=1e-10,
-        abs_tol=1e-6,
-    ):
-        raise RuntimeError("Kolejka pracy nie zachowuje wszystkich należnych minut.")
-    if not isclose(
-        cumulative_inflow - cumulative_completed,
-        rows[-1]["Aktywne sprawy"],
-        rel_tol=1e-10,
-        abs_tol=1e-6,
-    ):
-        raise RuntimeError("Liczba aktywnych spraw nie uzgadnia się z przepływem.")
-
-    future_minutes = fsum(p.minutes_remaining for bucket in due_packets.values() for p in bucket)
-    blocked_ii_minutes = fsum(p.minutes_remaining for p in pending_ii)
-    future_minutes += blocked_ii_minutes
-    all_cohort_minutes = fsum(c["direct_minutes"] for c in cohort_validations)
-    if not isclose(total_executed_minutes + backlog_end_minutes + future_minutes,
-                   all_cohort_minutes, rel_tol=1e-10, abs_tol=1e-6):
-        raise RuntimeError("Praca wykonana, zaległa i przyszła nie uzgadnia się z kohortami.")
-
-    cohort_reference = {
-        "przychod": lifecycle["ogolem"]["przychod"] / 12,
-        "bezposrednie_minuty": lifecycle["bezposrednie_minuty_spraw"] / 12,
-        "liczba_spraw": lifecycle["ogolem"]["liczba_spraw"] / 12,
-    }
-    if cohort_validations:
-        first_cohort = cohort_validations[0]
-        for name, built_key in (
-            ("przychod", "revenue"),
-            ("bezposrednie_minuty", "direct_minutes"),
-            ("liczba_spraw", "cases"),
-        ):
-            if not isclose(
-                first_cohort[built_key],
-                cohort_reference[name],
-                rel_tol=1e-10,
-                abs_tol=1e-6,
-            ):
-                raise RuntimeError(f"Miesięczna kohorta nie uzgadnia pola {name}.")
+    blocked_ii_minutes = rows[-1]["II instancja oczekująca na pracę I (h)"] * 60
+    cohort_validations = [cohort_stats]
 
     pierwsze_przeciecie = wyznacz_break_even(
         [row["Wynik skumulowany przed podatkiem"] for row in rows],
@@ -826,7 +655,7 @@ def oblicz_model_czasowy(
         and all(blisko(row["Przychód razem"], target_monthly_revenue)
                 and all(blisko(row[key], expected) for key, expected in expected_completions.items())
                 and blisko(row["Aktywne sprawy"], last_twelve[0]["Aktywne sprawy"])
-                and blisko(row["Sprawy naliczające koszt w miesiącu"], last_twelve[0]["Sprawy naliczające koszt w miesiącu"])
+                and blisko(row["Sprawy, nad którymi pracowano w miesiącu"], last_twelve[0]["Sprawy, nad którymi pracowano w miesiącu"])
                 and blisko(row["Łączny koszt miesięczny"], last_twelve[0]["Łączny koszt miesięczny"])
                 and all(blisko(row[f"Wykonana praca {role} (h)"] * 60, capacity["role"][role]["popyt_minuty"])
                         and blisko(row[f"Backlog {role} (h)"], 0) for role in ROLE)
@@ -912,13 +741,12 @@ def oblicz_model_czasowy(
         current_staff_monthly_result is not None
         and current_staff_monthly_result < -TOLERANCJA
     )
-    current_capacity_delay = max(
-        (horizon - bucket[0].due_month for queue in queues.values() for bucket in queue), default=0
-    )
+    current_capacity_delay = max((horizon - due for queue in queues.values() for due, _, _ in queue), default=0)
     startup_deficit = any(row["Wynik skumulowany przed podatkiem"] < -TOLERANCJA
                           for row in rows[:min(nominal_maturity_month or horizon, len(rows))])
 
     return {
+        "zdarzenia": events,
         "parametry_czasowe": czas,
         "koszty_kontraktu": costs,
         "podsumowanie_finansowe": podsumuj_finanse_kontraktu(rows),
@@ -962,6 +790,8 @@ def oblicz_model_czasowy(
             "sredni_naplyw_miesieczny": monthly_inflow,
             "laczny_naplyw": monthly_inflow * horizon,
             "aktywne_sprawy": rows[-1]["Aktywne sprawy"],
+            "sprawy_oczekujace_na_prace": rows[-1]["Sprawy oczekujące na pracę"],
+            "sprawomiesiace_pracy": fsum(r["Sprawy, nad którymi pracowano w miesiącu"] for r in rows),
             "backlog_koniec_godziny": rows[-1]["Backlog na koniec (h)"],
             "maksymalny_backlog_godziny": max(
                 row["Backlog na koniec (h)"] for row in rows
@@ -1005,6 +835,7 @@ def oblicz_model_czasowy(
             "praca_wszystkich_kohort_minuty": all_cohort_minutes,
             "praca_przyszla_minuty": future_minutes,
             "w_tym_ii_oczekujaca_na_i_minuty": blocked_ii_minutes,
+            "minuty_przyszle_wedlug_roli": future_by_role,
             "praca_wykonana_minuty": total_executed_minutes,
             "backlog_minuty": backlog_end_minutes,
             "laczny_naplyw_spraw": cumulative_inflow,
