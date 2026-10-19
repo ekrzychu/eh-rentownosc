@@ -2,7 +2,7 @@
 
 from math import ceil, floor
 
-from model import MINUTY_DNIA_PRACY, oblicz_model
+from model import oblicz_model
 
 
 KOPIOWANE_SLOWNIKI = (
@@ -21,7 +21,6 @@ PARAMETRY_STEROWALNE = frozenset({
     "sekretariat_stawka",
     "sekretariat_czas",
     "koszt_staly",
-    "wynagrodzenie",
     "szansa_na_ugode",
     "skutecznosc_automatycznych_ram",
     "zawarte_ugody",
@@ -29,6 +28,7 @@ PARAMETRY_STEROWALNE = frozenset({
     "analiza_ugody",
 })
 STEROWALNE_PREFIKSY = (
+    "placa:",
     "wspolne:",
     "procesowe:",
     "ugodowe:",
@@ -46,6 +46,7 @@ def czy_parametr_sterowalny(identyfikator: str) -> bool:
 
 def kopiuj_parametry(parametry: dict) -> dict:
     kopia = dict(parametry)
+    kopia["pracownicy"] = [dict(p) for p in parametry["pracownicy"]]
     for nazwa in KOPIOWANE_SLOWNIKI:
         kopia[nazwa] = parametry[nazwa].copy()
     return kopia
@@ -112,7 +113,6 @@ def definicje_parametrow(parametry: dict) -> list[dict]:
         {"id": "sekretariat_stawka", "nazwa": "Koszt sekretariatu / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_sekretariatu_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "sekretariat_czas", "nazwa": "Czynności sekretariatu (min/sprawę)", "kategoria": "Operacyjne", "jednostka": "min", "typ": "czas", "min": 0.0, "max": max(1440.0, parametry["sekretariat_minuty_na_sprawe"] * 10 + 100), "krok": 10.0},
         {"id": "koszt_staly", "nazwa": "Narzut kosztów ogólnych / h pracownika", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_staly_na_godzine"] * 10 + 100), "krok": 10.0},
-        {"id": "wynagrodzenie", "nazwa": "Wynagrodzenie pracownika / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["wynagrodzenie_pracownika_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "srednia_kwota_ugody", "nazwa": "Średnia kwota ugody", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "srednia_kwota_wyroku", "nazwa": "Średnia kwota wyroku", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "podatek_dochodowy", "nazwa": "Podatek dochodowy", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
@@ -128,6 +128,11 @@ def definicje_parametrow(parametry: dict) -> list[dict]:
         {"id": "wysoki_wps_procent", "nazwa": "Udział wysokiego WPS", "kategoria": "Struktura portfela", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
         {"id": "liczba_spraw", "nazwa": "Roczny napływ spraw", "kategoria": "Struktura portfela", "jednostka": "spraw", "typ": "calkowita", "min": 0, "max": max(1000, parametry["liczba_spraw"] * 3 + 500), "krok": 50},
     ]
+    for indeks, osoba in enumerate(parametry["pracownicy"]):
+        if osoba["wykorzystanie_percent"] > 0:
+            definicje.append({"id": f"placa:{indeks}", "nazwa": f"Wynagrodzenie pracownika {indeks + 1} ({osoba['rola']})",
+                "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0,
+                "max": max(1000.0, osoba["stawka"] * 10 + 100), "krok": 10.0})
     for rodzaj in parametry["udzialy_rodzajow"]:
         definicje.append({"id": f"udzial:{rodzaj}", "nazwa": f"Udział {rodzaj}", "kategoria": "Struktura portfela", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0})
     grupy_czasu = (
@@ -153,11 +158,13 @@ def sterowalne_definicje_parametrow(parametry: dict) -> list[dict]:
 
 
 def wartosc_parametru(parametry: dict, identyfikator: str) -> float:
+    if identyfikator.startswith("placa:"):
+        return parametry["pracownicy"][int(identyfikator.split(":")[1])]["stawka"]
     if identyfikator == "sredni_czas_bezposredni":
         return sredni_bezposredni_czas_na_sprawe(parametry)
     proste = {
         "sekretariat_stawka": "koszt_sekretariatu_na_godzine", "sekretariat_czas": "sekretariat_minuty_na_sprawe",
-        "koszt_staly": "koszt_staly_na_godzine", "wynagrodzenie": "wynagrodzenie_pracownika_na_godzine",
+        "koszt_staly": "koszt_staly_na_godzine",
         "srednia_kwota_ugody": "srednia_kwota_ugody_percent",
         "srednia_kwota_wyroku": "srednia_kwota_wyroku_percent",
         "podatek_dochodowy": "podatek_dochodowy_percent",
@@ -183,9 +190,12 @@ def ustaw_parametr(parametry: dict, identyfikator: str, wartosc: float) -> dict:
     if identyfikator == "sredni_czas_bezposredni":
         return ustaw_sredni_bezposredni_czas(parametry, wartosc)
     wynik = kopiuj_parametry(parametry)
+    if identyfikator.startswith("placa:"):
+        wynik["pracownicy"][int(identyfikator.split(":")[1])]["stawka"] = wartosc
+        return wynik
     proste = {
         "sekretariat_stawka": "koszt_sekretariatu_na_godzine", "sekretariat_czas": "sekretariat_minuty_na_sprawe",
-        "koszt_staly": "koszt_staly_na_godzine", "wynagrodzenie": "wynagrodzenie_pracownika_na_godzine",
+        "koszt_staly": "koszt_staly_na_godzine",
         "srednia_kwota_ugody": "srednia_kwota_ugody_percent",
         "srednia_kwota_wyroku": "srednia_kwota_wyroku_percent",
         "podatek_dochodowy": "podatek_dochodowy_percent",
@@ -317,7 +327,7 @@ def kluczowe_progi(parametry: dict, docelowa_marza: float, analiza_progow: dict 
             parametry, definicja_sredniego_czasu(parametry), docelowa_marza
         ),
         "koszt_staly": po_id["koszt_staly"],
-        "wynagrodzenie": po_id["wynagrodzenie"],
+        **{key: value for key, value in po_id.items() if key.startswith("placa:")},
         "srednia_kwota_ugody": po_id["srednia_kwota_ugody"],
         "srednia_kwota_wyroku": po_id["srednia_kwota_wyroku"],
         "podatek_dochodowy": po_id["podatek_dochodowy"],
@@ -431,18 +441,7 @@ def ekonomika_ugod(parametry: dict) -> dict:
     czasy_ii_instancji = wyniki["czasy_ii_instancji_sciezek"]
     pelne_czasy_sciezek = wyniki["czasy_sciezek_z_ii_instancja"]
     liczba_spraw = parametry["liczba_spraw"]
-    koszt_zasobu_godzinowy = (
-        parametry["koszt_staly_na_godzine"]
-        + parametry["wynagrodzenie_pracownika_na_godzine"]
-    )
-    dzienne_minuty = sum(parametry["codzienne_czynnosci"].values())
-    produktywne_minuty = MINUTY_DNIA_PRACY - dzienne_minuty
-    if produktywne_minuty <= 0:
-        raise ValueError(
-            "Czynności dzienne zużywają cały dzień pracy; "
-            "nie można wycenić oszczędności czasu spraw."
-        )
-    mnoznik_kosztu_lifecycle = MINUTY_DNIA_PRACY / produktywne_minuty
+    sciezki_role = wyniki["czasy_sciezek_z_ii_wedlug_roli"]
     nazwy = {
         "kategoryczna_odmowa": "Kategoryczna odmowa",
         "automatyczne_ramy_ugoda": "Automatyczne ramy → ugoda",
@@ -462,12 +461,12 @@ def ekonomika_ugod(parametry: dict) -> dict:
             pelne_czasy_sciezek[odniesienie]
             - pelne_czasy_sciezek[wariant]
         )
-        oszczednosc_pln = (
-            oszczednosc_minut
-            / 60
-            * koszt_zasobu_godzinowy
-            * mnoznik_kosztu_lifecycle
-        )
+        roznice_role = {r: sciezki_role[odniesienie][r] - sciezki_role[wariant][r] for r in ("EH", "UGODY")}
+        if any(wyniki["stawki_wedlug_roli"][r] is None and roznice_role[r] != 0 for r in roznice_role):
+            raise ValueError("Brak stawki roli wymaganej w porównywanym wariancie ugód.")
+        oszczednosc_pln = sum(roznice_role[r] / 60 * wyniki["role"][r]["mnoznik_zasobu"]
+                              * ((wyniki["stawki_wedlug_roli"][r] or 0) + parametry["koszt_staly_na_godzine"])
+                              for r in roznice_role)
         porownania.append({"Porównanie": etykieta, "Różnica minut na sprawę": oszczednosc_minut, "Różnica PLN na sprawę": oszczednosc_pln, "Wpływ na wynik kohorty przy obecnym udziale": oszczednosc_pln * liczba_spraw * udzialy[udzial_klucz] / 100})
 
     bez_prob = oblicz_model(ustaw_parametr(parametry, "szansa_na_ugode", 0.0))

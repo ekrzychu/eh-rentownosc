@@ -1,12 +1,13 @@
-"""Ekonomika pełnego lifecycle kohorty, niezależna od obsady i kalendarza.
+"""Ekonomika pełnego lifecycle kohorty, z godzinowymi stawkami wspólnej obsady, bez limitów kalendarza.
 
 Pojemność, kolejka, opóźnienia przychodu i koszt utrzymywanej obsady należą
 do timeline.py. Ten model wycenia wyłącznie zasób zużyty przez kohortę.
 """
 
-from math import isfinite
+from math import fsum, isfinite
 
 from config import parametry_modelu, wczytaj_defaults
+from staff import ROLE, nowy_pracownik, minuty_dzienne_wedlug_roli, srednie_stawki_wedlug_roli
 
 
 MINUTY_DNIA_PRACY = wczytaj_defaults()["organizacja"]["minuty_dnia_pracy"]
@@ -29,11 +30,15 @@ SCIEZKI_UGODOWE_LISCIE = SCIEZKI_UGODOWE + SCIEZKI_BEZ_UGODY
 
 def domyslne_parametry() -> dict:
     """Zwraca kopię wszystkich edytowalnych parametrów modelu."""
-    return parametry_modelu()
+    parametry = parametry_modelu()
+    parametry["pracownicy"] = [nowy_pracownik(i) for i in range(parametry["liczba_pracownikow"])]
+    return parametry
 
 
 def waliduj_parametry(parametry: dict) -> None:
     """Waliduje wspólne założenia przed uruchomieniem któregokolwiek modelu."""
+    if "wynagrodzenie_pracownika_na_godzine" in parametry:
+        raise ValueError("Stawki prawników należy podawać wyłącznie w obsadzie pracowników.")
     calkowite = ("liczba_spraw",)
     for nazwa in calkowite:
         wartosc = parametry[nazwa]
@@ -45,7 +50,6 @@ def waliduj_parametry(parametry: dict) -> None:
         "niski_wps",
         "wysoki_wps",
         "koszt_staly_na_godzine",
-        "wynagrodzenie_pracownika_na_godzine",
         "koszt_sekretariatu_na_godzine",
         "sekretariat_minuty_na_sprawe",
         "analiza_mozliwosci_ugody",
@@ -97,8 +101,8 @@ def waliduj_parametry(parametry: dict) -> None:
         raise ValueError("Udziały rodzajów spraw muszą zawierać dokładnie P1, P2 i P3.")
     if set(parametry["dodatkowe_minuty"]) != oczekiwane_rodzaje:
         raise ValueError("Dodatkowe minuty muszą zawierać dokładnie P1, P2 i P3.")
-    if sum(parametry["codzienne_czynnosci"].values()) > MINUTY_DNIA_PRACY:
-        raise ValueError(f"Czynności dzienne nie mogą przekraczać {MINUTY_DNIA_PRACY} minut dziennie.")
+    if any(v > MINUTY_DNIA_PRACY for v in minuty_dzienne_wedlug_roli(parametry["codzienne_czynnosci"]).values()):
+        raise ValueError(f"Czynności dzienne jednej roli nie mogą przekraczać {MINUTY_DNIA_PRACY} minut dziennie.")
     if any(
         not isinstance(wartosc, (int, float))
         or isinstance(wartosc, bool)
@@ -395,80 +399,70 @@ def podsumuj_grupy(grupy: list[dict]) -> dict:
     }
 
 
-def oblicz_grupe(
-    rodzaj: str,
-    grupa_wps: str,
-    liczba: float,
-    wps: float,
-    parametry: dict,
-    srednie_minuty_sciezki: float,
-    mnoznik_zasobu_lifecycle: float,
-    udzial_ugod: float,
-    udzial_wyrokow: float,
-) -> dict:
-    """Oblicza segment według zużytych płatnych godzin zasobu."""
-    wynagrodzenie_ugoda = oblicz_wynagrodzenie(
-        wps, parametry["prog_wps"], parametry["srednia_kwota_ugody_percent"]
-    )
-    wynagrodzenie_wyrok = oblicz_wynagrodzenie(
-        wps, parametry["prog_wps"], parametry["srednia_kwota_wyroku_percent"]
-    )
-    oczekiwany_przychod_ugody = udzial_ugod / 100 * wynagrodzenie_ugoda
-    oczekiwany_przychod_wyroki = udzial_wyrokow / 100 * wynagrodzenie_wyrok
-    wynagrodzenie = oczekiwany_przychod_ugody + oczekiwany_przychod_wyroki
-    bezposrednie_minuty = srednie_minuty_sciezki + parametry["dodatkowe_minuty"][rodzaj]
-    minuty_zasobu = bezposrednie_minuty * mnoznik_zasobu_lifecycle
-    koszt_wynagrodzenia = (
-        minuty_zasobu / 60 * parametry["wynagrodzenie_pracownika_na_godzine"]
-    )
-    koszt_narzutu_ogolnego = (
-        minuty_zasobu / 60 * parametry["koszt_staly_na_godzine"]
-    )
-    koszt_bezposredni = bezposrednie_minuty / 60 * (
-        parametry["wynagrodzenie_pracownika_na_godzine"]
-        + parametry["koszt_staly_na_godzine"]
-    )
-    narzut_dzienny_na_sprawe = (
-        koszt_wynagrodzenia + koszt_narzutu_ogolnego - koszt_bezposredni
-    )
-    koszt_sekretariatu = parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"]
-    koszt_calkowity = koszt_wynagrodzenia + koszt_narzutu_ogolnego + koszt_sekretariatu
-    wynik_jednostkowy = wynagrodzenie - koszt_calkowity
-    return {
-        "rodzaj": rodzaj,
-        "grupa_wps": grupa_wps,
-        "wps": wps,
-        "liczba": liczba,
-        "wynagrodzenie_ugoda": wynagrodzenie_ugoda,
-        "wynagrodzenie_wyrok": wynagrodzenie_wyrok,
-        "oczekiwane_wynagrodzenie": wynagrodzenie,
-        "udzial_ugod": udzial_ugod,
-        "udzial_wyrokow": udzial_wyrokow,
-        "oczekiwany_przychod_ugody": oczekiwany_przychod_ugody,
-        "oczekiwany_przychod_wyroki": oczekiwany_przychod_wyroki,
-        "koszt_bezposredni": koszt_bezposredni,
-        "narzut_dzienny_na_sprawe": narzut_dzienny_na_sprawe,
-        "minuty_zasobu_pracownika": minuty_zasobu,
-        "godziny_zasobu_pracownika": minuty_zasobu / 60,
-        "koszt_narzutu_ogolnego": koszt_narzutu_ogolnego,
-        "koszt_wynagrodzenia": koszt_wynagrodzenia,
-        "koszt_sekretariatu": koszt_sekretariatu,
-        "koszt_calkowity": koszt_calkowity,
-        "wynik_jednostkowy_przed_podatkiem": wynik_jednostkowy,
-        "bezposrednie_minuty_na_sprawe": bezposrednie_minuty,
-        "laczny_przychod": liczba * wynagrodzenie,
-        "laczny_przychod_ugody": liczba * oczekiwany_przychod_ugody,
-        "laczny_przychod_wyroki": liczba * oczekiwany_przychod_wyroki,
-        "laczny_koszt_narzutu_ogolnego": liczba * koszt_narzutu_ogolnego,
-        "laczny_koszt_wynagrodzenia": liczba * koszt_wynagrodzenia,
-        "laczny_koszt_sekretariatu": liczba * koszt_sekretariatu,
-        "laczny_koszt_calkowity": liczba * koszt_calkowity,
-        "laczny_wynik_przed_podatkiem": liczba * wynik_jednostkowy,
-    }
+def oblicz_czasy_sciezek_wedlug_roli(parametry: dict) -> dict:
+    """Sześć dotychczasowych ścieżek, bez dodatkowego czasu P i II instancji."""
+    wspolne = sum(parametry["wspolne_czynnosci"].values())
+    proces = sum(parametry["procesowe_czynnosci"].values())
+    ugody = sum(parametry["ugodowe_czynnosci"].values())
+    proba = sum(parametry["ugodowe_czynnosci"].get(k, 0) for k in ("Oferta ugody", "Projekt ugody"))
+    analiza = parametry["analiza_mozliwosci_ugody"]
+    return {path: {"EH": wspolne + (proces if path in SCIEZKI_BEZ_UGODY else 0),
+                   "UGODY": ((ugody if path in SCIEZKI_UGODOWE else proba
+                              if path in {"automatyczne_ramy_brak_ugody", "brak_ugody_poza_ramami"} else 0)
+                             + (analiza if path in {"brak_szans", "zawarte_poza_ramami", "brak_ugody_poza_ramami"} else 0))}
+            for path in SCIEZKI_UGODOWE_LISCIE}
 
 
-def oblicz_model(parametry: dict | None = None) -> dict:
-    """Zwraca pełne wyniki nowego modelu czasu, kosztu i pojemności."""
+def _koszty_pracy(minuty: dict, mnozniki: dict, stawki: dict, narzut: float) -> dict:
+    godziny = {r: minuty[r] * mnozniki[r] / 60 for r in ROLE}
+    if any(godziny[r] > 0 and stawki[r] is None for r in ROLE):
+        raise ValueError("Brak stawki wymaganej do wyceny pracy roli.")
+    place = {r: godziny[r] * stawki[r] if godziny[r] > 0 else 0.0 for r in ROLE}
+    return {"godziny": godziny, "place": place,
+            "narzut": fsum(godziny.values()) * narzut}
+
+
+def oblicz_grupe(grupa: dict, parametry: dict, minuty: dict, mnozniki: dict, stawki: dict) -> dict:
+    """Wycena minut każdej roli; przychód i liczebność pochodzą ze wspólnego przepływu."""
+    niedostepny = any(minuty[r] > 0 and (stawki[r] is None or mnozniki[r] == 0) for r in ROLE)
+    if grupa["liczba"] == 0 and niedostepny:
+        # Pusty segment nie wymaga stawki. Jego hipotetycznej wyceny nie zastępuje zero.
+        return {**grupa, "bezposrednie_minuty_wedlug_roli": dict(minuty),
+            "bezposrednie_minuty_na_sprawe": fsum(minuty.values()),
+            **{k: None for k in ("koszt_calkowity", "koszt_bezposredni", "narzut_dzienny_na_sprawe",
+                "koszt_wynagrodzenia", "koszt_narzutu_ogolnego", "koszt_sekretariatu",
+                "wynik_jednostkowy_przed_podatkiem", "minuty_zasobu_pracownika", "godziny_zasobu_pracownika")},
+            **{k: 0.0 for k in ("laczny_koszt_narzutu_ogolnego", "laczny_koszt_wynagrodzenia",
+                "laczny_koszt_sekretariatu", "laczny_koszt_calkowity", "laczny_wynik_przed_podatkiem")}}
+    koszt = _koszty_pracy(minuty, mnozniki, stawki, parametry["koszt_staly_na_godzine"])
+    place = fsum(koszt["place"].values())
+    narzut = koszt["narzut"]
+    bezposredni = fsum(minuty[r] / 60 * ((stawki[r] or 0) + parametry["koszt_staly_na_godzine"]) for r in ROLE)
+    sekretariat = parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"]
+    razem = place + narzut + sekretariat
+    liczba = grupa["liczba"]
+    przychod = grupa["oczekiwane_wynagrodzenie"]
+    return {**grupa,
+            "bezposrednie_minuty_wedlug_roli": dict(minuty),
+            "godziny_zasobu_wedlug_roli": koszt["godziny"],
+            "koszt_wynagrodzenia_wedlug_roli": koszt["place"],
+            "koszt_bezposredni": bezposredni,
+            "narzut_dzienny_na_sprawe": place + narzut - bezposredni,
+            "minuty_zasobu_pracownika": fsum(koszt["godziny"].values()) * 60,
+            "godziny_zasobu_pracownika": fsum(koszt["godziny"].values()),
+            "koszt_narzutu_ogolnego": narzut, "koszt_wynagrodzenia": place,
+            "koszt_sekretariatu": sekretariat, "koszt_calkowity": razem,
+            "wynik_jednostkowy_przed_podatkiem": przychod - razem,
+            "bezposrednie_minuty_na_sprawe": fsum(minuty.values()),
+            "laczny_koszt_narzutu_ogolnego": liczba * narzut,
+            "laczny_koszt_wynagrodzenia": liczba * place,
+            "laczny_koszt_sekretariatu": liczba * sekretariat,
+            "laczny_koszt_calkowity": liczba * razem,
+            "laczny_wynik_przed_podatkiem": liczba * (przychod - razem)}
+
+
+def oblicz_przeplyw(parametry: dict | None = None) -> dict:
+    """Wspólne oczekiwania pracy i przychodu; nie wymaga wyceny ani dostępnej obsady."""
     if parametry is None:
         parametry = domyslne_parametry()
     waliduj_parametry(parametry)
@@ -514,118 +508,97 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         * (srednie_minuty_sciezki + parametry["dodatkowe_minuty"][rodzaj])
         for rodzaj, podzial in podzial_spraw.items()
     )
-    metryki_lifecycle = oblicz_czynnosci_dzienne_lifecycle(
-        bezposrednie_minuty_spraw, parametry["codzienne_czynnosci"]
-    )
-    czynnosci_dzienne_lifecycle_minuty = metryki_lifecycle[
-        "czynnosci_dzienne_lifecycle_minuty"
-    ]
-    wynagrodzenie_godzinowe = parametry["wynagrodzenie_pracownika_na_godzine"]
-    narzut_ogolny_godzinowy = parametry["koszt_staly_na_godzine"]
-    koszt_zasobu_na_godzine = narzut_ogolny_godzinowy + wynagrodzenie_godzinowe
-    godziny_zasobu_lifecycle = metryki_lifecycle["laczne_godziny_zasobu_lifecycle"]
-    koszt_narzutu_ogolnego_lifecycle = (
-        godziny_zasobu_lifecycle * narzut_ogolny_godzinowy
-    )
-    koszt_wynagrodzen_lifecycle = godziny_zasobu_lifecycle * wynagrodzenie_godzinowe
-    koszt_sekretariatu_na_sprawe = parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"]
-    koszt_sekretariatu_lifecycle = liczba_spraw * koszt_sekretariatu_na_sprawe
-    koszt_lifecycle_razem = (
-        koszt_narzutu_ogolnego_lifecycle + koszt_wynagrodzen_lifecycle + koszt_sekretariatu_lifecycle
-    )
-    czynnosci_dzienne_lifecycle_koszt = (
-        czynnosci_dzienne_lifecycle_minuty / 60 * koszt_zasobu_na_godzine
-    )
-    narzut_dzienny_na_sprawe = (
-        czynnosci_dzienne_lifecycle_koszt / liczba_spraw if liczba_spraw else 0.0
-    )
-    produktywne_minuty = metryki_lifecycle["produktywne_minuty_na_osobodzien"]
-    mnoznik_zasobu_lifecycle = (
-        MINUTY_DNIA_PRACY / produktywne_minuty
-        if produktywne_minuty > 0
-        else 0.0
-    )
+    sciezki_role = oblicz_czasy_sciezek_wedlug_roli(parametry)
+    sciezki_role_ii = {path: {**minuty, "EH": minuty["EH"] + czasy_ii_instancji_sciezek[path]}
+                       for path, minuty in sciezki_role.items()}
+    srednie_role = {r: fsum(udzialy_ugod[path] / 100 * minuty[r]
+                            for path, minuty in sciezki_role_ii.items()) for r in ROLE}
+    minuty_rodzaje = {rodzaj: {"EH": srednie_role["EH"] + parametry["dodatkowe_minuty"][rodzaj],
+                              "UGODY": srednie_role["UGODY"]} for rodzaj in podzial_spraw}
+    roczne_role = {r: fsum(sum(podzial.values()) * minuty_rodzaje[rodzaj][r]
+                           for rodzaj, podzial in podzial_spraw.items()) for r in ROLE}
     grupy = []
     for rodzaj, podzial in podzial_spraw.items():
         for grupa_wps, liczba in podzial.items():
             wps = parametry["wysoki_wps"] if grupa_wps == "wysoki_wps" else parametry["niski_wps"]
-            grupy.append(
-                oblicz_grupe(
-                    rodzaj,
-                    grupa_wps,
-                    liczba,
-                    wps,
-                    parametry,
-                    srednie_minuty_sciezki,
-                    mnoznik_zasobu_lifecycle,
-                    udzialy_ugod["zakonczone_ugoda"],
-                    udzialy_ugod["bez_ugody"],
-                )
-            )
-
-    wedlug_wps = {
-        "niski_wps": podsumuj_grupy([g for g in grupy if g["grupa_wps"] == "niski_wps"]),
-        "wysoki_wps": podsumuj_grupy([g for g in grupy if g["grupa_wps"] == "wysoki_wps"]),
-    }
-    rodzaje = {
-        rodzaj: podsumuj_grupy([g for g in grupy if g["rodzaj"] == rodzaj])
-        for rodzaj in podzial_spraw
-    }
-    ogolem = podsumuj_grupy(grupy)
-    rozliczenie_podatku = oblicz_podatek_dochodowy(
-        ogolem["przychod"],
-        ogolem["koszt_calkowity"],
-        parametry["podatek_dochodowy_percent"],
-    )
-    ogolem.update(rozliczenie_podatku)
-    ogolem["sredni_wynik_po_podatku"] = (
-        ogolem["wynik_po_podatku"] / liczba_spraw if liczba_spraw else 0.0
-    )
-
-    return {
-        "ogolem": ogolem,
-        "wps_niski": wedlug_wps["niski_wps"],
-        "wps_wysoki": wedlug_wps["wysoki_wps"],
-        "rodzaje": rodzaje,
-        "grupy": grupy,
-        "podzial_spraw": podzial_spraw,
-        "udzialy_ugod": udzialy_ugod,
-        "czasy_sciezek_ugod": czasy_sciezek,
-        "czasy_ii_instancji_sciezek": czasy_ii_instancji_sciezek,
+            ugoda = oblicz_wynagrodzenie(wps, parametry["prog_wps"], parametry["srednia_kwota_ugody_percent"])
+            wyrok = oblicz_wynagrodzenie(wps, parametry["prog_wps"], parametry["srednia_kwota_wyroku_percent"])
+            przychod_ugody = udzialy_ugod["zakonczone_ugoda"] / 100 * ugoda
+            przychod_wyroki = udzialy_ugod["bez_ugody"] / 100 * wyrok
+            grupy.append({"rodzaj": rodzaj, "grupa_wps": grupa_wps, "wps": wps, "liczba": liczba,
+                "wynagrodzenie_ugoda": ugoda, "wynagrodzenie_wyrok": wyrok,
+                "oczekiwane_wynagrodzenie": przychod_ugody + przychod_wyroki,
+                "oczekiwany_przychod_ugody": przychod_ugody, "oczekiwany_przychod_wyroki": przychod_wyroki,
+                "udzial_ugod": udzialy_ugod["zakonczone_ugoda"], "udzial_wyrokow": udzialy_ugod["bez_ugody"],
+                "laczny_przychod": liczba * (przychod_ugody + przychod_wyroki),
+                "laczny_przychod_ugody": liczba * przychod_ugody, "laczny_przychod_wyroki": liczba * przychod_wyroki})
+    return {"grupy": grupy, "podzial_spraw": podzial_spraw, "udzialy_ugod": udzialy_ugod,
+        "czasy_sciezek_ugod": czasy_sciezek, "czasy_ii_instancji_sciezek": czasy_ii_instancji_sciezek,
         "czasy_sciezek_z_ii_instancja": czasy_sciezek_z_ii_instancja,
+        "czasy_sciezek_wedlug_roli": sciezki_role, "czasy_sciezek_z_ii_wedlug_roli": sciezki_role_ii,
         "srednie_minuty_podstawowej_sciezki_ugody": srednie_minuty_podstawowej_sciezki,
         "srednie_minuty_sciezki_ugody": srednie_minuty_sciezki,
-        **wskazniki_ii_instancji,
-        "obsluga_ii_instancji_minuty": parametry["obsluga_ii_instancji_minuty"],
-        "narzut_kosztow_ogolnych_na_godzine": narzut_ogolny_godzinowy,
-        "wynagrodzenie_pracownika_na_godzine": wynagrodzenie_godzinowe,
-        "koszt_zasobu_na_godzine": koszt_zasobu_na_godzine,
-        "koszt_narzutu_ogolnego_lifecycle": koszt_narzutu_ogolnego_lifecycle,
-        "koszt_wynagrodzen_lifecycle": koszt_wynagrodzen_lifecycle,
-        "koszt_sekretariatu_lifecycle": koszt_sekretariatu_lifecycle,
-        "koszt_sekretariatu_na_sprawe": koszt_sekretariatu_na_sprawe,
-        "koszt_sekretariatu_na_godzine": parametry["koszt_sekretariatu_na_godzine"],
-        "koszt_lifecycle_razem": koszt_lifecycle_razem,
+        "minuty_rodzajow_wedlug_roli": minuty_rodzaje, "roczne_minuty_wedlug_roli": roczne_role,
         "bezposrednie_minuty_spraw": bezposrednie_minuty_spraw,
-        **metryki_lifecycle,
-        "czynnosci_dzienne_lifecycle_koszt": czynnosci_dzienne_lifecycle_koszt,
-        "narzut_dzienny_na_sprawe": narzut_dzienny_na_sprawe,
-        "koszty_jednostkowe": {
-            rodzaj: (
-                koszt_zasobu_na_godzine
-                * (srednie_minuty_sciezki + parametry["dodatkowe_minuty"][rodzaj])
-                * mnoznik_zasobu_lifecycle
-                / 60 + koszt_sekretariatu_na_sprawe
-            )
-            for rodzaj in parametry["dodatkowe_minuty"]
-        },
-    }
+        **wskazniki_ii_instancji, "obsluga_ii_instancji_minuty": parametry["obsluga_ii_instancji_minuty"],
+        "ogolem": {"liczba_spraw": liczba_spraw, "przychod": fsum(g["laczny_przychod"] for g in grupy),
+                   "przychod_ugody": fsum(g["laczny_przychod_ugody"] for g in grupy),
+                   "przychod_wyroki": fsum(g["laczny_przychod_wyroki"] for g in grupy)}}
+
+
+def oblicz_model(parametry: dict | None = None) -> dict:
+    """Pełny lifecycle; średnie stawek wspólnej obsady i dzienne obciążenia ról."""
+    if parametry is None:
+        parametry = domyslne_parametry()
+    przeplyw = oblicz_przeplyw(parametry)
+    if "pracownicy" not in parametry:
+        raise ValueError("Brak wspólnej obsady pracowników do wyceny stawek.")
+    stawki = srednie_stawki_wedlug_roli(parametry["pracownicy"])
+    brak = [r for r in ROLE if przeplyw["roczne_minuty_wedlug_roli"][r] > 0 and stawki[r] is None]
+    if brak:
+        raise ValueError("Brak stawki godzinowej wymaganej roli: " + ", ".join(brak)
+                         + ". Dodaj pracownika z dodatnim przydziałem do projektu. Kontrakt w czasie pozostaje dostępny.")
+    dzienne = minuty_dzienne_wedlug_roli(parametry["codzienne_czynnosci"])
+    role = {r: oblicz_czynnosci_dzienne_lifecycle(przeplyw["roczne_minuty_wedlug_roli"][r], {r: dzienne[r]})
+            for r in ROLE}
+    mnozniki = {r: MINUTY_DNIA_PRACY / (MINUTY_DNIA_PRACY - dzienne[r])
+                 if dzienne[r] < MINUTY_DNIA_PRACY else 0.0 for r in ROLE}
+    for r in ROLE:
+        role[r].update({"bezposrednie_minuty": przeplyw["roczne_minuty_wedlug_roli"][r],
+                        "mnoznik_zasobu": mnozniki[r], "stawka_godzinowa": stawki[r]})
+    grupy = [oblicz_grupe(g, parametry, przeplyw["minuty_rodzajow_wedlug_roli"][g["rodzaj"]], mnozniki, stawki)
+             for g in przeplyw["grupy"]]
+    wedlug_wps = {key: podsumuj_grupy([g for g in grupy if g["grupa_wps"] == key])
+                  for key in ("niski_wps", "wysoki_wps")}
+    rodzaje = {r: podsumuj_grupy([g for g in grupy if g["rodzaj"] == r]) for r in parametry["udzialy_rodzajow"]}
+    ogolem = podsumuj_grupy(grupy)
+    ogolem.update(oblicz_podatek_dochodowy(ogolem["przychod"], ogolem["koszt_calkowity"], parametry["podatek_dochodowy_percent"]))
+    liczba = parametry["liczba_spraw"]
+    ogolem["sredni_wynik_po_podatku"] = ogolem["wynik_po_podatku"] / liczba if liczba else 0.0
+    metryki = {key: fsum(role[r][key] for r in ROLE) for key in (
+        "ekwiwalent_osobodni_kohorty", "czynnosci_dzienne_lifecycle_minuty", "czynnosci_dzienne_lifecycle_godziny",
+        "laczne_minuty_zasobu_lifecycle", "laczne_godziny_zasobu_lifecycle")}
+    koszt_dzienny = fsum(g["liczba"] * g["narzut_dzienny_na_sprawe"] for g in grupy if g["liczba"] > 0)
+    return {**przeplyw, **metryki, "ogolem": ogolem, "grupy": grupy,
+        "wps_niski": wedlug_wps["niski_wps"], "wps_wysoki": wedlug_wps["wysoki_wps"], "rodzaje": rodzaje,
+        "role": role, "stawki_wedlug_roli": stawki,
+        "narzut_kosztow_ogolnych_na_godzine": parametry["koszt_staly_na_godzine"],
+        "koszt_narzutu_ogolnego_lifecycle": ogolem["koszt_narzutu_ogolnego"],
+        "koszt_wynagrodzen_lifecycle": ogolem["koszt_wynagrodzenia"],
+        "koszt_sekretariatu_lifecycle": ogolem["koszt_sekretariatu"],
+        "koszt_sekretariatu_na_sprawe": parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"],
+        "koszt_sekretariatu_na_godzine": parametry["koszt_sekretariatu_na_godzine"],
+        "koszt_lifecycle_razem": ogolem["koszt_calkowity"], "czynnosci_dzienne_lifecycle_koszt": koszt_dzienny,
+        "narzut_dzienny_na_sprawe": koszt_dzienny / liczba if liczba else 0.0,
+        "koszty_jednostkowe": {r: next(g["koszt_calkowity"] for g in grupy if g["rodzaj"] == r)
+                                 for r in parametry["udzialy_rodzajow"]}}
 
 
 def _parametry_z_zmiana(parametry: dict, **zmiany) -> dict:
     """Tworzy bezpieczną kopię parametrów z podmienionymi wartościami."""
     kopia = {
         **parametry,
+        "pracownicy": [dict(p) for p in parametry["pracownicy"]],
         "wspolne_czynnosci": parametry["wspolne_czynnosci"].copy(),
         "procesowe_czynnosci": parametry["procesowe_czynnosci"].copy(),
         "ugodowe_czynnosci": parametry["ugodowe_czynnosci"].copy(),
@@ -720,23 +693,22 @@ def oblicz_prog_kosztu_stalego(parametry: dict) -> dict:
     }
 
 
-def oblicz_prog_wynagrodzenia_pracownika(parametry: dict) -> dict:
-    """Maksymalna stawka pracy przy wyniku równym zero."""
+def oblicz_prog_wynagrodzenia_pracownika(parametry: dict, indeks: int = 0) -> dict:
+    """Próg stawki jednej jawnej osoby, przy niezmienionych pozostałych stawkach."""
     wyniki = oblicz_model(parametry)
-    obecny = parametry["wynagrodzenie_pracownika_na_godzine"]
-    godziny_zasobu = wyniki["laczne_godziny_zasobu_lifecycle"]
-    if godziny_zasobu <= 0:
+    if not isinstance(indeks, int) or isinstance(indeks, bool) or indeks < 0:
+        raise ValueError("Indeks pracownika musi być nieujemną liczbą całkowitą.")
+    if indeks >= len(parametry["pracownicy"]):
+        return {"mozliwe": False, "obecnie": None}
+    osoba = parametry["pracownicy"][indeks]
+    obecny = osoba["stawka"]
+    przypisani = [p for p in parametry["pracownicy"] if p["rola"] == osoba["rola"] and p["wykorzystanie_percent"] > 0]
+    godziny = wyniki["role"][osoba["rola"]]["laczne_godziny_zasobu_lifecycle"]
+    nachylenie = godziny / len(przypisani) if przypisani and osoba["wykorzystanie_percent"] > 0 else 0.0
+    if nachylenie <= 0:
         return {"mozliwe": False, "obecnie": obecny}
-    prog = (
-        wyniki["ogolem"]["przychod"]
-        - wyniki["koszt_narzutu_ogolnego_lifecycle"]
-        - wyniki["koszt_sekretariatu_lifecycle"]
-    ) / godziny_zasobu
+    prog = obecny + wyniki["ogolem"]["wynik_przed_podatkiem"] / nachylenie
     if prog < 0:
         return {"mozliwe": False, "obecnie": obecny}
-    return {
-        "mozliwe": True,
-        "obecnie": obecny,
-        "prog": prog,
-        "wymagana_redukcja": max(0.0, obecny - prog),
-    }
+    return {"mozliwe": True, "obecnie": obecny, "prog": prog,
+            "wymagana_redukcja": max(0.0, obecny - prog), "indeks_pracownika": indeks}

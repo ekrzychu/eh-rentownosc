@@ -1,7 +1,7 @@
 """Ciągły, pojemnościowy model ekonomii operacyjnej w czasie.
 
-``oblicz_model`` pozostaje jedynym źródłem ekonomii lifecycle kohorty
-referencyjnej. Ten moduł tworzy co miesiąc proporcjonalną kohortę, układa jej
+``oblicz_przeplyw`` jest wspólnym źródłem oczekiwanej pracy i przychodu
+kohorty referencyjnej, bez wyceny lifecycle. Ten moduł tworzy co miesiąc proporcjonalną kohortę, układa jej
 pracę w kolejce FIFO i pobiera pełny koszt dostarczonej obsady. Koszt okresowy
 nie jest zatem uzgadniany z kosztem pracy zużytej przez pojedynczą kohortę.
 """
@@ -11,13 +11,13 @@ from dataclasses import dataclass, field
 from math import fsum, isclose, isfinite
 
 from config import wczytaj_defaults
-from staff import GODZINY_ETATU_MIESIECZNIE, ROLE, nowy_pracownik, pojemnosc_obsady
+from staff import GODZINY_ETATU_MIESIECZNIE, ROLE, pojemnosc_obsady
 
 from model import (
     SCIEZKI_BEZ_UGODY,
     SCIEZKI_UGODOWE,
     domyslne_parametry,
-    oblicz_model,
+    oblicz_przeplyw,
     waliduj_parametry,
 )
 
@@ -167,11 +167,7 @@ def _dane_przeplywu(parametry: dict) -> dict:
     Dzienny narzut lifecycle nie ogranicza rozłącznych zasobów ról kontraktu.
     Właściwe czynności dzienne rozlicza pojemnosc_obsady.
     """
-    return oblicz_model({**parametry, "codzienne_czynnosci": {},
-                        "koszt_staly_na_godzine": 0.0,
-                        "wynagrodzenie_pracownika_na_godzine": 0.0,
-                        "koszt_sekretariatu_na_godzine": 0.0,
-                        "sekretariat_minuty_na_sprawe": 0.0})
+    return oblicz_przeplyw(parametry)
 
 
 def oblicz_pojemnosc_miesieczna(
@@ -182,10 +178,9 @@ def oblicz_pojemnosc_miesieczna(
     if lifecycle is None:
         lifecycle = _dane_przeplywu(parametry)
     if pracownicy is None:
-        liczba = parametry["liczba_pracownikow"]
-        if not isinstance(liczba, int) or isinstance(liczba, bool) or liczba < 0:
-            raise ValueError("Liczba pracowników musi być nieujemną liczbą całkowitą.")
-        pracownicy = [nowy_pracownik(i) for i in range(liczba)]
+        if "pracownicy" not in parametry:
+            raise ValueError("Brak wspólnej obsady pracowników kontraktu.")
+        pracownicy = parametry["pracownicy"]
     pools = pojemnosc_obsady(pracownicy, parametry["codzienne_czynnosci"])
     packets, completions = defaultdict(list), []
     _dodaj_kohorte(1, lifecycle, parametry, domyslne_parametry_czasowe(), packets, completions)
@@ -565,6 +560,21 @@ def _nominalny_miesiac_dojrzalosci(lifecycle: dict, czas: dict) -> int | None:
     return 1 + max(active_lags) + czas["opoznienie_platnosci_miesiace"]
 
 
+def podsumuj_finanse_kontraktu(rows: list[dict]) -> dict:
+    """Jawne uzgodnienie całego horyzontu; wszystkie składniki pochodzą z miesięcy."""
+    columns = ("Koszt wynagrodzeń EH", "Koszt wynagrodzeń ugód", "Koszty ogólne aktywnych spraw",
+               "Koszt sekretariatu aktywnych spraw", "Łączny koszt miesięczny", "Przychód razem",
+               "Wynik miesięczny przed podatkiem", "Sprawy naliczające koszt w miesiącu")
+    result = {column: fsum(row[column] for row in rows) for column in columns}
+    components = fsum(result[column] for column in columns[:4])
+    if not isclose(components, result["Łączny koszt miesięczny"], rel_tol=1e-10, abs_tol=1e-6):
+        raise RuntimeError("Składniki kosztu kontraktu nie uzgadniają się z kosztami miesięcznymi.")
+    if not isclose(result["Przychód razem"] - components, rows[-1]["Wynik skumulowany przed podatkiem"],
+                   rel_tol=1e-10, abs_tol=1e-6):
+        raise RuntimeError("Przychód minus pełny koszt nie uzgadnia się z wynikiem skumulowanym.")
+    return result
+
+
 def oblicz_model_czasowy(
     parametry: dict | None = None, parametry_czasowe: dict | None = None,
     *, pracownicy: list[dict] | None = None, koszty_kontraktu: dict | None = None,
@@ -911,6 +921,7 @@ def oblicz_model_czasowy(
     return {
         "parametry_czasowe": czas,
         "koszty_kontraktu": costs,
+        "podsumowanie_finansowe": podsumuj_finanse_kontraktu(rows),
         "tabela_miesieczna": rows,
         "pojemnosc": {
             **capacity,

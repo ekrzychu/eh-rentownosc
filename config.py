@@ -43,7 +43,6 @@ WYMAGANE = {
     ),
     "koszty": (
         "narzut_kosztow_ogolnych_na_godzine",
-        "wynagrodzenie_pracownika_na_godzine",
         "koszt_sekretariatu_na_godzine",
         "sekretariat_minuty_na_sprawe",
     ),
@@ -125,6 +124,12 @@ def wczytaj_defaults() -> dict:
             if not poprawna:
                 raise ValueError(f"{DEFAULTS_PATH}: niepoprawna wartość {sekcja}.{klucz}.")
     obsada = dane.get("obsada", {})
+    if not isinstance(obsada, dict):
+        raise ValueError("Brak konfiguracji obsady.")
+    stawka = obsada.get("stawka_poczatkowa")
+    if (isinstance(stawka, bool) or not isinstance(stawka, (int, float))
+            or not isfinite(stawka) or stawka < 0):
+        raise ValueError("Niepoprawna stawka początkowa pracownika.")
     role = obsada.get("role_poczatkowe")
     przydzial = obsada.get("wykorzystanie_percent")
     if (not isinstance(role, list) or not role or any(not isinstance(r, str) or r not in {"EH", "UGODY"} for r in role)
@@ -143,7 +148,6 @@ def parametry_modelu() -> dict:
         "niski_wps": dane["portfolio"]["niski_wps"],
         "wysoki_wps": dane["portfolio"]["wysoki_wps"],
         "koszt_staly_na_godzine": dane["koszty"]["narzut_kosztow_ogolnych_na_godzine"],
-        "wynagrodzenie_pracownika_na_godzine": dane["koszty"]["wynagrodzenie_pracownika_na_godzine"],
         "koszt_sekretariatu_na_godzine": dane["koszty"]["koszt_sekretariatu_na_godzine"],
         "sekretariat_minuty_na_sprawe": dane["koszty"]["sekretariat_minuty_na_sprawe"],
         "wspolne_czynnosci": dane["czynnosci_wspolne"],

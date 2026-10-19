@@ -108,7 +108,7 @@ class TestSilnikProgow(unittest.TestCase):
         identyfikatory = (
             "sredni_czas_bezposredni",
             "koszt_staly",
-            "wynagrodzenie",
+            "placa:0",
             "srednia_kwota_ugody",
             "zawarte_ugody",
         )
@@ -133,7 +133,7 @@ class TestSilnikProgow(unittest.TestCase):
             analiza = analizuj_progi(self.parametry, cel)
             tabela = {pozycja["id"]: pozycja for pozycja in analiza["pozycje"]}
             podsumowanie = kluczowe_progi(self.parametry, cel, analiza)
-            for identyfikator in ("srednia_kwota_ugody", "koszt_staly", "wynagrodzenie", "zawarte_ugody"):
+            for identyfikator in ("srednia_kwota_ugody", "koszt_staly", "placa:0", "zawarte_ugody"):
                 with self.subTest(cel=cel, identyfikator=identyfikator):
                     self.assertEqual(podsumowanie[identyfikator]["granica"], tabela[identyfikator]["granica"])
 
@@ -226,7 +226,7 @@ class TestMutacjeIWrazliwosc(unittest.TestCase):
 
     def test_wrazliwosc_zawiera_wymagane_dzwignie(self):
         wymagane = {
-            "srednia_kwota_ugody", "koszt_staly", "wynagrodzenie", "szansa_na_ugode",
+            "srednia_kwota_ugody", "koszt_staly", "placa:0", "szansa_na_ugode",
             "zawarte_ugody", "skutecznosc_automatycznych_ram",
             "czas_ii_instancji", "procesowe:Duplika",
             "analiza_ugody", "dodatkowe:P1", "dodatkowe:P2", "dodatkowe:P3",
@@ -357,15 +357,15 @@ class TestNiewykonalneWariantyWrazliwosci(unittest.TestCase):
     def test_poprawna_baza_450_minut_ma_tylko_korzystny_kierunek(self):
         parametry = domyslne_parametry()
         nazwy = list(parametry["codzienne_czynnosci"])
-        parametry["codzienne_czynnosci"] = dict(zip(nazwy, (300, 75, 75)))
+        parametry["codzienne_czynnosci"] = dict(zip(nazwy, (450, 0, 0)))
         bazowy = oblicz_model(parametry)
         identyfikator = f"codzienne:{nazwy[0]}"
         with self.assertRaises(ValueError):
-            oblicz_model(ustaw_parametr(parametry, identyfikator, 330))
+            oblicz_model(ustaw_parametr(parametry, identyfikator, 495))
         pozycje = {x["Id"]: x for x in analiza_wrazliwosci(parametry, 10.0)}
         pozycja = pozycje[identyfikator]
-        poprawiony = oblicz_model(ustaw_parametr(parametry, identyfikator, 270))
-        self.assertEqual(pozycja["Wartość po korzystnej zmianie"], 270)
+        poprawiony = oblicz_model(ustaw_parametr(parametry, identyfikator, 405))
+        self.assertEqual(pozycja["Wartość po korzystnej zmianie"], 405)
         self.assertAlmostEqual(pozycja["Korzystna zmiana (%)"], -10)
         self.assertEqual(pozycja["Kierunek poprawy"], "spadek")
         self.assertAlmostEqual(
@@ -455,16 +455,10 @@ class TestUgodyIPojemnosc(unittest.TestCase):
                 model["czasy_sciezek_z_ii_instancja"]["automatyczne_ramy_brak_ugody"]
                 - model["czasy_sciezek_z_ii_instancja"]["automatyczne_ramy_ugoda"]
             )
-            oczekiwana_roznica_pln = (
-                oczekiwana_roznica_minut
-                / 60
-                * (
-                    parametry["koszt_staly_na_godzine"]
-                    + parametry["wynagrodzenie_pracownika_na_godzine"]
-                )
-                * 480
-                / (480 - sum(parametry["codzienne_czynnosci"].values()))
-            )
+            # Różnica EH: proces i oczekiwana II instancja. Różnica ugód: nieudana próba minus pełna ugoda.
+            eh = 250 + 105
+            ugody = 35 - 55
+            oczekiwana_roznica_pln = eh / 60 * 480 / 420 * (59.88 + 36) + ugody / 60 * 480 / 450 * (59.88 + 36)
             oczekiwany_wplyw_portfela = (
                 oczekiwana_roznica_pln
                 * parametry["liczba_spraw"]
@@ -518,7 +512,7 @@ class TestAnalizySekretariatu(unittest.TestCase):
     def test_nowe_parametry_wrazliwosci_i_granice(self):
         p = {**domyslne_parametry(), "koszt_sekretariatu_na_godzine": 50.0,
              "sekretariat_minuty_na_sprawe": 10.0,
-             "koszt_staly_na_godzine": 1.0, "wynagrodzenie_pracownika_na_godzine": 1.0}
+             "koszt_staly_na_godzine": 1.0, "pracownicy": [{**osoba, "stawka": 1.0} for osoba in domyslne_parametry()["pracownicy"]]}
         rows = analiza_wrazliwosci(p)
         for nazwa in ("Koszt sekretariatu / h", "Czynności sekretariatu (min/sprawę)"):
             row = next(r for r in rows if r["Parametr"] == nazwa)

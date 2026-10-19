@@ -28,7 +28,7 @@ class TestGlowneWidoki(unittest.TestCase):
         from model import domyslne_parametry
 
         app = AppTest.from_file("app.py", default_timeout=30).run()
-        for label, value in zip(domyslne_parametry()["codzienne_czynnosci"], (300, 75, 75)):
+        for label, value in zip(domyslne_parametry()["codzienne_czynnosci"], (450, 0, 0)):
             next(x for x in app.number_input if x.label == label).set_value(value)
         app.run()
         self.assertFalse(app.exception)
@@ -42,7 +42,7 @@ class TestGlowneWidoki(unittest.TestCase):
 
     def test_neutralna_wrazliwosc_z_brakujacymi_kierunkami_renderuje_sie(self):
         app = AppTest.from_file("app.py", default_timeout=30).run()
-        for label in ("Narzut kosztów ogólnych / h pracownika", "Wynagrodzenie pracownika / h"):
+        for label in ("Narzut kosztów ogólnych / h pracownika", "Wynagrodzenie pracownika 1 (zł/h)", "Wynagrodzenie pracownika 2 (zł/h)"):
             next(x for x in app.number_input if x.label == label).set_value(0.0)
         app.run()
         self.assertFalse(app.exception)
@@ -120,7 +120,7 @@ class TestIndywidualniPracownicy(unittest.TestCase):
         self.assertEqual([x.value for x in self.app.selectbox if x.label == "Rola:"], ["EH", "UGODY"])
         for i in (1, 2):
             self.assertEqual(self.number(f"Wynagrodzenie pracownika {i} (zł/h)").value,
-                             wczytaj_defaults()["koszty"]["wynagrodzenie_pracownika_na_godzine"])
+                             wczytaj_defaults()["obsada"]["stawka_poczatkowa"])
             self.assertEqual(self.number(f"Wykorzystanie pracownika {i} w projekcie (%)").value, 100)
         self.number("Wynagrodzenie pracownika 1 (zł/h)").set_value(60.0)
         self.number("Wykorzystanie pracownika 1 w projekcie (%)").set_value(60.0)
@@ -187,6 +187,81 @@ class TestNiezaleznoscWalidacjiWidokow(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertFalse(app.error)
         self.assertIn("Niewystarczająca pojemność według roli", [x.value for x in app.metric])
+
+
+class TestJednaObsadaObuPaneli(unittest.TestCase):
+    def app(self):
+        return AppTest.from_file('app.py', default_timeout=30).run()
+
+    @staticmethod
+    def liczba(app, label):
+        return next(x for x in app.number_input if x.label == label)
+
+    @staticmethod
+    def kwota(value):
+        return float(value.replace(' zł', '').replace(' ', '').replace(',', '.'))
+
+    def test_jedno_zrodlo_stawek_i_brak_ogolnego_wejscia(self):
+        app = self.app()
+        labels = [x.label for x in app.number_input]
+        self.assertNotIn('Wynagrodzenie pracownika / h', labels)
+        self.assertEqual([x for x in labels if x.startswith('Wynagrodzenie')],
+                         ['Wynagrodzenie pracownika 1 (zł/h)', 'Wynagrodzenie pracownika 2 (zł/h)'])
+        self.assertTrue(any('średnia arytmetyczna' in x.value for x in app.caption))
+
+    def test_zmiana_plac_EH_i_ugod_aktualizuje_obydwa_panele(self):
+        for indeks, godziny, kolumna in ((1, 433.2375 / 60 * 480 / 420, 'Koszt wynagrodzeń EH'),
+                                         (2, 42.375 / 60 * 480 / 450, 'Koszt wynagrodzeń ugód')):
+            app = self.app()
+            self.liczba(app, f'Wynagrodzenie pracownika {indeks} (zł/h)').set_value(69.88).run()
+            self.assertFalse(app.exception)
+            koszt = self.kwota(next(x.value for x in app.metric if x.label == 'Koszt / sprawę'))
+            self.assertAlmostEqual(koszt, round(863.4450571428571 + godziny * 10, 2))
+            app.segmented_control[0].set_value('Kontrakt w czasie').run()
+            self.assertFalse(app.exception)
+            df = next(x.value for x in app.dataframe if kolumna in x.value.columns)
+            self.assertAlmostEqual(df.iloc[0][kolumna], 167 * 69.88)
+            app.segmented_control[0].set_value('Ekonomika sprawy').run()
+            self.assertEqual(self.liczba(app, f'Wynagrodzenie pracownika {indeks} (zł/h)').value, 69.88)
+            self.assertEqual(self.kwota(next(x.value for x in app.metric if x.label == 'Koszt / sprawę')), koszt)
+
+    def test_brak_stawki_widoczny_i_kontrakt_dostepny(self):
+        for liczba in (0, 1):
+            app = self.app()
+            self.liczba(app, 'Liczba pracowników').set_value(liczba).run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any('Brak stawki godzinowej wymaganej roli' in x.value for x in app.error))
+            self.assertFalse(any(x.label == 'Koszt / sprawę' for x in app.metric))
+            app.segmented_control[0].set_value('Kontrakt w czasie').run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertIn('Niewystarczająca pojemność według roli', [x.value for x in app.metric])
+
+        app = self.app()
+        self.liczba(app, 'Liczba pracowników').set_value(0)
+        self.liczba(app, 'Roczny napływ spraw').set_value(0).run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.error)
+        self.assertEqual(self.kwota(next(x.value for x in app.metric if x.label == 'Koszt / sprawę')), 0)
+
+    def test_zmiana_2_3_2_3_zachowuje_stawki_i_role(self):
+        app = self.app()
+        self.liczba(app, 'Liczba pracowników').set_value(3).run()
+        for i, placa in ((1, 50.0), (2, 45.0), (3, 70.0)):
+            self.liczba(app, f'Wynagrodzenie pracownika {i} (zł/h)').set_value(placa)
+        self.liczba(app, 'Wykorzystanie pracownika 3 w projekcie (%)').set_value(1.0).run()
+        koszt3 = next(x.value for x in app.metric if x.label == 'Koszt / sprawę')
+        self.liczba(app, 'Liczba pracowników').set_value(2).run()
+        koszt2 = next(x.value for x in app.metric if x.label == 'Koszt / sprawę')
+        self.assertLess(self.kwota(koszt2), self.kwota(koszt3))
+        self.liczba(app, 'Liczba pracowników').set_value(3).run()
+        self.assertEqual(self.liczba(app, 'Wynagrodzenie pracownika 3 (zł/h)').value, 70)
+        self.assertEqual(self.liczba(app, 'Wykorzystanie pracownika 3 w projekcie (%)').value, 1)
+        self.assertEqual(next(x.value for x in app.metric if x.label == 'Koszt / sprawę'), koszt3)
+        app.segmented_control[0].set_value('Kontrakt w czasie').run()
+        self.assertTrue(any(x.label == 'Rozliczenie kontraktu za 60 mies.' for x in app.expander))
+        df = next(x.value for x in app.dataframe if 'Wielkość' in x.value.columns)
+        self.assertIn('Łączne sprawomiesiące naliczające koszt', list(df['Wielkość']))
 
 
 if __name__ == "__main__":

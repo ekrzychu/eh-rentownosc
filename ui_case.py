@@ -96,12 +96,12 @@ def _renderuj_strukture(wyniki: dict) -> None:
                     "Łącznie": wyniki["koszt_narzutu_ogolnego_lifecycle"],
                     "Na sprawę": wyniki["koszt_narzutu_ogolnego_lifecycle"] / sprawy if sprawy else 0.0,
                 },
-                {
-                    "Składnik": "Wynagrodzenie",
-                    "Stawka": wyniki["wynagrodzenie_pracownika_na_godzine"],
-                    "Łącznie": wyniki["koszt_wynagrodzen_lifecycle"],
-                    "Na sprawę": wyniki["koszt_wynagrodzen_lifecycle"] / sprawy if sprawy else 0.0,
-                },
+                *[{
+                    "Składnik": f"Wynagrodzenia {etykieta}",
+                    "Stawka": wyniki["stawki_wedlug_roli"][rola],
+                    "Łącznie": wyniki["role"][rola]["laczne_godziny_zasobu_lifecycle"] * (wyniki["stawki_wedlug_roli"][rola] or 0),
+                    "Na sprawę": (wyniki["role"][rola]["laczne_godziny_zasobu_lifecycle"] * (wyniki["stawki_wedlug_roli"][rola] or 0) / sprawy if sprawy else 0.0),
+                } for rola, etykieta in (("EH", "EH"), ("UGODY", "ugód"))],
                 {
                     "Składnik": "Sekretariat",
                     "Stawka": wyniki["koszt_sekretariatu_na_godzine"],
@@ -201,7 +201,11 @@ def _renderuj_dzwignie(parametry: dict) -> list[dict]:
 
 
 def _renderuj_ugody(parametry: dict) -> None:
-    ekonomika = ekonomika_ugod(parametry)
+    try:
+        ekonomika = ekonomika_ugod(parametry)
+    except ValueError as error:
+        st.info("Porównanie ugód niedostępne: " + str(error))
+        return
     st.caption(
         "Ta analiza pokazuje osobno wpływ ugód na przychód oraz na wymagany czas zasobu."
     )
@@ -259,7 +263,7 @@ def _renderuj_segmenty(wyniki: dict) -> None:
                 "Przychód / sprawę": przychod,
                 "Koszt / sprawę": grupa["koszt_calkowity"],
                 "Wynik / sprawę": wynik,
-                "Marża przed podatkiem": wynik / przychod * 100 if przychod else 0.0,
+                "Marża przed podatkiem": (wynik / przychod * 100 if przychod else 0.0) if wynik is not None else None,
             }
         )
     st.dataframe(
@@ -407,6 +411,9 @@ def renderuj_ekonomike_sprawy(parametry: dict, wyniki: dict | None = None) -> No
         suma[2].metric("Koszt kohorty", _kwota(ogolem["koszt_calkowity"]))
         suma[3].metric("Wynik kohorty", _kwota(ogolem["wynik_po_podatku"]))
 
+    st.caption("Stawka roli to średnia arytmetyczna stawek osób z dodatnim przydziałem do projektu. "
+               "Procent przydziału nie waży średniej ani nie ogranicza czasu lifecycle. "
+               "Czynności dzienne EH i ugód mają odrębne mnożniki zasobu.")
     _renderuj_strukture(wyniki)
     wrazliwosc = _renderuj_dzwignie(parametry)
 

@@ -1,6 +1,6 @@
 """Jawna obsada projektu i rozłączne zasoby EH oraz ugód."""
 
-from math import isfinite
+from math import fsum, isfinite
 
 from config import wczytaj_defaults
 
@@ -15,7 +15,7 @@ def nowy_pracownik(indeks: int) -> dict:
     role = dane["obsada"]["role_poczatkowe"]
     return {
         "rola": role[indeks] if indeks < len(role) else "EH",
-        "stawka": dane["koszty"]["wynagrodzenie_pracownika_na_godzine"],
+        "stawka": dane["obsada"]["stawka_poczatkowa"],
         "wykorzystanie_percent": dane["obsada"]["wykorzystanie_percent"],
     }
 
@@ -71,4 +71,15 @@ def pojemnosc_obsady(pracownicy: list[dict], czynnosci: dict) -> dict:
         pula["dzienne_minuty"] += dzienne_minuty
         pula["netto_minuty"] += max(godziny * 60 - dzienne_minuty, 0.0)
         pula["wynagrodzenia"] += godziny * osoba["stawka"]
+    return wynik
+
+
+def srednie_stawki_wedlug_roli(pracownicy: list[dict]) -> dict[str, float | None]:
+    """Średnia arytmetyczna osób z dodatnim przydziałem, bez ważenia procentem."""
+    waliduj_obsade(pracownicy)
+    wynik = {}
+    for rola in ROLE:
+        stawki = [p["stawka"] for p in pracownicy
+                  if p["rola"] == rola and p["wykorzystanie_percent"] > 0]
+        wynik[rola] = fsum(stawki) / len(stawki) if stawki else None
     return wynik

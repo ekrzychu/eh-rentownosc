@@ -3,11 +3,13 @@ from collections import defaultdict, deque
 from unittest.mock import patch
 
 import timeline
+from staff import nowy_pracownik
 
 from model import (
     MINUTY_DNIA_PRACY,
     domyslne_parametry,
     oblicz_model,
+    oblicz_przeplyw,
 )
 from timeline import (
     Completion,
@@ -40,7 +42,7 @@ def parametry_jednej_sciezki():
     return {
         **domyslne_parametry(),
         "liczba_spraw": 30,
-        "liczba_pracownikow": 1,
+        "pracownicy": [nowy_pracownik(i) for i in range(1)],
         "udzialy_rodzajow": {"P1": 100.0, "P2": 0.0, "P3": 0.0},
         "wysoki_wps_procent": 100.0,
         "kategoryczna_odmowa_percent": 0.0,
@@ -58,7 +60,7 @@ def parametry_jednej_sciezki():
 class TestNatychmiastowaPraca(unittest.TestCase):
     def zbuduj_kohorte(self, parametry=None, **czasy):
         parametry = domyslne_parametry() if parametry is None else parametry
-        lifecycle = oblicz_model(parametry)
+        lifecycle = oblicz_przeplyw(parametry)
         pakiety, zakonczenia = defaultdict(list), []
         statystyki = _dodaj_kohorte(
             5, lifecycle, parametry,
@@ -105,10 +107,10 @@ class TestNatychmiastowaPraca(unittest.TestCase):
         self.assertEqual({p.due_month for p in pakiety if p.stage in {"przyjecie", "analiza_ugody"}}, {5})
 
     def test_oczekiwanie_nie_dodaje_pracy_ani_kosztu(self):
-        p = {**domyslne_parametry(), "liczba_pracownikow": 10, "udzial_ii_instancji_percent": 0.0}
+        p = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(10)], "udzial_ii_instancji_percent": 0.0}
         krotko = oblicz_model_czasowy(p, {"horyzont_miesiace": 72})
         dlugo = oblicz_model_czasowy(p, {"miesiace_do_ugody": 60, "miesiace_do_wyroku_i": 60, "horyzont_miesiace": 72})
-        miesieczna_praca = oblicz_model(p)["bezposrednie_minuty_spraw"] / 12
+        miesieczna_praca = oblicz_przeplyw(p)["bezposrednie_minuty_spraw"] / 12
         for a, b in zip(krotko["tabela_miesieczna"], dlugo["tabela_miesieczna"]):
             for key in ("Nowa praca (h)", "Wykonana praca (h)", "Backlog na koniec (h)", "Łączny koszt miesięczny"):
                 self.assertAlmostEqual(a[key], b[key])
@@ -126,7 +128,7 @@ class TestNatychmiastowaPraca(unittest.TestCase):
                 self.assertEqual({p.due_month for p in pakiety if p.stage != "ii_instancja"}, {5})
 
     def test_wczesna_praca_nie_przyspiesza_zakonczenia_i_przychodu(self):
-        bazowe = {**domyslne_parametry(), "liczba_pracownikow": 10}
+        bazowe = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         warianty = (
             ("ugoda", {"kategoryczna_odmowa_percent": 0.0, "automatyczne_ramy_percent": 100.0, "skutecznosc_automatycznych_ram_percent": 100.0}, "Ugody zakończone", 7),
             ("i", {"kategoryczna_odmowa_percent": 100.0, "automatyczne_ramy_percent": 0.0, "udzial_ii_instancji_percent": 0.0}, "Zakończenia po I instancji", 10),
@@ -150,7 +152,7 @@ class TestNatychmiastowaPraca(unittest.TestCase):
                     self.assertEqual(rows[9]["Zakończenia po I instancji"], 0)
 
     def test_dojrzalosc_i_roczne_uzgodnienie_przy_dlugich_terminach(self):
-        p = {**domyslne_parametry(), "liczba_pracownikow": 10}
+        p = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         czas = {"miesiace_do_ugody": 60, "miesiace_do_wyroku_i": 20, "miesiace_wyrok_i_do_ii": 45}
         short = oblicz_model_czasowy(p, {**czas, "horyzont_miesiace": 76})
         self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
@@ -159,7 +161,7 @@ class TestNatychmiastowaPraca(unittest.TestCase):
         self.assertTrue(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
         last = wynik["tabela_miesieczna"][-12:]
         self.assertAlmostEqual(sum(row[key] for row in last for key in ("Ugody zakończone", "Zakończenia po I instancji", "Zakończenia po II instancji")), 600)
-        lifecycle = oblicz_model(p)
+        lifecycle = oblicz_przeplyw(p)
         self.assertAlmostEqual(sum(row["Nowa praca (h)"] * 60 for row in last), lifecycle["bezposrednie_minuty_spraw"])
         self.assertAlmostEqual(sum(row["Przychód razem"] for row in last), lifecycle["ogolem"]["przychod"])
 
@@ -221,7 +223,7 @@ class TestPrzeplywOczekiwany(unittest.TestCase):
     def test_kazdy_etap_rejestruje_caly_pakiet_w_odpowiednim_miesiacu(self):
         p = domyslne_parametry()
         packets, completions = defaultdict(list), []
-        _dodaj_kohorte(1, oblicz_model(p), p, domyslne_parametry_czasowe(), packets, completions)
+        _dodaj_kohorte(1, oblicz_przeplyw(p), p, domyslne_parametry_czasowe(), packets, completions)
         for i, c in enumerate(completions):
             for stage, total in c.stage_total_minutes.items():
                 stage_packets = [packet for bucket in packets.values() for packet in bucket
@@ -237,7 +239,7 @@ class TestPrzeplywOczekiwany(unittest.TestCase):
         first, second = result["tabela_miesieczna"]
         self.assertAlmostEqual(first["Wykonana praca (h)"], 167)
         self.assertAlmostEqual(first["Ugody zakończone"], 1.67)
-        unit_revenue = oblicz_model(p)["ogolem"]["przychod"] / 30
+        unit_revenue = oblicz_przeplyw(p)["ogolem"]["przychod"] / 30
         self.assertAlmostEqual(first["Przychód z ugód"], 1.67 * unit_revenue)
         self.assertAlmostEqual(second["Ugody zakończone"], 1.67)
         self.assertAlmostEqual(first["Aktywne sprawy"], .83)
@@ -267,7 +269,7 @@ class TestPrzeplywOczekiwany(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["Wykonana praca (h)"], 167)
         self.assertAlmostEqual(rows[1]["Zakończenia po II instancji"], 2.5)
         self.assertEqual(rows[1]["Przychód razem"], 0)
-        unit_revenue = oblicz_model(p)["ogolem"]["przychod"] / 30
+        unit_revenue = oblicz_przeplyw(p)["ogolem"]["przychod"] / 30
         self.assertAlmostEqual(rows[2]["Przychód razem"], 2.5 * unit_revenue)
 
 
@@ -288,12 +290,12 @@ class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
 
     def test_odwrocenie_p_wps_i_sciezek_nie_zmienia_wynikow(self):
         for staff in (1, 2):
-            p = {**domyslne_parametry(), "liczba_pracownikow": staff,
-                 "koszt_staly_na_godzine": 1.0, "wynagrodzenie_pracownika_na_godzine": 1.0}
+            p = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(staff)],
+                 "koszt_staly_na_godzine": 1.0}
             baseline = oblicz_model_czasowy(p)
             for variant in ("P", "WPS", "ugody", "bez_ugody", "wszystko"):
                 def reordered(params):
-                    result = oblicz_model(params)
+                    result = oblicz_przeplyw(params)
                     if variant in ("P", "wszystko"):
                         result["grupy"].sort(key=lambda g: g["rodzaj"], reverse=True)
                     if variant in ("WPS", "wszystko"):
@@ -308,7 +310,7 @@ class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
                     judgment_paths = tuple(reversed(judgment_paths))
                 with (
                     self.subTest(staff=staff, variant=variant),
-                    patch.object(timeline, "oblicz_model", reordered),
+                    patch.object(timeline, "oblicz_przeplyw", reordered),
                     patch.object(timeline, "SCIEZKI_UGODOWE", settlement_paths),
                     patch.object(timeline, "SCIEZKI_BEZ_UGODY", judgment_paths),
                 ):
@@ -316,7 +318,7 @@ class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
                     self.assert_nested_equal(baseline, result)
 
     def test_wiecej_fte_nie_zwieksza_backlogu_ani_opoznien(self):
-        results = [oblicz_model_czasowy({**domyslne_parametry(), "liczba_pracownikow": n}) for n in (1, 2, 3, 10)]
+        results = [oblicz_model_czasowy({**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(n)]}) for n in (1, 2, 3, 10)]
         for lower, higher in zip(results, results[1:]):
             for a, b in zip(lower["tabela_miesieczna"], higher["tabela_miesieczna"]):
                 self.assertLessEqual(b["Backlog na koniec (h)"], a["Backlog na koniec (h)"] + 1e-7)
@@ -327,8 +329,8 @@ class TestNiezaleznoscOdKolejnosci(unittest.TestCase):
         self.assertAlmostEqual(results[-1]["podsumowanie"]["backlog_koniec_godziny"], 0)
 
     def test_obfita_obsada_zachowuje_nominalny_przeplyw(self):
-        p = {**domyslne_parametry(), "liczba_pracownikow": 10}
-        lifecycle = oblicz_model(p)
+        p = {**domyslne_parametry(), "pracownicy": [nowy_pracownik(i) for i in range(10)]}
+        lifecycle = oblicz_przeplyw(p)
         result = oblicz_model_czasowy(p)
         shares = lifecycle["udzialy_ugod"]
         for row in result["tabela_miesieczna"]:
@@ -373,7 +375,7 @@ class TestCiaglyNaplywIUzgodnienieKohorty(unittest.TestCase):
         )
 
     def test_miesieczna_kohorta_uzgadnia_ekonomie_lifecycle(self):
-        lifecycle = oblicz_model(self.parametry)
+        lifecycle = oblicz_przeplyw(self.parametry)
         wynik = oblicz_model_czasowy(self.parametry)
         zbudowana = wynik["walidacja"]["kohorta_zbudowana"]
         self.assertAlmostEqual(
@@ -386,7 +388,7 @@ class TestCiaglyNaplywIUzgodnienieKohorty(unittest.TestCase):
         self.assertAlmostEqual(zbudowana["cases"], 50.0)
 
     def test_kohorta_ma_szesc_sciezek_i_poprawne_etapy_automatyczne(self):
-        lifecycle = oblicz_model(self.parametry)
+        lifecycle = oblicz_przeplyw(self.parametry)
         czas = domyslne_parametry_czasowe()
         pakiety = defaultdict(list)
         zakonczenia = []
@@ -456,7 +458,7 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
 
     def test_niedostateczna_obsada_tworzy_rosnacy_backlog_i_nie_gubi_pracy(self):
         wynik = oblicz_model_czasowy(
-            {**self.parametry, "liczba_pracownikow": 1}
+            {**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(1)]}
         )
         self.assertEqual(wynik["pojemnosc"]["status_pojemnosci"], "Niewystarczająca")
         self.assertGreater(
@@ -471,10 +473,10 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
 
     def test_brak_pojemnosci_opoznia_zakonczenia_i_przychod(self):
         niedobor = oblicz_model_czasowy(
-            {**self.parametry, "liczba_pracownikow": 1}
+            {**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(1)]}
         )
         zapas = oblicz_model_czasowy(
-            {**self.parametry, "liczba_pracownikow": 10}
+            {**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         )
         self.assertGreater(
             niedobor["podsumowanie"]["maksymalne_opoznienie_pojemnosci_miesiace"],
@@ -491,7 +493,7 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
 
     def test_nadmiar_obsady_nie_skroca_nominalnego_czasu(self):
         wynik = oblicz_model_czasowy(
-            {**self.parametry, "liczba_pracownikow": 50}
+            {**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(50)]}
         )
         tabela = wynik["tabela_miesieczna"]
         self.assertEqual(pierwszy_miesiac_z_wartoscia(tabela, "Przychód z ugód"), 7)
@@ -500,9 +502,9 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
     def test_opoznienie_platnosci_przesuwa_przychod_i_break_even(self):
         parametry = {
             **self.parametry,
-            "liczba_pracownikow": 4,
+            "pracownicy": [nowy_pracownik(i) for i in range(4)],
             "koszt_staly_na_godzine": 1.0,
-            "wynagrodzenie_pracownika_na_godzine": 1.0,
+
         }
         roster = [osoba("EH", 1)] * 3 + [osoba("UGODY", 1)]
         bez = oblicz_model_czasowy(parametry, pracownicy=roster)
@@ -530,8 +532,8 @@ class TestKolejkaIOpoznieniePrzychodu(unittest.TestCase):
         )
 
     def test_wiecej_pracownikow_ma_koszt_i_moze_zmniejszyc_backlog(self):
-        jeden = oblicz_model_czasowy({**self.parametry, "liczba_pracownikow": 1})
-        pieciu = oblicz_model_czasowy({**self.parametry, "liczba_pracownikow": 5})
+        jeden = oblicz_model_czasowy({**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(1)]})
+        pieciu = oblicz_model_czasowy({**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(5)]})
         self.assertGreater(
             pieciu["pojemnosc"]["miesieczny_koszt_wynagrodzen"],
             jeden["pojemnosc"]["miesieczny_koszt_wynagrodzen"],
@@ -583,14 +585,14 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
     def setUp(self):
         self.parametry = {
             **domyslne_parametry(),
-            "liczba_pracownikow": 4,
+            "pracownicy": [nowy_pracownik(i) for i in range(4)],
             "koszt_staly_na_godzine": 20.0,
-            "wynagrodzenie_pracownika_na_godzine": 20.0,
+
             "udzial_ii_instancji_percent": 0.0,
         }
 
     def assert_roczne_uzgodnienie(self, wynik, parametry):
-        lifecycle = oblicz_model(parametry)
+        lifecycle = oblicz_przeplyw(parametry)
         rows = wynik["tabela_miesieczna"][-12:]
         self.assertTrue(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
         self.assertAlmostEqual(sum(
@@ -612,7 +614,7 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
         self.assertEqual(wynik["kpi"]["status_break_even"], "Break-even trwały")
 
     def test_same_ii_respektuja_termin_ii_i_pelny_rok(self):
-        parametry = {**self.parametry, "udzial_ii_instancji_percent": 100.0, "liczba_pracownikow": 10}
+        parametry = {**self.parametry, "udzial_ii_instancji_percent": 100.0, "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         short = oblicz_model_czasowy(parametry, {"horyzont_miesiace": 26})
         self.assertEqual(short["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 16)
         self.assertFalse(short["podsumowanie"]["dojrzalosc_osiagnieta"])
@@ -623,7 +625,7 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
 
     def test_zero_ugod_pomija_ich_termin(self):
         parametry = {**self.parametry, "automatyczne_ramy_percent": 0.0,
-                     "zawarte_ugody_percent": 0.0, "liczba_pracownikow": 10}
+                     "zawarte_ugody_percent": 0.0, "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         for settlement_lag in (0, 100):
             with self.subTest(settlement_lag=settlement_lag):
                 czas = {"miesiace_do_ugody": settlement_lag, "horyzont_miesiace": 21}
@@ -637,7 +639,7 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
         parametry = {**self.parametry, "kategoryczna_odmowa_percent": 0.0,
                      "automatyczne_ramy_percent": 100.0,
                      "skutecznosc_automatycznych_ram_percent": 100.0,
-                     "udzial_ii_instancji_percent": 100.0, "liczba_pracownikow": 10}
+                     "udzial_ii_instancji_percent": 100.0, "pracownicy": [nowy_pracownik(i) for i in range(10)]}
         czas = {"miesiace_do_wyroku_i": 100, "miesiace_wyrok_i_do_ii": 100,
                 "horyzont_miesiace": 18}
         wynik = oblicz_model_czasowy(parametry, czas)
@@ -671,11 +673,11 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
     def test_aktywnosc_sciezki_uzywa_tolerancji(self):
         parametry = {**self.parametry, "udzial_ii_instancji_percent": 1e-9}
         self.assertEqual(_nominalny_miesiac_dojrzalosci(
-            oblicz_model(parametry), domyslne_parametry_czasowe()
+            oblicz_przeplyw(parametry), domyslne_parametry_czasowe()
         ), 10)
 
     def test_poprawny_termin_nie_zastepuje_wystarczajacej_pojemnosci(self):
-        wynik = oblicz_model_czasowy({**self.parametry, "liczba_pracownikow": 1}, {"horyzont_miesiace": 24})
+        wynik = oblicz_model_czasowy({**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(1)]}, {"horyzont_miesiace": 24})
         self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 10)
         self.assertFalse(wynik["podsumowanie"]["dojrzalosc_osiagnieta"])
         self.assertIsNone(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"])
@@ -700,7 +702,7 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
 
     def test_zero_pracownikow(self):
         wynik = oblicz_model_czasowy(
-            {**self.parametry, "liczba_pracownikow": 0},
+            {**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(0)]},
             {"horyzont_miesiace": 24},
         )
         self.assertEqual(wynik["pojemnosc"]["pojemnosc_brutto_minuty"], 0.0)
@@ -718,7 +720,7 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
 
     def test_zerowe_czasy_nominalne_i_zero_opoznienia(self):
         wynik = oblicz_model_czasowy(
-            {**self.parametry, "liczba_pracownikow": 50},
+            {**self.parametry, "pracownicy": [nowy_pracownik(i) for i in range(50)]},
             {
                 "miesiace_do_ugody": 0,
                 "miesiace_do_wyroku_i": 0,
@@ -733,7 +735,7 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
         same_ugody = oblicz_model_czasowy(
             {
                 **self.parametry,
-                "liczba_pracownikow": 10,
+                "pracownicy": [nowy_pracownik(i) for i in range(10)],
                 "kategoryczna_odmowa_percent": 0.0,
                 "automatyczne_ramy_percent": 100.0,
                 "skutecznosc_automatycznych_ram_percent": 100.0,
@@ -743,7 +745,7 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
         bez_ugod_i_ii = oblicz_model_czasowy(
             {
                 **self.parametry,
-                "liczba_pracownikow": 10,
+                "pracownicy": [nowy_pracownik(i) for i in range(10)],
                 "automatyczne_ramy_percent": 0.0,
                 "zawarte_ugody_percent": 0.0,
                 "udzial_ii_instancji_percent": 0.0,
@@ -752,7 +754,7 @@ class TestPrzypadkiBrzegowe(unittest.TestCase):
         bez_ugod_same_ii = oblicz_model_czasowy(
             {
                 **self.parametry,
-                "liczba_pracownikow": 10,
+                "pracownicy": [nowy_pracownik(i) for i in range(10)],
                 "automatyczne_ramy_percent": 0.0,
                 "zawarte_ugody_percent": 0.0,
                 "udzial_ii_instancji_percent": 100.0,
@@ -813,15 +815,15 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         self.assertEqual(przed, oblicz_model(self.p))
         # Panel 1 ignoruje również dołączone ustawienia kosztów i obsady.
         self.assertEqual(przed, oblicz_model({**self.p, "koszty_kontraktu": self.costs,
-                                             "pracownicy": [], "liczba_pracownikow": 0}))
+                                             "liczba_pracownikow": 0}))
 
     def test_D_sekretariat_nie_zuzywa_pojemnosci(self):
         zmiana = {**self.p, "sekretariat_minuty_na_sprawe": 10000.0, "koszt_sekretariatu_na_godzine": 50.0}
         self.assertEqual(self.licz()["pojemnosc"], self.licz(zmiana)["pojemnosc"])
 
-    def test_E_stawka_sekretariatu_i_referencyjna_placa_sa_niezalezne(self):
+    def test_E_stawka_sekretariatu_jest_niezalezna(self):
         zmiana = {**self.p, "koszt_sekretariatu_na_godzine": 500.0, "sekretariat_minuty_na_sprawe": 10.0,
-                  "wynagrodzenie_pracownika_na_godzine": 900.0}
+                  }
         self.assertEqual(self.licz()["tabela_miesieczna"], self.licz(zmiana)["tabela_miesieczna"])
 
     def test_F_50_razy_43(self):
@@ -988,7 +990,7 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         self.assertGreater(result["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 0)
 
     def test_dodatnia_ekonomika_panelu_1_i_strata_kontraktu(self):
-        p = {**self.p, "koszt_staly_na_godzine": 0.0, "wynagrodzenie_pracownika_na_godzine": 1.0}
+        p = {**self.p, "koszt_staly_na_godzine": 0.0, "pracownicy": [osoba("EH", 1), osoba("UGODY", 1)]}
         self.assertGreater(oblicz_model(p)["ogolem"]["wynik_przed_podatkiem"], 0)
         result = self.licz(p, costs={"ogolne_na_aktywna_sprawe": 1000.0})
         self.assertEqual(result["kpi"]["status_kontraktu"], "Stabilny, ale nierentowny")
@@ -1053,7 +1055,7 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.licz(costs={"nieznany": 1})
         with self.assertRaises(ValueError):
-            oblicz_model_czasowy({**self.p, "liczba_pracownikow": -1})
+            oblicz_model_czasowy({**self.p, "pracownicy": [{}]})
 
     def test_wszystkie_sciezki_maja_poprawne_role_bez_dodatkowej_analizy(self):
         packets, completions = defaultdict(list), []

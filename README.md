@@ -212,151 +212,131 @@ Poza ramami → brak ugody            13,75%
 spraw bez ugody przechodzi do II instancji; nie dotyczy to żadnej ścieżki
 zakończonej ugodą.
 
-Parametr `koszt_staly_na_godzine` oznacza **narzut
-kosztów ogólnych przypisany do jednej płatnej godziny pracownika**. Nie jest to
-jeden globalny koszt operacji. Narzut nie zawiera wynagrodzenia, które jest
-liczone osobno. Koszt płatnej godziny zasobu wynosi więc:
+## Wspólna obsada i dwie perspektywy kosztów
+
+Jedynym źródłem stawek prawników jest **Obsada kontraktu**, wspólna dla obu
+paneli. Każda osoba ma rolę EH albo UGODY, stawkę zł/h i procent przydziału
+do projektu. `defaults.toml` zawiera 59,88 zł/h wyłącznie jako stawkę
+początkową nowej osoby. Nie ma dodatkowego wejścia referencyjnej płacy.
+Ustawienia osób są zachowywane przy zmianie ich liczby i przełączaniu widoków
+w obrębie sesji Streamlit. Początkowe EH + UGODY to edytowalny przykład.
+
+### Ekonomika sprawy
+
+Stawka roli jest **średnią arytmetyczną stawek osób z dodatnim przydziałem**.
+Przydział 1% i 100% ma taką samą wagę w tej średniej. Przydział 0% wyłącza
+osobę ze średniej. Nie skaluje się godzin lifecycle procentem przydziału
+ani limitem miesięcznych godzin.
+
+Przykład: EH 50 i 70 zł/h oznacza średnią 60 zł/h; odrębna osoba UGODY
+45 zł/h oznacza stawkę ugód 45 zł/h. Koszty każdej roli są liczone osobno.
+Brak pracownika z dodatnim przydziałem wymaganej roli daje komunikat o braku
+stawki; nie zastępuje się jej zerem. Kontrakt w czasie pozostaje dostępny.
+Brak stawki roli o zerowym obciążeniu nie blokuje wyceny portfela.
 
 ```text
-36,00 zł/h narzutu + 59,88 zł/h wynagrodzenia = 95,88 zł/h
+mnożnik EH = 480 / (480 − 60)
+mnożnik ugód = 480 / (480 − 30)
+godziny roli = bezpośrednie minuty roli × jej mnożnik / 60
+wynagrodzenia = godziny EH × średnia EH + godziny ugód × średnia ugód
+narzut = (godziny EH + godziny ugód) × godzinowy narzut Panelu 1
+sekretariat = liczba spraw × minuty sekretariatu / 60 × stawka sekretariatu
+koszt całkowity = wynagrodzenia + narzut + sekretariat
 ```
 
-W cyklu życia koszt skaluje się z wymaganymi godzinami zasobu. Przykładowo:
+Referencyjna praca wynosi rocznie 259 942,5 min EH i 25 425 min ugód.
+Razem 285 367,5 min, czyli 475,6125 min bezpośrednich na sprawę.
+Po osobnych obciążeniach dziennych potrzeba 9,00547619 h zasobu na sprawę.
+Przy obu stawkach 59,88 zł/h i narzucie 36 zł/h koszt to 863,44505714 zł
+na sprawę. Przychód pozostaje 753,27209 zł na sprawę, wynik −110,17296714 zł.
+
+Sekretariat jest jednorazowy i osobny: przykładowe 10 min × 50 zł/h / 60 to
+8,333333 zł na sprawę, czyli 5000 zł dla 600 spraw. Nie zużywa pojemności
+prawników i nie podlega ich mnożnikom. Kwoty nowych kosztów domyślnie wynoszą zero.
+
+Sześć ścieżek, grupy P1/P2/P3, WPS, II instancja i drzewo przychodu pozostają
+bez zmian. Analizy czasu, ugód i progów używają stawek i obciążeń właściwej
+roli. Analiza stawki zmienia wynagrodzenie konkretnej osoby z obsady;
+nie tworzy dodatkowego niezależnego parametru płacy. Pusty segment wymagający
+brakującej stawki ma niedostępną wycenę jednostkową i zerowy udział w sumie.
+
+### Kontrakt w czasie
+
+Kontrakt nadal płaci indywidualne stawki za przydzielone godziny:
 
 ```text
-2 000 h × 95,88 zł/h = 191 760,00 zł
+godziny osoby = 167 × przydział / 100
+pensja osoby = godziny osoby × jej indywidualna stawka
+czynności dzienne osoby = godziny osoby / 8 × dzienne minuty jej roli / 60
+pojemność na sprawy = max(godziny osoby − czynności dzienne osoby, 0)
 ```
 
-Wynik jest taki sam niezależnie od tego, czy pracę rozdzielono teoretycznie na
-1, 2 czy 10 pracowników. Model używa oczekiwanych, niezaokrąglonych liczebności
-P1/P2/P3 i grup WPS, dlatego identyczny miks spraw zachowuje ten sam koszt,
-przychód i marżę na sprawę przy zmianie wolumenu.
+Przykład: 60 zł/h i przydział 60% dają 100,2 h i 6012 zł/mies. Wykonanie
+spraw nie powoduje ponownego naliczenia pensji. Niewykorzystane przydzielone
+godziny pozostają płatne. Przydział 0% daje zerową pensję i pojemność.
+Średnie stawek z Ekonomiki sprawy nie służą naliczaniu tych pensji.
 
-Model czasowy ma **niezależny rachunek kosztów**. Nie pobiera godzinowego
-narzutu ani referencyjnej stawki pracy z Ekonomiki sprawy.
+EH obsługuje przyjęcie, proces, P1/P2/P3 i II instancję. Ugody obsługują
+analizę, ofertę, projekt, podpisanie i nieudane próby. Dziennie EH obciąża
+komunikacja i opłaty SOSS oraz umieszczanie dokumentów, a ugody — skrzynka.
+Obie kolejki zachowują rozłączne zasoby, FIFO i proporcjonalny przydział.
+Zwykła praca jest wymagalna od wpływu. II instancja wymaga terminu wyroku I
+i wykonania wcześniejszych etapów obu ról. Kalendarzowe oczekiwanie nie
+zwiększa pracy. Wszystkie etapy i nominalny termin blokują zakończenie,
+a rzeczywiste zakończenie uruchamia płatność. II instancja nie zarabia przy wyroku I.
 
-### Sekretariat w Ekonomice sprawy
-
-Jednorazowy koszt to `minuty sekretariatu / 60 × stawka sekretariatu`.
-Dotyczy każdej sprawy w kohorcie i wszystkich segmentów P1/P2/P3 oraz WPS.
-Nie zwiększa minut pracy prawnika i nie podlega mnożnikowi czynności dziennych.
-Wynagrodzenia prawników, godzinowy narzut i sekretariat są wykazane osobno.
-Wrażliwość, podatek i progi rentowności uwzględniają cały ten koszt.
-
-Przykład ilustracyjny przy pozostałych założeniach referencyjnych:
-10 min × 50 zł/h / 60 = 8,333333 zł na sprawę, czyli 5000 zł dla 600 spraw.
-Koszt sprawy rośnie z 935,42 do 943,75 zł. Przy przychodzie 753,27 zł wynik
-na sprawę wynosi −190,48 zł, a wynik kohorty −114 288,76 zł (podatek 0%).
-
-### Obsada i pojemność kontraktu
-
-Dla każdego pracownika określa się rolę, stawkę godzinową i procent przydziału:
+Narzut i sekretariat kontraktu mają niezależne kwoty miesięczne na aktywną
+sprawę. Koszty i wyniki obu paneli są alternatywnymi perspektywami;
+nie sumuje się ich ze sobą.
 
 ```text
-godziny projektu = 167 × wykorzystanie / 100
-wynagrodzenie projektu = godziny projektu × indywidualna stawka zł/h
-ekwiwalent dni = godziny projektu / 8
-czynności dzienne = ekwiwalent dni × minuty dzienne roli / 60
-pojemność na sprawy = max(godziny projektu − czynności dzienne, 0)
+podstawa opłat = stan aktywny na początku + nowy wpływ
+stan aktywny na koniec = wpływ skumulowany − zakończenia skumulowane
+koszt miesiąca = pensje EH + pensje ugód
+                + podstawa × narzut kontraktu
+                + podstawa × sekretariat kontraktu
+wynik miesiąca = przychód z ugód i wyroków − koszt miesiąca
 ```
 
-Przykład: 60% przydziału i 60 zł/h to 100,2 płatnej godziny oraz 6012 zł/mies.
-Prawnik EH z referencyjnymi 60 minutami czynności dziennych ma wtedy
-87,675 h na sprawy. Przydział 0% daje zerowy koszt i zerową pojemność.
-Niewykorzystany czas przydzielony do projektu pozostaje opłacony; wykonanie
-pracy i czynności dziennych nie dodaje drugiego wynagrodzenia.
+Miesiąc wpływu i rzeczywistego zakończenia są płatne. Po zakończeniu opłaty
+ustają, także gdy płatność przychodzi później. Otwarta sprawa bez zaległej
+pracy może nadal naliczać opłaty, czekając na formalne zakończenie.
+Przykłady: 50 × 43 = 2150 zł; 1000 × 43 = 43 000 zł w jednym miesiącu.
 
-Role nie zastępują się:
+Początkowa obsada ma 146,125 h EH przy miesięcznym popycie 361,03125 h
+oraz 156,5625 h ugód przy popycie 35,3125 h. Nadmiar ugód nie zastępuje EH.
+Backlog EH opóźnia zakończenia i przychód, a aktywne sprawy nadal generują
+miesięczne koszty. Dla tej obsady narzut 43 zł daje po 60 miesiącach
+−2 972 228,46 zł, w tym 2 633 649,70 zł samego narzutu.
 
-- **EH**: przyjęcie, proces, dodatkowa praca P1/P2/P3, II instancja;
-  czynności dzienne: komunikacja z EH i zlecanie opłat w SOSS oraz
-  umieszczanie dokumentów w SOSS.
-- **Ugody**: analiza możliwości ugody, oferta, projekt, podpisanie oraz
-  nieudane próby; czynność dzienna: obsługa skrzynki ugody EH.
+W rozwijanym rozliczeniu horyzontu widać sumę pensji obu ról, narzutu,
+sekretariatu, przychodu, kosztu i wyniku oraz sprawomiesiące, zakończenia,
+stan aktywny, backlog obu ról i pracę przyszłą. Suma sprawomiesięcy razy
+stawka kontraktu odtwarza skumulowany narzut.
 
-Obie kolejki zachowują FIFO między miesiącami wymagalności i proporcjonalny
-przydział w tej samej dacie. Zwykła praca jest wymagalna przy wpływie.
-Praca II instancji jest planowana od terminu wyroku I instancji, ale dostępna
-wyłącznie dla tej oczekiwanej części grupy, która wykonała wszystkie etapy
-I instancji obu ról. Odblokowana część trafia do FIFO z datą faktycznego odblokowania.
-Zablokowana praca II instancji nie zatrzymuje pracy
-potrzebnej do jej odblokowania. Cały pakiet II instancji nie jest rozkładany
-na miesiące oczekiwania. Zakończenie wymaga wszystkich etapów i terminu
-nominalnego, a dopiero rzeczywiste zakończenie uruchamia płatność.
-Przy wyroku I instancji sprawa skierowana do II instancji nie otrzymuje przychodu.
+Stabilność wymaga wystarczającej mocy obu ról. Dojrzałość wymaga 12 miesięcy
+zgodnego przepływu, zakończeń, przychodu, aktywności i kosztów po najdłuższej
+aktywnej ścieżce. Status finansowy nie zależy od marży Panelu 1. Trwały
+break-even wymaga odzyskania deficytu bez późniejszego zejścia poniżej zera
+w badanym horyzoncie i dodatniego potwierdzonego dojrzałego wyniku.
 
-Początkowe dwie osoby (EH i ugody, stawka z `defaults.toml`, przydział 100%)
-to **edytowalny przykład**, nie opis rzeczywistej kancelarii. Nowy wiersz
-pracownika jest inicjalizowany jako EH; rolę, stawkę i procent należy ustawić
-jawnie. Zmniejszenie i ponowne zwiększenie liczby osób zachowuje ich ustawienia
-w bieżącej sesji. Nie ma automatycznego doboru hipotetycznych etatów.
-API porównań `porownaj_obsade(..., scenariusze={nazwa: lista_pracownikow})`
-wymaga jawnego składu każdego wariantu.
+## Odtworzenie audytu
 
-### Koszty aktywnych spraw
-
-Niezależne miesięczne kwoty w Kontrakcie w czasie:
-
-```text
-koszty ogólne = sprawy naliczające koszt × koszt ogólny / aktywną sprawę
-sekretariat = sprawy naliczające koszt × koszt sekretariatu / aktywną sprawę
-łączny koszt = wynagrodzenia EH + wynagrodzenia ugód + koszty ogólne + sekretariat
-wynik miesięczny = płatności z zakończonych spraw − łączny koszt
+```bash
+.venv/bin/python -m unittest
+.venv/bin/python diagnostic_costs.py --output-dir audit_results
+.venv/bin/python audit_checks.py
 ```
 
-Sprawa nalicza koszt w miesiącu wpływu, rzeczywistego zakończenia i we
-wszystkich miesiącach pomiędzy, także przy natychmiastowym zakończeniu.
-Miesięczna podstawa to stan otwarcia + nowy wpływ. Zakończenia pomniejszają
-stan zamknięcia, a nie podstawę kosztu bieżącego miesiąca. Opóźnienie płatności
-nie przedłuża aktywności. Oba stany są osobno oznaczone w interfejsie.
-Dłuższe oczekiwanie może zwiększyć koszty aktywnych spraw bez dodawania pracy.
+Skrypt diagnostyczny niezależnie odtwarza koszty i stany z wejść i miesięcznych
+przepływów, bez pomocników finansowych i pojemnościowych modelu. Bada A–G oraz
+miesiące 1, 6, 10, 16, 24, 36 i 60. F zmienia pierwszą stawkę EH w C o +10 zł/h,
+a G stawkę ugód w C o +10 zł/h. JSON i CSV zawierają niezaokrąglone wartości.
 
-Przykład ilustracyjny kontraktu: 3 prawników EH po 20 zł/h i 1 prawnik ugód
-po 30 zł/h, wszyscy z przydziałem 100%. Wynagrodzenia wynoszą
-`3 × 167 × 20 + 167 × 30 = 15 030 zł/mies.`. Przy 50 aktywnych sprawach
-oraz kwotach 43 zł i 7 zł koszt miesiąca to
-`15 030 + 50 × 43 + 50 × 7 = 17 530 zł`.
-Przy pozostałych założeniach referencyjnych dojrzały przepływ ma 563,75
-spraw naliczających koszt w miesiącu i 513,75 spraw na koniec miesiąca.
-Koszt wynosi wtedy 43 217,50 zł/mies., przychód 37 663,60 zł/mies.,
-a wynik −5553,90 zł/mies. Zespół jest operacyjnie stabilny, ale kontrakt
-jest nierentowny. Te przykładowe stawki nie są wartościami domyślnymi.
+Pełny raport: [AUDYT.md](AUDYT.md). Dane: [JSON](audit_results/rekonsyliacja.json),
+[CSV](audit_results/rekonsyliacja.csv).
 
-### Status, dojrzałość i break-even
-
-Status zależy wyłącznie od kosztów i przepływów kontraktu. Ujemny wynik
-Ekonomiki sprawy nie przesądza o stracie kontraktu; dodatni jej wynik
-nie dowodzi rentowności indywidualnej obsady.
-
-Stabilność wymaga wystarczającej pojemności **obu** ról. Diagnostyka pokazuje
-wymaganą i dostępną pojemność oraz niedobór osobno dla EH i ugód.
-Pojedyncza „minimalna obsada” i automatyczne warianty liczby etatów zostały
-zastąpione, bo nie określały ról, stawek ani procentów przydziału.
-
-Dojrzałość wymaga pełnych 12 miesięcy po najdłuższej aktywnej ścieżce i
-opóźnieniu płatności. W tym okresie muszą uzgadniać się oczekiwane zakończenia
-ugodowe, po I i II instancji, przychód, wykonanie pracy obu ról, zerowy backlog,
-stabilne stany spraw i miesięczne koszty. Roczny przepływ spraw, pracy i
-przychodu jest uzgadniany z kohortą lifecycle. Koszty paneli nie są ze sobą
-uzgadniane, ponieważ stosują różne rachunki.
-
-**Break-even finansowy** to pierwszy powrót wyniku skumulowanego z deficytu
-do zera. **Trwały break-even** dodatkowo wymaga, by wynik nie spadł ponownie
-poniżej zera w badanym horyzoncie, obie role miały moc, a potwierdzony
-dojrzały wynik był dodatni po wszystkich kosztach aktywnych spraw.
-Krótki rozruch nie potwierdza dojrzałej rentowności. Rosnący backlog wyklucza
-trwały break-even. Deficyt rozruchowy jest raportowany oddzielnie od straty
-strukturalnej i stabilności operacyjnej.
-
-Model nie odwzorowuje terminów zapłaty podatku, podwyżek, inflacji,
-sezonowości, historycznych rozkładów czasu, świąt ani zmiennej długości miesięcy.
-Rachunek miesięczny i status kontraktu są przed podatkiem dochodowym.
-
-## Założenia referencyjne i walidacja
-
-`defaults.toml` pozostaje źródłem wartości referencyjnych. Nowe koszty mają
-wartości zerowe, a przykładowy skład jest wyraźnie oddzielony od danych
-referencyjnych. Wzory pozostają w Pythonie. Konfiguracja, parametry kosztów,
-role, stawki i przydziały są walidowane jawnie.
-
-Pełny raport aktualizacji, przykłady i zakres testów: [AUDYT.md](AUDYT.md).
+Model nie uwzględnia sezonowości, inflacji, urlopów i terminów zapłaty podatku.
+Wynik kontraktu jest przed podatkiem dochodowym; Panel 1 zachowuje podatek
+od dodatniego wyniku. Dane historycznej obserwacji około −4 mln zł nie zostały
+utrwalone, więc tej dokładnej kwoty nie da się przypisać konkretnej konfiguracji.

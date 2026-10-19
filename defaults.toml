@@ -32,7 +32,6 @@
 
 [koszty]
 "narzut_kosztow_ogolnych_na_godzine" = 36.0
-"wynagrodzenie_pracownika_na_godzine" = 59.88
 "koszt_sekretariatu_na_godzine" = 0.0
 "sekretariat_minuty_na_sprawe" = 0.0
 
@@ -82,5 +81,6 @@
 "sekretariat_na_aktywna_sprawe" = 0.0
 
 [obsada]
+"stawka_poczatkowa" = 59.88
 "role_poczatkowe" = ["EH", "UGODY"]
 "wykorzystanie_percent" = 100.0
