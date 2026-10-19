@@ -103,19 +103,28 @@ def _renderuj_strukture(wyniki: dict) -> None:
                     "Na sprawę": wyniki["koszt_wynagrodzen_lifecycle"] / sprawy if sprawy else 0.0,
                 },
                 {
+                    "Składnik": "Sekretariat",
+                    "Stawka": wyniki["koszt_sekretariatu_na_godzine"],
+                    "Łącznie": wyniki["koszt_sekretariatu_lifecycle"],
+                    "Na sprawę": wyniki["koszt_sekretariatu_na_sprawe"],
+                },
+                {
                     "Składnik": "Razem",
-                    "Stawka": wyniki["koszt_zasobu_na_godzine"],
+                    "Stawka": None,
                     "Łącznie": wyniki["koszt_lifecycle_razem"],
                     "Na sprawę": ogolem["sredni_koszt"],
                 },
             ]
+        )
+        tabela_kosztu["Stawka"] = tabela_kosztu["Stawka"].map(
+            lambda wartosc: "—" if pd.isna(wartosc) else _kwota(wartosc).replace(" zł", " zł/h")
         )
         st.dataframe(
             tabela_kosztu,
             hide_index=True,
             width="stretch",
             column_config={
-                "Stawka": st.column_config.NumberColumn(format="%.2f zł/h"),
+                "Stawka": st.column_config.TextColumn(),
                 "Łącznie": st.column_config.NumberColumn(format="%.2f zł"),
                 "Na sprawę": st.column_config.NumberColumn(format="%.2f zł"),
             },

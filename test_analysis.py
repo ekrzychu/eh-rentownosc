@@ -12,6 +12,8 @@ from analysis import (
     ranking_progow,
     spelnia_cel,
     ustaw_parametr,
+    ustaw_sredni_bezposredni_czas,
+    sredni_bezposredni_czas_na_sprawe,
     wartosc_skrocenia_czynnosci,
     znajdz_granice,
 )
@@ -511,6 +513,27 @@ class TestUgodyIPojemnosc(unittest.TestCase):
         z_ii = ekonomika_ugod(parametry)
         self.assertLess(z_ii["minimalna_skutecznosc"], bez_ii["minimalna_skutecznosc"])
         self.assertGreater(z_ii["strategia_wplyw_pln"], bez_ii["strategia_wplyw_pln"])
+
+class TestAnalizySekretariatu(unittest.TestCase):
+    def test_nowe_parametry_wrazliwosci_i_granice(self):
+        p = {**domyslne_parametry(), "koszt_sekretariatu_na_godzine": 50.0,
+             "sekretariat_minuty_na_sprawe": 10.0,
+             "koszt_staly_na_godzine": 1.0, "wynagrodzenie_pracownika_na_godzine": 1.0}
+        rows = analiza_wrazliwosci(p)
+        for nazwa in ("Koszt sekretariatu / h", "Czynności sekretariatu (min/sprawę)"):
+            row = next(r for r in rows if r["Parametr"] == nazwa)
+            self.assertAlmostEqual(row["Wpływ korzystny"], 500)
+            self.assertAlmostEqual(row["Wpływ niekorzystny"], -500)
+        granice = analizuj_progi(p, 0.0)
+        ids = {r["id"] for r in granice["pozycje"]}
+        self.assertTrue({"sekretariat_stawka", "sekretariat_czas"}.issubset(ids))
+
+    def test_skrocenie_pracy_prawnika_nie_skaluje_sekretariatu(self):
+        p = {**domyslne_parametry(), "koszt_sekretariatu_na_godzine": 50.0,
+             "sekretariat_minuty_na_sprawe": 10.0}
+        zmiana = ustaw_sredni_bezposredni_czas(p, sredni_bezposredni_czas_na_sprawe(p) / 2)
+        self.assertAlmostEqual(oblicz_model(zmiana)["koszt_sekretariatu_lifecycle"], 5000)
+
 
 if __name__ == "__main__":
     unittest.main()

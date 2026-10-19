@@ -747,7 +747,6 @@ class TestModelFinansowy(unittest.TestCase):
     def test_centralna_walidacja_odrzuca_niefizyczne_parametry(self):
         przypadki = (
             {"liczba_spraw": 1.5},
-            {"liczba_pracownikow": -1},
             {"prog_wps": 0},
             {"niski_wps": 10_000},
             {"wysoki_wps": 9_999},
@@ -822,6 +821,72 @@ class TestProgiRentownosci(unittest.TestCase):
         }
         self.assertFalse(oblicz_prog_kosztu_stalego(parametry)["mozliwe"])
         self.assertFalse(oblicz_prog_wynagrodzenia_pracownika(parametry)["mozliwe"])
+
+
+class TestSekretariatLifecycle(unittest.TestCase):
+    def setUp(self):
+        self.p = {**domyslne_parametry(), "sekretariat_minuty_na_sprawe": 10.0,
+                  "koszt_sekretariatu_na_godzine": 50.0}
+
+    def test_C_jednorazowo_10_minut_razy_50(self):
+        r = oblicz_model(self.p)
+        self.assertAlmostEqual(r["koszt_sekretariatu_na_sprawe"], 8.333333333333334)
+        self.assertAlmostEqual(r["koszt_sekretariatu_lifecycle"], 5000)
+        self.assertAlmostEqual(r["ogolem"]["koszt_sekretariatu"], 5000)
+
+    def test_sekretariat_nie_zmienia_czasu_prawnikow(self):
+        a, b = oblicz_model(domyslne_parametry()), oblicz_model(self.p)
+        for key in ("bezposrednie_minuty_spraw", "laczne_minuty_zasobu_lifecycle", "czynnosci_dzienne_lifecycle_minuty"):
+            self.assertEqual(a[key], b[key])
+        self.assertAlmostEqual(b["ogolem"]["koszt_calkowity"] - a["ogolem"]["koszt_calkowity"], 5000)
+        self.assertAlmostEqual(a["ogolem"]["wynik_po_podatku"] - b["ogolem"]["wynik_po_podatku"], 5000)
+
+    def test_kazdy_segment_uwzglednia_osobny_koszt(self):
+        a, b = oblicz_model(domyslne_parametry()), oblicz_model(self.p)
+        for group_a, group_b in zip(a["grupy"], b["grupy"]):
+            self.assertAlmostEqual(group_b["koszt_calkowity"] - group_a["koszt_calkowity"], 50 / 6)
+            self.assertAlmostEqual(group_b["laczny_koszt_sekretariatu"], group_b["liczba"] * 50 / 6)
+        for key in ("wps_niski", "wps_wysoki"):
+            self.assertAlmostEqual(b[key]["koszt_calkowity"] - a[key]["koszt_calkowity"], b[key]["liczba_spraw"] * 50 / 6)
+        for rodzaj in ("P1", "P2", "P3"):
+            self.assertAlmostEqual(b["koszty_jednostkowe"][rodzaj] - a["koszty_jednostkowe"][rodzaj], 50 / 6)
+            self.assertAlmostEqual(b["rodzaje"][rodzaj]["koszt_sekretariatu"], b["rodzaje"][rodzaj]["liczba_spraw"] * 50 / 6)
+
+    def test_koszt_bez_mnoznika_dziennego(self):
+        for dzienne in ({}, self.p["codzienne_czynnosci"], {"Obsługa skrzynki ugody EH": 450}):
+            r = oblicz_model({**self.p, "codzienne_czynnosci": dzienne})
+            self.assertAlmostEqual(r["koszt_sekretariatu_lifecycle"], 5000)
+
+    def test_progi_stawki_odejmuja_sekretariat(self):
+        p = {**self.p, "sekretariat_minuty_na_sprawe": 1.0,
+             "koszt_staly_na_godzine": 1.0, "wynagrodzenie_pracownika_na_godzine": 1.0}
+        for funkcja, klucz in ((oblicz_prog_kosztu_stalego, "koszt_staly_na_godzine"),
+                              (oblicz_prog_wynagrodzenia_pracownika, "wynagrodzenie_pracownika_na_godzine")):
+            prog = funkcja(p)
+            self.assertTrue(prog["mozliwe"])
+            self.assertAlmostEqual(oblicz_model({**p, klucz: prog["prog"]})["ogolem"]["wynik_przed_podatkiem"], 0, places=6)
+
+    def test_prog_czasu_nie_usunie_stalego_kosztu_sekretariatu(self):
+        p = {**self.p, "sekretariat_minuty_na_sprawe": 6000.0}
+        self.assertFalse(oblicz_prog_czasu(p)["mozliwe"])
+
+    def test_brak_spraw_brak_sekretariatu(self):
+        r = oblicz_model({**self.p, "liczba_spraw": 0})
+        self.assertEqual(r["koszt_sekretariatu_lifecycle"], 0)
+        self.assertEqual(r["ogolem"]["koszt_calkowity"], 0)
+
+    def test_ekonomika_nie_zalezy_od_obsady(self):
+        a = oblicz_model(self.p)
+        for liczba in (0, 1, 100, -1):
+            b = oblicz_model({**self.p, "liczba_pracownikow": liczba, "pracownicy": [],
+                              "koszty_kontraktu": {"ogolne_na_aktywna_sprawe": 9999}})
+            self.assertEqual(a, b)
+
+    def test_walidacja_nowych_danych(self):
+        for pole in ("sekretariat_minuty_na_sprawe", "koszt_sekretariatu_na_godzine"):
+            for v in (-1, float("nan"), True):
+                with self.subTest(pole=pole, v=v), self.assertRaises(ValueError):
+                    oblicz_model({**self.p, pole: v})
 
 
 if __name__ == "__main__":

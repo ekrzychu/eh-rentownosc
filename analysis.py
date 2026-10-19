@@ -18,6 +18,8 @@ KOPIOWANE_SLOWNIKI = (
 # edytowalne czasy czynności, także czasy dzienne i dodatkowe P1/P2/P3.
 PARAMETRY_STEROWALNE = frozenset({
     "srednia_kwota_ugody",
+    "sekretariat_stawka",
+    "sekretariat_czas",
     "koszt_staly",
     "wynagrodzenie",
     "szansa_na_ugode",
@@ -107,6 +109,8 @@ def przelicz_udzial_rodzaju(udzialy: dict[str, float], rodzaj: str, nowy_udzial:
 def definicje_parametrow(parametry: dict) -> list[dict]:
     """Buduje katalog dźwigni z aktualnych, a nie historycznych parametrów."""
     definicje = [
+        {"id": "sekretariat_stawka", "nazwa": "Koszt sekretariatu / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_sekretariatu_na_godzine"] * 10 + 100), "krok": 10.0},
+        {"id": "sekretariat_czas", "nazwa": "Czynności sekretariatu (min/sprawę)", "kategoria": "Operacyjne", "jednostka": "min", "typ": "czas", "min": 0.0, "max": max(1440.0, parametry["sekretariat_minuty_na_sprawe"] * 10 + 100), "krok": 10.0},
         {"id": "koszt_staly", "nazwa": "Narzut kosztów ogólnych / h pracownika", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["koszt_staly_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "wynagrodzenie", "nazwa": "Wynagrodzenie pracownika / h", "kategoria": "Kosztowe", "jednostka": "zł/h", "typ": "liczba", "min": 0.0, "max": max(1000.0, parametry["wynagrodzenie_pracownika_na_godzine"] * 10 + 100), "krok": 10.0},
         {"id": "srednia_kwota_ugody", "nazwa": "Średnia kwota ugody", "kategoria": "Warunki ekonomiczne", "jednostka": "p.p.", "typ": "procent", "min": 0.0, "max": 100.0, "krok": 5.0},
@@ -152,6 +156,7 @@ def wartosc_parametru(parametry: dict, identyfikator: str) -> float:
     if identyfikator == "sredni_czas_bezposredni":
         return sredni_bezposredni_czas_na_sprawe(parametry)
     proste = {
+        "sekretariat_stawka": "koszt_sekretariatu_na_godzine", "sekretariat_czas": "sekretariat_minuty_na_sprawe",
         "koszt_staly": "koszt_staly_na_godzine", "wynagrodzenie": "wynagrodzenie_pracownika_na_godzine",
         "srednia_kwota_ugody": "srednia_kwota_ugody_percent",
         "srednia_kwota_wyroku": "srednia_kwota_wyroku_percent",
@@ -179,6 +184,7 @@ def ustaw_parametr(parametry: dict, identyfikator: str, wartosc: float) -> dict:
         return ustaw_sredni_bezposredni_czas(parametry, wartosc)
     wynik = kopiuj_parametry(parametry)
     proste = {
+        "sekretariat_stawka": "koszt_sekretariatu_na_godzine", "sekretariat_czas": "sekretariat_minuty_na_sprawe",
         "koszt_staly": "koszt_staly_na_godzine", "wynagrodzenie": "wynagrodzenie_pracownika_na_godzine",
         "srednia_kwota_ugody": "srednia_kwota_ugody_percent",
         "srednia_kwota_wyroku": "srednia_kwota_wyroku_percent",

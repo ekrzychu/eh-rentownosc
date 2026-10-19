@@ -44,7 +44,10 @@ WYMAGANE = {
     "koszty": (
         "narzut_kosztow_ogolnych_na_godzine",
         "wynagrodzenie_pracownika_na_godzine",
+        "koszt_sekretariatu_na_godzine",
+        "sekretariat_minuty_na_sprawe",
     ),
+    "koszty_kontraktu": ("ogolne_na_aktywna_sprawe", "sekretariat_na_aktywna_sprawe"),
     "organizacja": (
         "liczba_pracownikow",
         "godziny_etatu_miesiecznie",
@@ -121,6 +124,13 @@ def wczytaj_defaults() -> dict:
                     poprawna = poprawna and wartosc > 0
             if not poprawna:
                 raise ValueError(f"{DEFAULTS_PATH}: niepoprawna wartość {sekcja}.{klucz}.")
+    obsada = dane.get("obsada", {})
+    role = obsada.get("role_poczatkowe")
+    przydzial = obsada.get("wykorzystanie_percent")
+    if (not isinstance(role, list) or not role or any(not isinstance(r, str) or r not in {"EH", "UGODY"} for r in role)
+            or isinstance(przydzial, bool) or not isinstance(przydzial, (int, float))
+            or not isfinite(przydzial) or not 0 <= przydzial <= 100):
+        raise ValueError("Niepoprawna konfiguracja początkowej przykładowej obsady.")
     return dane
 
 
@@ -134,6 +144,8 @@ def parametry_modelu() -> dict:
         "wysoki_wps": dane["portfolio"]["wysoki_wps"],
         "koszt_staly_na_godzine": dane["koszty"]["narzut_kosztow_ogolnych_na_godzine"],
         "wynagrodzenie_pracownika_na_godzine": dane["koszty"]["wynagrodzenie_pracownika_na_godzine"],
+        "koszt_sekretariatu_na_godzine": dane["koszty"]["koszt_sekretariatu_na_godzine"],
+        "sekretariat_minuty_na_sprawe": dane["koszty"]["sekretariat_minuty_na_sprawe"],
         "wspolne_czynnosci": dane["czynnosci_wspolne"],
         "procesowe_czynnosci": dane["czynnosci_procesowe"],
         "ugodowe_czynnosci": dane["czynnosci_ugodowe"],

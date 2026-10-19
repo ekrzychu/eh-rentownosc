@@ -34,7 +34,7 @@ def domyslne_parametry() -> dict:
 
 def waliduj_parametry(parametry: dict) -> None:
     """Waliduje wspólne założenia przed uruchomieniem któregokolwiek modelu."""
-    calkowite = ("liczba_spraw", "liczba_pracownikow")
+    calkowite = ("liczba_spraw",)
     for nazwa in calkowite:
         wartosc = parametry[nazwa]
         if not isinstance(wartosc, int) or isinstance(wartosc, bool) or wartosc < 0:
@@ -46,6 +46,8 @@ def waliduj_parametry(parametry: dict) -> None:
         "wysoki_wps",
         "koszt_staly_na_godzine",
         "wynagrodzenie_pracownika_na_godzine",
+        "koszt_sekretariatu_na_godzine",
+        "sekretariat_minuty_na_sprawe",
         "analiza_mozliwosci_ugody",
         "obsluga_ii_instancji_minuty",
     )
@@ -367,7 +369,8 @@ def podsumuj_grupy(grupy: list[dict]) -> dict:
     przychod = sum(grupa["laczny_przychod"] for grupa in grupy)
     koszt_wynagrodzen = sum(grupa["laczny_koszt_wynagrodzenia"] for grupa in grupy)
     koszt_narzutu = sum(grupa["laczny_koszt_narzutu_ogolnego"] for grupa in grupy)
-    koszt = koszt_wynagrodzen + koszt_narzutu
+    koszt_sekretariatu = sum(grupa["laczny_koszt_sekretariatu"] for grupa in grupy)
+    koszt = koszt_wynagrodzen + koszt_narzutu + koszt_sekretariatu
     wynik_przed_podatkiem = przychod - koszt
     przychod_ugody = sum(grupa["laczny_przychod_ugody"] for grupa in grupy)
     przychod_wyroki = sum(grupa["laczny_przychod_wyroki"] for grupa in grupy)
@@ -376,6 +379,7 @@ def podsumuj_grupy(grupy: list[dict]) -> dict:
         "przychod": przychod,
         "koszt_narzutu_ogolnego": koszt_narzutu,
         "koszt_wynagrodzenia": koszt_wynagrodzen,
+        "koszt_sekretariatu": koszt_sekretariatu,
         "koszt_calkowity": koszt,
         "wynik_przed_podatkiem": wynik_przed_podatkiem,
         "marza_przed_podatkiem": (
@@ -427,7 +431,8 @@ def oblicz_grupe(
     narzut_dzienny_na_sprawe = (
         koszt_wynagrodzenia + koszt_narzutu_ogolnego - koszt_bezposredni
     )
-    koszt_calkowity = koszt_wynagrodzenia + koszt_narzutu_ogolnego
+    koszt_sekretariatu = parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"]
+    koszt_calkowity = koszt_wynagrodzenia + koszt_narzutu_ogolnego + koszt_sekretariatu
     wynik_jednostkowy = wynagrodzenie - koszt_calkowity
     return {
         "rodzaj": rodzaj,
@@ -447,6 +452,7 @@ def oblicz_grupe(
         "godziny_zasobu_pracownika": minuty_zasobu / 60,
         "koszt_narzutu_ogolnego": koszt_narzutu_ogolnego,
         "koszt_wynagrodzenia": koszt_wynagrodzenia,
+        "koszt_sekretariatu": koszt_sekretariatu,
         "koszt_calkowity": koszt_calkowity,
         "wynik_jednostkowy_przed_podatkiem": wynik_jednostkowy,
         "bezposrednie_minuty_na_sprawe": bezposrednie_minuty,
@@ -455,6 +461,7 @@ def oblicz_grupe(
         "laczny_przychod_wyroki": liczba * oczekiwany_przychod_wyroki,
         "laczny_koszt_narzutu_ogolnego": liczba * koszt_narzutu_ogolnego,
         "laczny_koszt_wynagrodzenia": liczba * koszt_wynagrodzenia,
+        "laczny_koszt_sekretariatu": liczba * koszt_sekretariatu,
         "laczny_koszt_calkowity": liczba * koszt_calkowity,
         "laczny_wynik_przed_podatkiem": liczba * wynik_jednostkowy,
     }
@@ -521,8 +528,10 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         godziny_zasobu_lifecycle * narzut_ogolny_godzinowy
     )
     koszt_wynagrodzen_lifecycle = godziny_zasobu_lifecycle * wynagrodzenie_godzinowe
+    koszt_sekretariatu_na_sprawe = parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"]
+    koszt_sekretariatu_lifecycle = liczba_spraw * koszt_sekretariatu_na_sprawe
     koszt_lifecycle_razem = (
-        koszt_narzutu_ogolnego_lifecycle + koszt_wynagrodzen_lifecycle
+        koszt_narzutu_ogolnego_lifecycle + koszt_wynagrodzen_lifecycle + koszt_sekretariatu_lifecycle
     )
     czynnosci_dzienne_lifecycle_koszt = (
         czynnosci_dzienne_lifecycle_minuty / 60 * koszt_zasobu_na_godzine
@@ -593,6 +602,9 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         "koszt_zasobu_na_godzine": koszt_zasobu_na_godzine,
         "koszt_narzutu_ogolnego_lifecycle": koszt_narzutu_ogolnego_lifecycle,
         "koszt_wynagrodzen_lifecycle": koszt_wynagrodzen_lifecycle,
+        "koszt_sekretariatu_lifecycle": koszt_sekretariatu_lifecycle,
+        "koszt_sekretariatu_na_sprawe": koszt_sekretariatu_na_sprawe,
+        "koszt_sekretariatu_na_godzine": parametry["koszt_sekretariatu_na_godzine"],
         "koszt_lifecycle_razem": koszt_lifecycle_razem,
         "bezposrednie_minuty_spraw": bezposrednie_minuty_spraw,
         **metryki_lifecycle,
@@ -603,7 +615,7 @@ def oblicz_model(parametry: dict | None = None) -> dict:
                 koszt_zasobu_na_godzine
                 * (srednie_minuty_sciezki + parametry["dodatkowe_minuty"][rodzaj])
                 * mnoznik_zasobu_lifecycle
-                / 60
+                / 60 + koszt_sekretariatu_na_sprawe
             )
             for rodzaj in parametry["dodatkowe_minuty"]
         },
@@ -696,6 +708,7 @@ def oblicz_prog_kosztu_stalego(parametry: dict) -> dict:
     prog = (
         wyniki["ogolem"]["przychod"]
         - wyniki["koszt_wynagrodzen_lifecycle"]
+        - wyniki["koszt_sekretariatu_lifecycle"]
     ) / godziny_zasobu
     if prog < 0:
         return {"mozliwe": False, "obecnie": obecny}
@@ -717,6 +730,7 @@ def oblicz_prog_wynagrodzenia_pracownika(parametry: dict) -> dict:
     prog = (
         wyniki["ogolem"]["przychod"]
         - wyniki["koszt_narzutu_ogolnego_lifecycle"]
+        - wyniki["koszt_sekretariatu_lifecycle"]
     ) / godziny_zasobu
     if prog < 0:
         return {"mozliwe": False, "obecnie": obecny}

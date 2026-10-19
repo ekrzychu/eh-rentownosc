@@ -4,6 +4,7 @@ import streamlit as st
 
 from model import domyslne_parametry, oblicz_model
 from timeline import GODZINY_ETATU_MIESIECZNIE
+from staff import ROLE, ETYKIETY_ROL, przywroc_obsade
 from ui_case import renderuj_ekonomike_sprawy
 from ui_timeline import renderuj_widok_czasowy
 
@@ -96,21 +97,71 @@ with st.sidebar:
         koszt_staly = st.number_input(
             "Narzut kosztów ogólnych / h pracownika", min_value=0.0,
             value=domyslne["koszt_staly_na_godzine"], step=1.0,
-            help="Średnia część kosztów ogólnych przypisana do płatnej godziny pracownika.",
+            help="Referencyjny narzut godzinowy wyłącznie w Ekonomice sprawy.",
         )
         wynagrodzenie_pracownika = st.number_input(
             "Wynagrodzenie pracownika / h", min_value=0.0,
             value=domyslne["wynagrodzenie_pracownika_na_godzine"], step=1.0,
         )
-        liczba_pracownikow = st.number_input(
+        koszt_sekretariatu = st.number_input(
+            "Koszt sekretariatu / h", min_value=0.0,
+            value=domyslne["koszt_sekretariatu_na_godzine"], step=1.0,
+            help="Stawka wyłącznie dla jednorazowych czynności sekretariatu w Ekonomice sprawy.",
+        )
+        st.caption("Referencyjne stawki dotyczą pełnego cyklu sprawy, niezależnie od obsady kontraktu.")
+
+    with st.expander("Obsada kontraktu"):
+        liczba_pracownikow = int(st.number_input(
             "Liczba pracowników", min_value=0, value=int(domyslne["liczba_pracownikow"]), step=1,
-        )
+            key="liczba_pracownikow",
+        ))
         st.caption(
-            "Ekonomika sprawy wycenia zużyty czas zasobu. Kontrakt w czasie wycenia "
-            f"pełne {GODZINY_ETATU_MIESIECZNIE:g} h każdego FTE miesięcznie."
+            "Początkowy skład to edytowalny przykład: prawnik EH i prawnik ugody. "
+            "Przydział do projektu określa płatne godziny: 167 h × wykorzystanie. "
+            "Niewykorzystana pojemność pozostaje opłacona."
         )
+        zapisane = przywroc_obsade(st.session_state, liczba_pracownikow)
+
+        def zapisz_osobe(indeks, pole, klucz):
+            dane = dict(st.session_state["ustawienia_obsady"])
+            dane[indeks] = {**dane[indeks], pole: st.session_state[klucz]}
+            st.session_state["ustawienia_obsady"] = dane
+
+        pracownicy = []
+        for indeks, osoba in enumerate(zapisane):
+            numer = indeks + 1
+            st.markdown(f"**Pracownik {numer}**")
+            for pole in ("rola", "stawka", "wykorzystanie_percent"):
+                klucz = f"pracownik_{indeks}_{pole}"
+                if klucz not in st.session_state:
+                    st.session_state[klucz] = osoba[pole]
+            rola = st.selectbox(
+                "Rola:", ROLE, format_func=ETYKIETY_ROL.get, key=f"pracownik_{indeks}_rola",
+                on_change=zapisz_osobe, args=(indeks, "rola", f"pracownik_{indeks}_rola"),
+            )
+            stawka = st.number_input(
+                f"Wynagrodzenie pracownika {numer} (zł/h)", min_value=0.0, step=1.0,
+                key=f"pracownik_{indeks}_stawka", on_change=zapisz_osobe,
+                args=(indeks, "stawka", f"pracownik_{indeks}_stawka"),
+            )
+            wykorzystanie = st.number_input(
+                f"Wykorzystanie pracownika {numer} w projekcie (%)", min_value=0.0, max_value=100.0,
+                step=5.0, key=f"pracownik_{indeks}_wykorzystanie_percent", on_change=zapisz_osobe,
+                args=(indeks, "wykorzystanie_percent", f"pracownik_{indeks}_wykorzystanie_percent"),
+            )
+            godziny_projektu = GODZINY_ETATU_MIESIECZNIE * wykorzystanie / 100
+            tekst_godzin = f"{godziny_projektu:.2f}".replace(".", ",")
+            tekst_plac = f"{godziny_projektu * stawka:.2f}".replace(".", ",")
+            st.caption(f"Przydzielone godziny: {tekst_godzin} h/mies. · "
+                       f"Wynagrodzenie projektu: {tekst_plac} zł/mies.")
+            pracownicy.append({"rola": rola, "stawka": stawka, "wykorzystanie_percent": wykorzystanie})
 
     with st.expander("Czas pracy"):
+        sekretariat_minuty = st.number_input(
+            "Czynności sekretariatu (min/sprawę)", min_value=0.0,
+            value=domyslne["sekretariat_minuty_na_sprawe"], step=1.0,
+            help="Łącznie raz w cyklu sprawy. Nie zużywa pojemności prawników ani mnożnika czynności dziennych.",
+        )
         st.caption("Czynności wspólne")
         wspolne_czynnosci = {
             nazwa: st.number_input(nazwa, min_value=0, value=minuty, step=5)
@@ -183,6 +234,8 @@ parametry = {
     "liczba_spraw": liczba_spraw, "prog_wps": prog_wps,
     "niski_wps": niski_wps, "wysoki_wps": wysoki_wps,
     "koszt_staly_na_godzine": koszt_staly,
+    "koszt_sekretariatu_na_godzine": koszt_sekretariatu,
+    "sekretariat_minuty_na_sprawe": sekretariat_minuty,
     "wynagrodzenie_pracownika_na_godzine": wynagrodzenie_pracownika,
     "wspolne_czynnosci": wspolne_czynnosci,
     "procesowe_czynnosci": procesowe_czynnosci,
@@ -207,19 +260,18 @@ parametry = {
     "liczba_pracownikow": liczba_pracownikow,
 }
 
-try:
-    wyniki = oblicz_model(parametry)
-except ValueError as error:
-    st.error(str(error))
-    st.stop()
-
 st.title("Analiza rentowności dla spraw EH")
-st.caption("Dwa spojrzenia na ten sam model: ekonomika oczekiwanej sprawy oraz wykonalność i wynik kontraktu w czasie.")
+st.caption("Dwa odrębne rachunki kosztów: ekonomika pełnego cyklu sprawy oraz wynik kontraktu z indywidualną obsadą w czasie.")
 widok = st.segmented_control(
     "Widok", ("Ekonomika sprawy", "Kontrakt w czasie"), default="Ekonomika sprawy"
 )
 st.divider()
 if widok == "Kontrakt w czasie":
-    renderuj_widok_czasowy(parametry)
+    renderuj_widok_czasowy(parametry, pracownicy=pracownicy)
 else:
+    try:
+        wyniki = oblicz_model(parametry)
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
     renderuj_ekonomike_sprawy(parametry, wyniki)

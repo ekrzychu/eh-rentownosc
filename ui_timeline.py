@@ -8,7 +8,7 @@ from timeline import (
     GODZINY_ETATU_MIESIECZNIE,
     domyslne_parametry_czasowe,
     oblicz_model_czasowy,
-    porownaj_obsade,
+    _koszty_kontraktu,
 )
 
 
@@ -105,11 +105,11 @@ def _cumulative_chart(table: pd.DataFrame, horizon: int, break_even: int | None)
 
 
 def _finance_chart(table: pd.DataFrame, horizon: int):
-    melted = table[["Miesiąc", "Przychód razem", "Miesięczny koszt obsady"]].melt(
+    melted = table[["Miesiąc", "Przychód razem", "Łączny koszt miesięczny"]].melt(
         "Miesiąc", var_name="Pozycja", value_name="Kwota"
     )
     melted["Pozycja"] = melted["Pozycja"].replace(
-        {"Przychód razem": "Przychód", "Miesięczny koszt obsady": "Koszt obsady"}
+        {"Przychód razem": "Przychód", "Łączny koszt miesięczny": "Koszt kontraktu"}
     )
     return (
         alt.Chart(melted)
@@ -121,7 +121,7 @@ def _finance_chart(table: pd.DataFrame, horizon: int):
                 "Pozycja:N",
                 title=None,
                 scale=alt.Scale(
-                    domain=["Przychód", "Koszt obsady"],
+                    domain=["Przychód", "Koszt kontraktu"],
                     range=["#16a34a", "#dc2626"],
                 ),
             ),
@@ -177,396 +177,135 @@ def _capacity_charts(table: pd.DataFrame, horizon: int):
     return backlog, utilization + full_capacity
 
 
-def renderuj_widok_czasowy(parametry: dict) -> None:
-    """Renderuje wyłącznie wybraną analizę czasu i pojemności."""
+def _ustawienie(klucz: str, etykieta: str, domyslna, **opcje):
+    """Zachowuje założenia kontraktu po przełączeniu pomiędzy panelami."""
+    zapisane = st.session_state.setdefault("zalozenia_kontraktu", {})
+    widget = "kontrakt_" + klucz
+    if widget not in st.session_state:
+        st.session_state[widget] = zapisane.get(klucz, domyslna)
+
+    def zapisz():
+        st.session_state["zalozenia_kontraktu"] = {
+            **st.session_state["zalozenia_kontraktu"], klucz: st.session_state[widget]
+        }
+
+    return st.number_input(etykieta, key=widget, on_change=zapisz, **opcje)
+
+
+def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = None) -> None:
     st.header("Kontrakt w czasie")
     st.caption(
-        "Ciągły model operacyjny łączy koszt utrzymywanej obsady z kolejką pracy, "
-        "terminami zakończeń i wpływem przychodów."
+        "Koszt kontraktu obejmuje indywidualne wynagrodzenia za przydzielone godziny "
+        "oraz miesięczne koszty aktywnych spraw. Stawki referencyjne Ekonomiki sprawy "
+        "służą wyłącznie tamtemu panelowi."
     )
     st.caption(
-        "Terminy ugody i wyroków określają czas kalendarzowy do zakończenia, "
-        "nie czas pracy: zwykła praca trafia do kolejki przy wpływie, II instancja "
-        "przy wyroku I instancji, a samo oczekiwanie nie dodaje minut pracy sprawy."
+        "Zwykła praca EH i ugód jest wymagalna od wpływu. II instancja wymaga "
+        "wykonania pracy I instancji i osiągnięcia terminu jej wyroku. "
+        "Oczekiwanie kalendarzowe nie dodaje minut pracy."
     )
+    st.subheader("Koszty kontraktu")
+    defaults_cost = _koszty_kontraktu(None)
+    cost_columns = st.columns(2)
+    with cost_columns[0]:
+        overhead = _ustawienie("ogolne_na_aktywna_sprawe",
+            "Koszty ogólne / aktywną sprawę / mies.", defaults_cost["ogolne_na_aktywna_sprawe"],
+            min_value=0.0, step=1.0)
+    with cost_columns[1]:
+        secretariat = _ustawienie("sekretariat_na_aktywna_sprawe",
+            "Koszt sekretariatu / aktywną sprawę / mies.", defaults_cost["sekretariat_na_aktywna_sprawe"],
+            min_value=0.0, step=1.0)
     st.caption(
-        "Pracownicy są zatrudnieni na pełnym etacie, dlatego każdy kosztuje pełne "
-        f"{GODZINY_ETATU_MIESIECZNIE:g} godzin miesięcznie niezależnie od wykorzystania."
+        "Opłata obejmuje miesiąc wpływu, miesiąc rzeczywistego zakończenia oraz wszystkie "
+        "miesiące pomiędzy. Opóźnienie płatności nie przedłuża naliczania kosztów. "
+        "Kwoty dotyczą aktywnej sprawy w miesiącu i nie są stawkami godzinowymi."
     )
-
-    defaults = domyslne_parametry_czasowe()
-    with st.expander("Założenia czasowe", expanded=False):
-        settings_columns = st.columns(3, wrap=True)
-        with settings_columns[0]:
-            settlement_months = st.number_input(
-                "Od wpływu sprawy do ugody (mies.)",
-                min_value=0,
-                max_value=120,
-                value=defaults["miesiace_do_ugody"],
-                step=1,
-            )
-            payment_delay = st.number_input(
-                "Opóźnienie płatności (mies.)",
-                min_value=0,
-                max_value=120,
-                value=defaults["opoznienie_platnosci_miesiace"],
-                step=1,
-            )
-        with settings_columns[1]:
-            first_instance_months = st.number_input(
-                "Od wpływu do wyroku I instancji (mies.)",
-                min_value=0,
-                max_value=120,
-                value=defaults["miesiace_do_wyroku_i"],
-                step=1,
-            )
-            horizon = st.number_input(
-                "Horyzont analizy (mies.)",
-                min_value=12,
-                max_value=120,
-                value=defaults["horyzont_miesiace"],
-                step=1,
-            )
-        with settings_columns[2]:
-            second_instance_months = st.number_input(
-                "Od I do II instancji (mies.)",
-                min_value=0,
-                max_value=120,
-                value=defaults["miesiace_wyrok_i_do_ii"],
-                step=1,
-            )
-            st.metric(
-                "Średni napływ miesięczny",
-                f"{_liczba(parametry['liczba_spraw'] / 12, 2)} spraw",
-            )
-
-    time_parameters = {
-        "miesiace_do_ugody": int(settlement_months),
-        "miesiace_do_wyroku_i": int(first_instance_months),
-        "miesiace_wyrok_i_do_ii": int(second_instance_months),
-        "opoznienie_platnosci_miesiace": int(payment_delay),
-        "horyzont_miesiace": int(horizon),
-    }
-    result = oblicz_model_czasowy(parametry, time_parameters)
-    kpi = result["kpi"]
-    capacity = result["pojemnosc"]
-    summary = result["podsumowanie"]
-    diagnosis = result["diagnoza"]
-
+    time_parameters = {}
+    with st.expander("Założenia czasowe"):
+        labels = {
+            "miesiace_do_ugody": "Od wpływu sprawy do ugody (mies.)",
+            "miesiace_do_wyroku_i": "Od wpływu do wyroku I instancji (mies.)",
+            "miesiace_wyrok_i_do_ii": "Od I do II instancji (mies.)",
+            "opoznienie_platnosci_miesiace": "Opóźnienie płatności (mies.)",
+            "horyzont_miesiace": "Horyzont analizy (mies.)",
+        }
+        columns = st.columns(3)
+        for i, (key, default) in enumerate(domyslne_parametry_czasowe().items()):
+            with columns[i % 3]:
+                time_parameters[key] = int(_ustawienie(key, labels[key], default,
+                    min_value=12 if key == "horyzont_miesiace" else 0, max_value=360, step=1))
+    costs = {"ogolne_na_aktywna_sprawe": overhead, "sekretariat_na_aktywna_sprawe": secretariat}
+    try:
+        result = oblicz_model_czasowy(parametry, time_parameters, pracownicy=pracownicy,
+                                      koszty_kontraktu=costs)
+    except ValueError as error:
+        st.error(str(error))
+        return
+    kpi, capacity, summary = result["kpi"], result["pojemnosc"], result["podsumowanie"]
+    horizon = time_parameters["horyzont_miesiace"]
     if capacity["status_pojemnosci"] == "Niewystarczająca":
-        if kpi["pierwsze_przeciecie_status"] == "osiagniety":
-            st.warning(
-                "Finansowy break-even został osiągnięty, ale portfel narasta "
-                "szybciej, niż zespół może go obsłużyć. Backlog nadal rośnie."
-            )
-        else:
-            st.warning(
-                "Przy obecnym napływie portfel narasta szybciej, niż zespół może "
-                "go obsłużyć. Backlog będzie rosnąć w długim okresie."
-            )
-
-    break_even_value, break_even_help = _financial_break_even_value(kpi)
-    minimum_staff = capacity["minimalna_liczba_pracownikow_dla_stabilnosci"]
-    primary_top = st.columns(2, gap="large", wrap=True)
-    primary_top[0].metric("Status kontraktu", kpi["status_kontraktu"])
-    primary_top[1].metric("Break-even finansowy", break_even_value, help=break_even_help)
-    primary_bottom = st.columns(2, gap="large", wrap=True)
-    deficit_label = (
-        "Największy deficyt"
-        if kpi["najglebszy_deficyt_potwierdzony"]
-        else f"Najniższy wynik do {horizon} mies."
-    )
-    primary_bottom[0].metric(
-        deficit_label,
-        _kwota_skrocona(kpi["najglebszy_deficyt_skumulowany"]),
-        help=_kwota(kpi["najglebszy_deficyt_skumulowany"]),
-    )
-    primary_bottom[1].metric(
-        f"Wynik po {horizon} mies.",
-        _kwota_skrocona(kpi["wynik_skumulowany_na_koniec_horyzontu"]),
-        help=_kwota(kpi["wynik_skumulowany_na_koniec_horyzontu"]),
-    )
+        st.warning("Co najmniej jedna rola ma za małą pojemność. Backlog rośnie; trwała rentowność nie jest potwierdzona.")
+    top = st.columns(2, gap="large")
+    top[0].metric("Status kontraktu", kpi["status_kontraktu"])
+    value, help_text = _financial_break_even_value(kpi)
+    top[1].metric("Break-even finansowy", value, help=help_text)
+    financial = st.columns(2)
+    deficit_label = "Największy deficyt" if kpi["najglebszy_deficyt_potwierdzony"] else f"Najniższy wynik do {horizon} mies."
+    financial[0].metric(deficit_label, _kwota_skrocona(kpi["najglebszy_deficyt_skumulowany"]),
+                        help=_kwota(kpi["najglebszy_deficyt_skumulowany"]))
+    financial[1].metric(f"Wynik po {horizon} mies.", _kwota_skrocona(kpi["wynik_skumulowany_na_koniec_horyzontu"]))
     if kpi["wynik_nadal_narasta"]:
-        primary_bottom[1].caption("Skumulowany wynik ma trwały trend spadkowy.")
-
-    operations = st.columns(3, gap="large", wrap=True)
-    operations[0].metric(
-        "Obsada",
-        f"{parametry['liczba_pracownikow']} os.",
-        help=f"Minimalna stabilna obsada: {minimum_staff} os." if minimum_staff is not None else None,
-    )
-    operations[1].metric(
-        "Backlog",
-        f"{_liczba(summary['backlog_koniec_godziny'], 0)} h",
-        help=f"Dokładnie {_liczba(summary['backlog_koniec_godziny'], 2)} h.",
-    )
-    operations[2].metric("Status operacyjny", capacity["status_pojemnosci"])
-    if capacity["status_pojemnosci"] == "Na granicy":
-        operations[2].caption("Wykonalna operacyjnie, ale bez bufora pojemności.")
-    else:
-        operations[2].caption(
-            f"{parametry['liczba_pracownikow']} os. → potrzeba min. {minimum_staff}"
-            if minimum_staff is not None
-            else "Brak możliwej stabilnej obsady przy tych założeniach."
-        )
-
-    components = kpi["status_kontraktu_skladniki"]
-    minimum_result = components["wynik_miesieczny_minimalnej_stabilnej_obsady"]
-    current_result = components["wynik_miesieczny_biezacej_obsady"]
-    current_result_text = (
-        _kwota(current_result) + "/mies."
-        if current_result is not None
-        else "niedostępny — niewystarczająca obsada"
-    )
+        st.caption("Skumulowany wynik ma trwały trend spadkowy.")
+    ops = st.columns(3)
+    ops[0].metric("Obsada", f"{len(capacity['pracownicy'])} os.")
+    ops[1].metric("Backlog", f"{_liczba(summary['backlog_koniec_godziny'])} h")
+    ops[2].metric("Status operacyjny", capacity["status_pojemnosci"])
+    st.write(f"Ocena trwałości: **{kpi['status_break_even']}**.")
     st.caption(
-        "Składniki statusu · ekonomika sprawy: "
-        f"{'dodatnia' if components['ekonomika_sprawy_dodatnia'] else 'niedodatnia'} · "
-        f"minimalna stabilna obsada: {components['minimalna_stabilna_obsada'] or 'brak'} · "
-        "wynik przy minimalnej obsadzie: "
-        f"{_kwota(minimum_result) + '/mies.' if minimum_result is not None else 'brak'} · "
-        "wynik bieżącej obsady: "
-        f"{current_result_text}"
+        "Deficyt rozruchowy: " + ("tak" if result["diagnoza"]["deficyt_rozruchowy"] else "nie")
+        + ". Wyniki i break-even są liczone przed podatkiem dochodowym."
     )
-
-    loss_reasons = [
-        "rozruch: koszt przed dojrzeniem przychodów"
-        if diagnosis["deficyt_rozruchowy"]
-        else "rozruch: bez deficytu",
-        (
-            "niewykorzystana pojemność w horyzoncie: "
-            f"{_kwota_skrocona(diagnosis['koszt_niewykorzystanej_pojemnosci_horyzont'])}"
-        ),
-        "niedobór strukturalny: tak"
-        if diagnosis["strukturalny_niedobor_pojemnosci"]
-        else "niedobór strukturalny: nie",
-    ]
-    st.caption("Diagnoza wyniku · " + " · ".join(loss_reasons))
-
-    secondary = st.columns(3, wrap=True)
-    secondary[0].metric("Aktywne sprawy", _liczba(summary["aktywne_sprawy"], 1))
-    secondary[1].metric(
-        "Bieżące wykorzystanie",
-        _procent(capacity["biezace_wykorzystanie_percent"]),
-        help=(
-            "Wykorzystanie w ostatnim miesiącu; obejmuje czynności dzienne "
-            "i wykonaną pracę nad sprawami."
-        ),
-    )
-    secondary[2].metric(
-        "Minimalna stabilna obsada",
-        f"{minimum_staff} os." if minimum_staff is not None else "Nieosiągalna",
-    )
-    st.caption(
-        f"Napływ: {_liczba(summary['roczny_naplyw'], 0)}/rok · "
-        f"{_liczba(summary['sredni_naplyw_miesieczny'], 2)}/mies. · "
-        "Break-even liczony przed podatkiem dochodowym; model nie odwzorowuje "
-        "terminów płatności podatku."
-    )
-
+    last = result["tabela_miesieczna"][-1]
+    active = st.columns(2)
+    active[0].metric("Aktywne sprawy na koniec miesiąca", _liczba(last["Aktywne sprawy na koniec miesiąca"], 2))
+    active[1].metric("Sprawy naliczające koszt w miesiącu", _liczba(last["Sprawy naliczające koszt w miesiącu"], 2))
+    st.caption("Zakończenia pomniejszają stan na koniec miesiąca. Sprawy zakończone w tym miesiącu nadal naliczają koszt.")
     table = pd.DataFrame(result["tabela_miesieczna"])
     st.subheader("Skumulowany wynik przed podatkiem")
-    st.altair_chart(
-        _cumulative_chart(table, int(horizon), kpi["pierwsze_przeciecie_miesiac"]),
-        width="stretch",
-    )
-
-    additional_chart = st.segmented_control(
-        "Dodatkowy wykres",
-        ("Finanse miesięczne", "Pojemność i backlog"),
-        default="Finanse miesięczne",
-    )
-    if additional_chart == "Finanse miesięczne":
-        st.altair_chart(_finance_chart(table, int(horizon)), width="stretch")
+    st.altair_chart(_cumulative_chart(table, horizon, kpi["pierwsze_przeciecie_miesiac"]), width="stretch")
+    chart = st.segmented_control("Dodatkowy wykres", ("Finanse miesięczne", "Pojemność i backlog"), default="Finanse miesięczne")
+    if chart == "Finanse miesięczne":
+        st.altair_chart(_finance_chart(table, horizon), width="stretch")
     else:
-        backlog_chart, utilization_chart = _capacity_charts(table, int(horizon))
-        st.altair_chart(backlog_chart, width="stretch")
-        st.altair_chart(utilization_chart, width="stretch")
-
-    with st.expander("Pojemność zespołu", expanded=False):
-        capacity_metrics = st.columns(3, wrap=True)
-        capacity_metrics[0].metric(
-            "Pojemność brutto",
-            f"{_liczba(capacity['pojemnosc_brutto_minuty'] / 60, 1)} h/mies.",
-        )
-        capacity_metrics[1].metric(
-            "Czynności dzienne",
-            f"{_liczba(capacity['czynnosci_dzienne_minuty'] / 60, 1)} h/mies.",
-        )
-        capacity_metrics[2].metric(
-            "Pojemność na sprawy",
-            f"{_liczba(capacity['pojemnosc_na_sprawy_minuty'] / 60, 1)} h/mies.",
-        )
-        workload_metrics = st.columns(2, wrap=True)
-        workload_metrics[0].metric(
-            "Wymagana praca nad sprawami",
-            f"{_liczba(capacity['miesieczny_popyt_minuty'] / 60, 1)} h/mies.",
-        )
-        workload_metrics[1].metric(
-            "Bilans pojemności",
-            f"{_liczba((capacity['pojemnosc_na_sprawy_minuty'] - capacity['miesieczny_popyt_minuty']) / 60, 1)} h/mies.",
-        )
-        koszt_metrics = st.columns(4, wrap=True)
-        koszt_metrics[0].metric(
-            "Koszt jednego FTE / mies.",
-            _kwota(capacity["koszt_jednego_fte_miesiecznie"]),
-        )
-        koszt_metrics[1].metric(
-            "Miesięczny narzut kosztów ogólnych",
-            _kwota(capacity["miesieczny_narzut_kosztow_ogolnych"]),
-        )
-        koszt_metrics[2].metric(
-            "Miesięczne wynagrodzenia",
-            _kwota(capacity["miesieczny_koszt_wynagrodzen"]),
-        )
-        koszt_metrics[3].metric(
-            "Łączny koszt obsady",
-            _kwota(capacity["miesieczny_koszt_obsady"]),
-        )
-        st.caption(
-            "Narzut kosztów ogólnych / h: "
-            f"{_kwota(parametry['koszt_staly_na_godzine']).replace(' zł', ' zł/h')} · wynagrodzenie / h: "
-            f"{_kwota(parametry['wynagrodzenie_pracownika_na_godzine']).replace(' zł', ' zł/h')} · "
-            "koszt płatnej godziny zasobu: "
-            f"{_kwota(capacity['koszt_zasobu_na_godzine']).replace(' zł', ' zł/h')}."
-        )
-
-    with st.expander("Szczegóły modelu", expanded=False):
-        detail_1 = st.columns(3, wrap=True)
-        detail_1[0].metric(
-            "Pierwszy dodatni miesiąc", _miesiac(kpi["pierwszy_dodatni_miesiac"])
-        )
-        detail_1[1].metric(
-            "Historyczne minimum wyniku",
-            _kwota_skrocona(kpi["najglebszy_deficyt_skumulowany"]),
-            help=_kwota(kpi["najglebszy_deficyt_skumulowany"]),
-        )
-        detail_1[2].metric(
-            "Średnie wykorzystanie całego horyzontu",
-            _procent(capacity["srednie_wykorzystanie_percent"]),
-        )
-        st.caption(
-            "Historyczne minimum jest potwierdzonym najgłębszym deficytem."
-            if kpi["najglebszy_deficyt_potwierdzony"]
-            else "Historyczne minimum przypada na koniec horyzontu i nie jest "
-            "skończonym maksymalnym zapotrzebowaniem na finansowanie."
-        )
-        st.write(
-            "Break-even finansowy: "
-            f"**{kpi['pierwsze_przeciecie_skumulowane']}**. "
-            "Ocena trwałości: "
-            f"**{kpi['status_break_even']}**."
-        )
-        detail_2 = st.columns(3, wrap=True)
-        detail_2[0].metric(
-            "Wykorzystanie — ostatnie 12 mies.",
-            _procent(capacity["ostatnie_12_miesiecy_wykorzystanie_percent"]),
-        )
-        detail_2[1].metric(
-            "Bieżące opóźnienie pojemności",
-            f"{summary['biezace_opoznienie_pojemnosci_miesiace']} mies.",
-        )
-        detail_2[2].metric("Stan stabilny", summary["status_stanu_stabilnego"])
-        stable_result = kpi["wynik_miesieczny_w_stanie_stabilnym"]
-        if stable_result is not None:
-            st.write(
-                "Wynik w stanie stabilnym: "
-                f"**{_kwota(stable_result)}/mies.** · "
-                f"**{_kwota(kpi['wynik_roczny_w_stanie_stabilnym'])}/rok**"
-            )
-        else:
-            st.write(
-                f"Wynik w stanie stabilnym: **{summary['status_stanu_stabilnego']}**"
-            )
-        if current_result is not None:
-            st.write(
-                "Dojrzały wynik miesięczny bieżącej obsady: "
-                f"**{_kwota(current_result)}/mies.**"
-            )
-
-        balance = diagnosis["bilans_pojemnosci_rocznie_godziny"]
-        balance_label = (
-            "Niewykorzystana pojemność" if balance >= 0 else "Brakująca pojemność"
-        )
-        st.markdown("##### Uzgodnienie cyklu życia i modelu czasowego")
-        reconciliation = pd.DataFrame(
-            [
-                {
-                    "Pozycja": "Marża cyklu życia kohorty przed podatkiem",
-                    "Wartość": _procent(diagnosis["marza_lifecycle_przed_podatkiem"]),
-                },
-                {
-                    "Pozycja": "Koszt cyklu życia kohorty",
-                    "Wartość": _kwota(diagnosis["koszt_lifecycle_roczny"]),
-                },
-                {
-                    "Pozycja": "Roczny koszt utrzymywanej operacji",
-                    "Wartość": _kwota(diagnosis["koszt_operacji_czasowy_roczny"]),
-                },
-                {
-                    "Pozycja": "Roczne wymagane godziny zasobu",
-                    "Wartość": f"{_liczba(diagnosis['roczne_wymagane_godziny_zasobu'], 2)} h",
-                },
-                {
-                    "Pozycja": "Dostarczane godziny zespołu",
-                    "Wartość": f"{_liczba(diagnosis['dostarczane_godziny_zespolu_rocznie'], 2)} h/rok",
-                },
-                {
-                    "Pozycja": f"{balance_label} rocznie",
-                    "Wartość": f"{_liczba(abs(balance), 2)} h",
-                },
-            ]
-        )
-        st.dataframe(reconciliation, hide_index=True, width="stretch")
-        minimum_result = diagnosis["wynik_miesieczny_przy_minimalnej_obsadzie"]
-        if minimum_result is not None:
-            st.caption(
-                "Dojrzały wynik przy minimalnej stabilnej obsadzie: "
-                f"{_kwota(minimum_result)}/mies."
-            )
-
-    with st.expander("Szczegóły miesiąc po miesiącu", expanded=False):
-        tabela_do_wyswietlenia = table
-        st.dataframe(
-            tabela_do_wyswietlenia,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "Nowe sprawy": st.column_config.NumberColumn(format="%.2f"),
-                "Aktywne sprawy": st.column_config.NumberColumn(format="%.2f"),
-                "Przychód z ugód": st.column_config.NumberColumn(format="%.2f zł"),
-                "Przychód z wyroków": st.column_config.NumberColumn(format="%.2f zł"),
-                "Przychód razem": st.column_config.NumberColumn(format="%.2f zł"),
-                "Koszt niewykorzystanej pojemności": st.column_config.NumberColumn(format="%.2f zł"),
-                "Miesięczny narzut kosztów ogólnych": st.column_config.NumberColumn(format="%.2f zł"),
-                "Miesięczny koszt wynagrodzeń": st.column_config.NumberColumn(format="%.2f zł"),
-                "Miesięczny koszt obsady": st.column_config.NumberColumn(format="%.2f zł"),
-                "Wynik miesięczny przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
-                "Wynik skumulowany przed podatkiem": st.column_config.NumberColumn(format="%.2f zł"),
-            },
-        )
-
-    with st.expander("Porównanie obsady", expanded=False):
-        st.caption(
-            "Mniejsza obsada obniża koszt, ale może opóźniać przychody; większa "
-            "obsada zwiększa pojemność oraz koszt niewykorzystanego czasu."
-        )
-        calculate_comparison = st.toggle(
-            "Oblicz warianty obsady", value=False, key="oblicz_porownanie_obsady"
-        )
-        if calculate_comparison:
-            comparison = pd.DataFrame(porownaj_obsade(parametry, time_parameters))
-            st.dataframe(
-                comparison,
-                hide_index=True,
-                width="stretch",
-                column_config={
-                    "Pojemność brutto (h/mies.)": st.column_config.NumberColumn(format="%.1f h"),
-                    "Pojemność na sprawy (h/mies.)": st.column_config.NumberColumn(format="%.1f h"),
-                    "Wykorzystanie": st.column_config.NumberColumn(format="%.1f%%"),
-                    "Backlog (h)": st.column_config.NumberColumn(format="%.1f h"),
-                    "Miesięczny narzut kosztów ogólnych": st.column_config.NumberColumn(format="%.2f zł"),
-                    "Miesięczne wynagrodzenia": st.column_config.NumberColumn(format="%.2f zł"),
-                    "Miesięczny koszt obsady": st.column_config.NumberColumn(format="%.2f zł"),
-                    "Dojrzały wynik miesięczny": st.column_config.NumberColumn(format="%.2f zł"),
-                },
-            )
+        for visual in _capacity_charts(table, horizon):
+            st.altair_chart(visual, width="stretch")
+        st.line_chart(table.set_index("Miesiąc")[["Backlog EH (h)", "Backlog UGODY (h)"]])
+    with st.expander("Pojemność zespołu"):
+        for role, label in (("EH", "EH"), ("UGODY", "ugód")):
+            pool = capacity["role"][role]
+            st.markdown(f"**Prawnicy {label} · {pool['status']}**")
+            c = st.columns(3)
+            c[0].metric(f"Wymagana pojemność {label}", f"{_liczba(pool['popyt_minuty'] / 60, 2)} h/mies.")
+            c[1].metric(f"Dostępna pojemność {label}", f"{_liczba(pool['netto_minuty'] / 60, 2)} h/mies.")
+            c[2].metric(f"Niedobór pojemności {label}", f"{_liczba(pool['niedobor_minuty'] / 60, 2)} h/mies.")
+            st.caption(f"Czynności dzienne: {_liczba(pool['dzienne_minuty'] / 60, 2)} h/mies. · "
+                       f"Backlog: {_liczba(last[f'Backlog {role} (h)'], 2)} h")
+        st.caption("Pojemność jest rozłączna według ról. Każdy pracownik wnosi 167 h × przydział / 100; "
+                   "czynności dzienne jego roli pomniejszają czas dostępny na sprawy. Niewykorzystany czas jest płatny.")
+    with st.expander("Szczegóły modelu"):
+        st.metric("Stan stabilny", summary["status_stanu_stabilnego"])
+        stable = kpi["wynik_miesieczny_w_stanie_stabilnym"]
+        st.write("Wynik w stanie stabilnym: " + (f"**{_kwota(stable)}/mies.**" if stable is not None else "**Niepotwierdzony**"))
+        st.caption("Potwierdzenie wymaga pełnych 12 miesięcy stabilnego przepływu obu ról, zakończeń, "
+                   "aktywnych spraw i wszystkich kosztów. Krótki rozruch nie potwierdza dojrzałej rentowności.")
+        st.metric("Pierwszy dodatni miesiąc", _miesiac(kpi["pierwszy_dodatni_miesiac"]))
+    with st.expander("Miesięczne szczegóły finansowe", expanded=False):
+        financial_columns = ["Miesiąc", "Przychód z ugód", "Przychód z wyroków", "Przychód razem",
+            "Koszt wynagrodzeń EH", "Koszt wynagrodzeń ugód", "Koszty ogólne aktywnych spraw",
+            "Koszt sekretariatu aktywnych spraw", "Łączny koszt miesięczny",
+            "Wynik miesięczny przed podatkiem", "Wynik skumulowany przed podatkiem"]
+        st.dataframe(table[financial_columns], hide_index=True, width="stretch")
+    with st.expander("Miesięczne przepływy i pojemność"):
+        st.dataframe(table.drop(columns=["Aktywne sprawy"]), hide_index=True, width="stretch")
+    st.caption("Zmiany obsady analizuj przez jawne ustawienia pracowników. Wymagana pojemność według ról "
+               "zastępuje pojedynczą minimalną liczbę etatów, która nie opisuje zróżnicowanego zespołu.")

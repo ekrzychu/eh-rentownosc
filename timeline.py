@@ -8,12 +8,12 @@ nie jest zatem uzgadniany z kosztem pracy zużytej przez pojedynczą kohortę.
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from math import ceil, fsum, isclose
+from math import fsum, isclose, isfinite
 
 from config import wczytaj_defaults
+from staff import GODZINY_ETATU_MIESIECZNIE, ROLE, nowy_pracownik, pojemnosc_obsady
 
 from model import (
-    MINUTY_DNIA_PRACY,
     SCIEZKI_BEZ_UGODY,
     SCIEZKI_UGODOWE,
     domyslne_parametry,
@@ -22,7 +22,6 @@ from model import (
 )
 
 
-GODZINY_ETATU_MIESIECZNIE = wczytaj_defaults()["organizacja"]["godziny_etatu_miesiecznie"]
 TOLERANCJA = 1e-8
 
 
@@ -36,6 +35,7 @@ class WorkPacket:
     stage: str
     minutes_remaining: float
     completion_id: int
+    role: str = "EH"
 
 
 @dataclass
@@ -161,82 +161,69 @@ def wyznacz_trwaly_break_even(
     }
 
 
+def _dane_przeplywu(parametry: dict) -> dict:
+    """Wspólne ścieżki, minuty i przychód bez rachunku kosztów Panelu 1.
+
+    Dzienny narzut lifecycle nie ogranicza rozłącznych zasobów ról kontraktu.
+    Właściwe czynności dzienne rozlicza pojemnosc_obsady.
+    """
+    return oblicz_model({**parametry, "codzienne_czynnosci": {},
+                        "koszt_staly_na_godzine": 0.0,
+                        "wynagrodzenie_pracownika_na_godzine": 0.0,
+                        "koszt_sekretariatu_na_godzine": 0.0,
+                        "sekretariat_minuty_na_sprawe": 0.0})
+
+
 def oblicz_pojemnosc_miesieczna(
-    parametry: dict, lifecycle: dict | None = None
+    parametry: dict, lifecycle: dict | None = None, *, pracownicy: list[dict] | None = None
 ) -> dict:
-    """Oblicza dostarczoną pojemność, koszt i stabilność systemu."""
+    """Każda rola ma własne płatne godziny, czynności dzienne i popyt."""
     waliduj_parametry(parametry)
     if lifecycle is None:
-        lifecycle = oblicz_model(parametry)
-    pracownicy = parametry["liczba_pracownikow"]
-    dzienne_na_pracownika = sum(parametry["codzienne_czynnosci"].values())
-    brutto_godziny = pracownicy * GODZINY_ETATU_MIESIECZNIE
-    brutto_minuty = brutto_godziny * 60
-    ekwiwalent_dni_miesiecznie = GODZINY_ETATU_MIESIECZNIE / (MINUTY_DNIA_PRACY / 60)
-    dzienne_godziny_na_pracownika = (
-        ekwiwalent_dni_miesiecznie * dzienne_na_pracownika / 60
-    )
-    dzienne_minuty = (
-        pracownicy * dzienne_godziny_na_pracownika * 60
-    )
-    netto_minuty = max(brutto_minuty - dzienne_minuty, 0.0)
-    popyt_minuty = lifecycle["bezposrednie_minuty_spraw"] / 12
-    koszt_godziny_zasobu = (
-        parametry["koszt_staly_na_godzine"]
-        + parametry["wynagrodzenie_pracownika_na_godzine"]
-    )
-    miesieczny_narzut_ogolny = (
-        brutto_godziny * parametry["koszt_staly_na_godzine"]
-    )
-    miesieczne_wynagrodzenia = (
-        brutto_godziny * parametry["wynagrodzenie_pracownika_na_godzine"]
-    )
-    miesieczny_koszt_obsady = miesieczny_narzut_ogolny + miesieczne_wynagrodzenia
-    tolerancja = max(TOLERANCJA, popyt_minuty * 1e-9)
-    if popyt_minuty < netto_minuty - tolerancja:
-        status = "Stabilna"
-    elif abs(popyt_minuty - netto_minuty) <= tolerancja:
-        status = "Na granicy"
-    else:
-        status = "Niewystarczająca"
+        lifecycle = _dane_przeplywu(parametry)
+    if pracownicy is None:
+        liczba = parametry["liczba_pracownikow"]
+        if not isinstance(liczba, int) or isinstance(liczba, bool) or liczba < 0:
+            raise ValueError("Liczba pracowników musi być nieujemną liczbą całkowitą.")
+        pracownicy = [nowy_pracownik(i) for i in range(liczba)]
+    pools = pojemnosc_obsady(pracownicy, parametry["codzienne_czynnosci"])
+    packets, completions = defaultdict(list), []
+    _dodaj_kohorte(1, lifecycle, parametry, domyslne_parametry_czasowe(), packets, completions)
+    for role in ROLE:
+        pool = pools[role]
+        demand = fsum(p.minutes_remaining for bucket in packets.values() for p in bucket if p.role == role)
+        pool["popyt_minuty"] = demand
+        pool["niedobor_minuty"] = max(demand - pool["netto_minuty"], 0.0)
+        tolerance = max(TOLERANCJA, demand * 1e-9)
+        pool["status"] = ("Niewystarczająca" if demand > pool["netto_minuty"] + tolerance
+                          else "Na granicy" if abs(demand - pool["netto_minuty"]) <= tolerance
+                          else "Stabilna")
+    statuses = [pool["status"] for pool in pools.values()]
+    status = ("Niewystarczająca" if "Niewystarczająca" in statuses else
+              "Na granicy" if "Na granicy" in statuses else "Stabilna")
     return {
-        "pojemnosc_brutto_minuty": brutto_minuty,
-        "czynnosci_dzienne_minuty": dzienne_minuty,
-        "pojemnosc_na_sprawy_minuty": netto_minuty,
-        "miesieczny_popyt_minuty": popyt_minuty,
-        "godziny_etatu_miesiecznie": GODZINY_ETATU_MIESIECZNIE,
-        "ekwiwalent_dni_pracy_miesiecznie": ekwiwalent_dni_miesiecznie,
-        "czynnosci_dzienne_na_pracownika_godziny": dzienne_godziny_na_pracownika,
-        "koszt_zasobu_na_godzine": koszt_godziny_zasobu,
-        "koszt_jednego_fte_miesiecznie": (
-            GODZINY_ETATU_MIESIECZNIE * koszt_godziny_zasobu
-        ),
-        "miesieczny_narzut_kosztow_ogolnych": miesieczny_narzut_ogolny,
-        "miesieczny_koszt_wynagrodzen": miesieczne_wynagrodzenia,
-        "miesieczny_koszt_obsady": miesieczny_koszt_obsady,
+        "role": pools,
+        "pracownicy": [dict(p) for p in pracownicy],
+        "pojemnosc_brutto_minuty": fsum(p["brutto_minuty"] for p in pools.values()),
+        "czynnosci_dzienne_minuty": fsum(p["dzienne_minuty"] for p in pools.values()),
+        "pojemnosc_na_sprawy_minuty": fsum(p["netto_minuty"] for p in pools.values()),
+        "miesieczny_popyt_minuty": fsum(p["popyt_minuty"] for p in pools.values()),
+        "miesieczny_koszt_wynagrodzen": fsum(p["wynagrodzenia"] for p in pools.values()),
         "status_pojemnosci": status,
-        "brak_pojemnosci_na_sprawy": dzienne_minuty >= brutto_minuty - TOLERANCJA,
     }
 
 
-def minimalna_liczba_pracownikow_dla_stabilnosci(
-    parametry: dict, lifecycle: dict | None = None
-) -> int | None:
-    """Zwraca najmniejszą całkowitą obsadę bez strukturalnego deficytu mocy."""
-    waliduj_parametry(parametry)
-    if lifecycle is None:
-        lifecycle = oblicz_model(parametry)
-    popyt = lifecycle["bezposrednie_minuty_spraw"] / 12
-    if popyt <= TOLERANCJA:
-        return 0
-    dzienne = sum(parametry["codzienne_czynnosci"].values())
-    netto_na_pracownika = (
-        GODZINY_ETATU_MIESIECZNIE * 60
-        - GODZINY_ETATU_MIESIECZNIE / (MINUTY_DNIA_PRACY / 60) * dzienne
-    )
-    if netto_na_pracownika <= TOLERANCJA:
-        return None
-    return max(1, ceil((popyt - TOLERANCJA) / netto_na_pracownika))
+def _koszty_kontraktu(zmiany: dict | None) -> dict:
+    koszty = wczytaj_defaults()["koszty_kontraktu"]
+    if zmiany is not None:
+        if not isinstance(zmiany, dict) or set(zmiany) - set(koszty):
+            raise ValueError("Nieznane koszty kontraktu.")
+        koszty.update(zmiany)
+    for nazwa, wartosc in koszty.items():
+        if (isinstance(wartosc, bool) or not isinstance(wartosc, (int, float))
+                or not isfinite(wartosc) or wartosc < 0):
+            raise ValueError(f"Koszt {nazwa} musi być nieujemną skończoną kwotą.")
+    return koszty
 
 
 def _dodaj_pakiet(
@@ -259,6 +246,7 @@ def _dodaj_pakiet(
         stage=stage,
         minutes_remaining=minutes_value,
         completion_id=completion_id,
+        role="UGODY" if stage in {"analiza_ugody", "zawarcie_ugody", "nieudana_proba_ugody"} else "EH",
     )
     due_packets[due_month].append(packet)
     completion = completions[completion_id]
@@ -413,33 +401,84 @@ def _dodaj_kohorte(
     return cohort_stats
 
 
+def _uwolnij_ii(pending: list[WorkPacket], completions: list[Completion], month: int) -> list[WorkPacket]:
+    """Przenosi do kolejki tylko nową część II instancji odblokowaną po I."""
+    released = []
+    for packet in pending:
+        if month < packet.due_month:
+            continue
+        completion = completions[packet.completion_id]
+        total = completion.stage_total_minutes["ii_instancja"]
+        already_released = total - packet.minutes_remaining
+        unlocked = total * _postep_etapow(completion, bez_ii=True)
+        minutes = min(packet.minutes_remaining, max(unlocked - already_released, 0.0))
+        if minutes > TOLERANCJA:
+            released.append(WorkPacket(month, packet.cohort_month, packet.path,
+                                       packet.stage, minutes, packet.completion_id, "EH"))
+            packet.minutes_remaining -= minutes
+    pending[:] = [p for p in pending if p.minutes_remaining > TOLERANCJA]
+    return released
+
+
+def _dolacz_do_kolejki(queue: deque[list[WorkPacket]], packets: list[WorkPacket]) -> None:
+    if not packets:
+        return
+    if queue and queue[-1][0].due_month == packets[0].due_month:
+        queue[-1].extend(packets)
+    else:
+        queue.append(packets)
+
+
+def _postep_etapow(completion: Completion, *, bez_ii: bool = False) -> float:
+    return min((min(completion.stage_executed_minutes[stage] / total, 1.0)
+                for stage, total in completion.stage_total_minutes.items()
+                if total > 0 and not (bez_ii and stage == "ii_instancja")), default=1.0)
+
+
+def _dostepne_minuty(packet: WorkPacket, completions: list[Completion]) -> float:
+    if packet.stage != "ii_instancja":
+        return packet.minutes_remaining
+    c = completions[packet.completion_id]
+    # Ułamki grupy mogą wejść do II instancji dopiero po pełnej I instancji.
+    unlocked = c.stage_total_minutes[packet.stage] * _postep_etapow(c, bez_ii=True)
+    return min(packet.minutes_remaining, max(unlocked - c.stage_executed_minutes[packet.stage], 0.0))
+
+
 def _wykonaj_prace(
-    queue: deque[list[WorkPacket]],
-    completions: list[Completion],
-    available_minutes: float,
+    queue: deque[list[WorkPacket]], completions: list[Completion], available_minutes: float,
 ) -> float:
-    """FIFO między datami; równy ułamek pozostałej pracy wewnątrz daty."""
+    """FIFO dostępnych pakietów; proporcjonalny przydział w tej samej dacie.
+
+    Zablokowana II instancja nie zatrzymuje pracy stanowiącej jej warunek.
+    Ponowny przebieg wykorzystuje moc zwolnioną po wykonaniu tych warunków.
+    """
     executed_parts = []
     remaining_capacity = available_minutes
-    while queue and remaining_capacity > TOLERANCJA:
-        # Najstarszy miesiąc wymagalności ma pierwszeństwo przed kolejnym.
-        bucket = queue[0]
-        remaining_work = fsum(packet.minutes_remaining for packet in bucket)
-        fraction = min(remaining_capacity / remaining_work, 1.0)
-        bucket_executed = []
-        # Każdy pakiet tej samej daty dostaje proporcjonalny udział pojemności.
-        for packet in bucket:
-            executed = packet.minutes_remaining * fraction
-            packet.minutes_remaining -= executed
-            completion = completions[packet.completion_id]
-            completion.stage_executed_minutes[packet.stage] += executed
-            bucket_executed.append(executed)
-        executed = fsum(bucket_executed)
-        executed_parts.append(executed)
-        remaining_capacity = max(remaining_capacity - executed, 0.0)
-        if fraction == 1.0:
-            queue.popleft()
-        else:
+    while remaining_capacity > TOLERANCJA:
+        pass_executed = 0.0
+        for bucket in list(queue):
+            eligible = [_dostepne_minuty(p, completions) for p in bucket]
+            work = fsum(eligible)
+            if work <= TOLERANCJA:
+                continue
+            fraction = min(remaining_capacity / work, 1.0)
+            pieces = []
+            for packet, minutes in zip(bucket, eligible):
+                executed = minutes * fraction
+                packet.minutes_remaining = max(packet.minutes_remaining - executed, 0.0)
+                completions[packet.completion_id].stage_executed_minutes[packet.stage] += executed
+                pieces.append(executed)
+            executed = fsum(pieces)
+            executed_parts.append(executed)
+            pass_executed += executed
+            remaining_capacity = max(remaining_capacity - executed, 0.0)
+            if all(p.minutes_remaining <= TOLERANCJA for p in bucket):
+                queue.remove(bucket)
+            if remaining_capacity <= TOLERANCJA:
+                break
+            # Wykonanie zwykłej pracy mogło odblokować starszą II instancję.
+            break
+        if pass_executed <= TOLERANCJA:
             break
     return fsum(executed_parts)
 
@@ -488,57 +527,25 @@ def _status_break_even(
 
 
 def klasyfikuj_status_kontraktu(
-    liczba_spraw: float,
-    wynik_jednostkowy_przed_podatkiem: float,
-    liczba_pracownikow: int,
-    minimalna_stabilna_obsada: int | None,
-    wynik_miesieczny_minimalnej_stabilnej_obsady: float | None,
-    wynik_miesieczny_biezacej_obsady: float | None,
-    status_pojemnosci: str,
+    liczba_spraw: float, status_pojemnosci: str, wynik_miesieczny: float | None
 ) -> dict:
-    """Klasyfikuje kontrakt na podstawie wykonalnej ekonomiki obsady."""
+    """Ocena wyłącznie skonfigurowanego kontraktu po potwierdzeniu dojrzałości."""
     if status_pojemnosci not in {"Stabilna", "Na granicy", "Niewystarczająca"}:
         raise ValueError("Nieznany status pojemności.")
-
-    ekonomika_sprawy_dodatnia = wynik_jednostkowy_przed_podatkiem > TOLERANCJA
-    rentowna_stabilna_obsada = (
-        minimalna_stabilna_obsada is not None
-        and wynik_miesieczny_minimalnej_stabilnej_obsady is not None
-        and wynik_miesieczny_minimalnej_stabilnej_obsady > TOLERANCJA
-    )
-
     if liczba_spraw <= TOLERANCJA:
-        etykieta = "Brak napływu spraw"
-    elif not ekonomika_sprawy_dodatnia:
-        etykieta = "Nierentowna ekonomika sprawy"
-    elif not rentowna_stabilna_obsada:
-        etykieta = "Brak rentownej stabilnej obsady"
-    elif liczba_pracownikow < minimalna_stabilna_obsada:
-        etykieta = "Rentowny, wymaga większej obsady"
-    elif (
-        wynik_miesieczny_biezacej_obsady is not None
-        and wynik_miesieczny_biezacej_obsady > TOLERANCJA
-    ):
-        etykieta = "Rentowny i stabilny"
+        label = "Brak napływu spraw"
+    elif status_pojemnosci == "Niewystarczająca":
+        label = "Niewystarczająca pojemność według roli"
+    elif wynik_miesieczny is None:
+        label = "Stabilny operacyjnie, rentowność niepotwierdzona"
+    elif wynik_miesieczny > TOLERANCJA:
+        label = "Rentowny i stabilny"
+    elif wynik_miesieczny < -TOLERANCJA:
+        label = "Stabilny, ale nierentowny"
     else:
-        etykieta = "Stabilny, ale obsada zbyt kosztowna"
-
-    return {
-        "etykieta": etykieta,
-        "ekonomika_sprawy_dodatnia": ekonomika_sprawy_dodatnia,
-        "status_pojemnosci": status_pojemnosci,
-        "minimalna_stabilna_obsada": minimalna_stabilna_obsada,
-        "wynik_miesieczny_minimalnej_stabilnej_obsady": (
-            wynik_miesieczny_minimalnej_stabilnej_obsady
-        ),
-        "wynik_miesieczny_biezacej_obsady": (
-            wynik_miesieczny_biezacej_obsady
-            if status_pojemnosci != "Niewystarczająca"
-            and minimalna_stabilna_obsada is not None
-            and liczba_pracownikow >= minimalna_stabilna_obsada
-            else None
-        ),
-    }
+        label = "Stabilny, wynik zerowy"
+    return {"etykieta": label, "status_pojemnosci": status_pojemnosci,
+            "wynik_miesieczny_biezacej_obsady": wynik_miesieczny}
 
 
 def _nominalny_miesiac_dojrzalosci(lifecycle: dict, czas: dict) -> int | None:
@@ -559,22 +566,23 @@ def _nominalny_miesiac_dojrzalosci(lifecycle: dict, czas: dict) -> int | None:
 
 
 def oblicz_model_czasowy(
-    parametry: dict | None = None, parametry_czasowe: dict | None = None
+    parametry: dict | None = None, parametry_czasowe: dict | None = None,
+    *, pracownicy: list[dict] | None = None, koszty_kontraktu: dict | None = None,
 ) -> dict:
     """Symuluje ciągły napływ, kolejkę pracy, przychody i koszt obsady."""
     if parametry is None:
         parametry = domyslne_parametry()
     czas = _parametry_czasowe(parametry_czasowe)
-    lifecycle = oblicz_model(parametry)
-    capacity = oblicz_pojemnosc_miesieczna(parametry, lifecycle)
-    minimum_staff = minimalna_liczba_pracownikow_dla_stabilnosci(
-        parametry, lifecycle
-    )
+    waliduj_parametry(parametry)
+    lifecycle = _dane_przeplywu(parametry)
+    capacity = oblicz_pojemnosc_miesieczna(parametry, lifecycle, pracownicy=pracownicy)
+    costs = _koszty_kontraktu(koszty_kontraktu)
     horizon = czas["horyzont_miesiace"]
     monthly_inflow = miesieczny_naplyw(lifecycle["ogolem"]["liczba_spraw"])
     due_packets: dict[int, list[WorkPacket]] = defaultdict(list)
     completions: list[Completion] = []
-    queue: deque[list[WorkPacket]] = deque()
+    queues = {role: deque() for role in ROLE}
+    pending_ii: list[WorkPacket] = []
     payments: dict[int, dict[str, float]] = defaultdict(
         lambda: {"ugoda": 0.0, "wyrok": 0.0}
     )
@@ -590,24 +598,46 @@ def oblicz_model_czasowy(
     total_executed_minutes = 0.0
 
     for month in range(1, horizon + 1):
+        billable_active_cases = max(cumulative_inflow - cumulative_completed, 0.0) + monthly_inflow
         cohort_stats = _dodaj_kohorte(
             month, lifecycle, parametry, czas, due_packets, completions
         )
         cohort_validations.append(cohort_stats)
         cumulative_inflow += monthly_inflow
 
-        new_packets = due_packets.pop(month, [])
-        backlog_start_minutes = fsum(
-            packet.minutes_remaining for bucket in queue for packet in bucket
-        )
-        new_due_minutes = fsum(packet.minutes_remaining for packet in new_packets)
+        planned_packets = due_packets.pop(month, [])
+        pending_ii.extend(p for p in planned_packets if p.stage == "ii_instancja")
+        new_packets = [p for p in planned_packets if p.stage != "ii_instancja"]
+        role_work = {}
+        # Najpierw ugody, potem EH: I instancja uwzględnia też wymaganą pracę ugód.
+        for role in ("UGODY", "EH"):
+            queue = queues[role]
+            start = fsum(p.minutes_remaining for bucket in queue for p in bucket)
+            packets = [p for p in new_packets if p.role == role]
+            if role == "EH":
+                packets += _uwolnij_ii(pending_ii, completions, month)
+            new = fsum(p.minutes_remaining for p in packets)
+            _dolacz_do_kolejki(queue, packets)
+            available = capacity["role"][role]["netto_minuty"]
+            executed = _wykonaj_prace(queue, completions, available)
+            if role == "EH":
+                # Zwykła praca wykonana teraz może odblokować II instancję
+                # jeszcze w tym miesiącu. Koszt i limit godzin nie zmieniają się.
+                released = _uwolnij_ii(pending_ii, completions, month)
+                new += fsum(p.minutes_remaining for p in released)
+                _dolacz_do_kolejki(queue, released)
+                executed += _wykonaj_prace(queue, completions, max(available - executed, 0.0))
+            end = fsum(p.minutes_remaining for bucket in queue for p in bucket)
+            if not isclose(start + new - executed, end, rel_tol=1e-10, abs_tol=1e-6):
+                raise RuntimeError(f"Kolejka {role} nie zachowuje minut.")
+            role_work[role] = {"start": start, "new": new, "executed": executed, "end": end}
+        backlog_start_minutes = fsum(w["start"] for w in role_work.values())
+        new_due_minutes = fsum(w["new"] for w in role_work.values())
+        executed_minutes = fsum(w["executed"] for w in role_work.values())
         total_available_work_minutes = backlog_start_minutes + new_due_minutes
         total_due_minutes += new_due_minutes
-        if new_packets:
-            queue.append(new_packets)
-        direct_capacity = capacity["pojemnosc_na_sprawy_minuty"]
-        executed_minutes = _wykonaj_prace(queue, completions, direct_capacity)
         total_executed_minutes += executed_minutes
+        direct_capacity = capacity["pojemnosc_na_sprawy_minuty"]
 
         settlements = 0.0
         first_instance_endings = 0.0
@@ -636,13 +666,14 @@ def oblicz_model_czasowy(
         settlement_revenue = payments[month]["ugoda"]
         judgment_revenue = payments[month]["wyrok"]
         revenue = settlement_revenue + judgment_revenue
-        overhead_cost = capacity["miesieczny_narzut_kosztow_ogolnych"]
+        overhead_cost = billable_active_cases * costs["ogolne_na_aktywna_sprawe"]
+        secretariat_cost = billable_active_cases * costs["sekretariat_na_aktywna_sprawe"]
         wage_cost = capacity["miesieczny_koszt_wynagrodzen"]
-        operation_cost = capacity["miesieczny_koszt_obsady"]
+        operation_cost = wage_cost + overhead_cost + secretariat_cost
         monthly_result = revenue - operation_cost
         cumulative_result += monthly_result
         backlog_end_minutes_month = fsum(
-            packet.minutes_remaining for bucket in queue for packet in bucket
+            packet.minutes_remaining for queue in queues.values() for bucket in queue for packet in bucket
         )
         if not isclose(
             backlog_start_minutes + new_due_minutes - executed_minutes,
@@ -665,7 +696,13 @@ def oblicz_model_czasowy(
             {
                 "Miesiąc": month,
                 "Nowe sprawy": monthly_inflow,
+                "II instancja oczekująca na pracę I (h)": fsum(p.minutes_remaining for p in pending_ii) / 60,
                 "Aktywne sprawy": active_cases,
+                "Aktywne sprawy na koniec miesiąca": active_cases,
+                "Sprawy naliczające koszt w miesiącu": billable_active_cases,
+                **{f"{label} {role} (h)": role_work[role][key] / 60
+                   for role in ROLE for label, key in (("Backlog początek", "start"), ("Nowa praca", "new"), ("Wykonana praca", "executed"), ("Backlog", "end"))},
+                **{f"Pojemność {role} (h)": capacity["role"][role]["netto_minuty"] / 60 for role in ROLE},
                 "Ugody zakończone": settlements,
                 "Zakończenia po I instancji": first_instance_endings,
                 "Zakończenia po II instancji": second_instance_endings,
@@ -683,14 +720,12 @@ def oblicz_model_czasowy(
                 "Backlog na koniec (h)": backlog_end_minutes_month / 60,
                 "Wykorzystanie pojemności (%)": utilization,
                 "Niewykorzystana pojemność (h)": unused_minutes / 60,
-                "Koszt niewykorzystanej pojemności": (
-                    unused_minutes
-                    / 60
-                    * capacity["koszt_zasobu_na_godzine"]
-                ),
-                "Miesięczny narzut kosztów ogólnych": overhead_cost,
+                "Koszt wynagrodzeń EH": capacity["role"]["EH"]["wynagrodzenia"],
+                "Koszt wynagrodzeń ugód": capacity["role"]["UGODY"]["wynagrodzenia"],
+                "Koszty ogólne aktywnych spraw": overhead_cost,
+                "Koszt sekretariatu aktywnych spraw": secretariat_cost,
                 "Miesięczny koszt wynagrodzeń": wage_cost,
-                "Miesięczny koszt obsady": operation_cost,
+                "Łączny koszt miesięczny": operation_cost,
                 "Wynik miesięczny przed podatkiem": monthly_result,
                 "Wynik skumulowany przed podatkiem": cumulative_result,
             }
@@ -711,6 +746,14 @@ def oblicz_model_czasowy(
         abs_tol=1e-6,
     ):
         raise RuntimeError("Liczba aktywnych spraw nie uzgadnia się z przepływem.")
+
+    future_minutes = fsum(p.minutes_remaining for bucket in due_packets.values() for p in bucket)
+    blocked_ii_minutes = fsum(p.minutes_remaining for p in pending_ii)
+    future_minutes += blocked_ii_minutes
+    all_cohort_minutes = fsum(c["direct_minutes"] for c in cohort_validations)
+    if not isclose(total_executed_minutes + backlog_end_minutes + future_minutes,
+                   all_cohort_minutes, rel_tol=1e-10, abs_tol=1e-6):
+        raise RuntimeError("Praca wykonana, zaległa i przyszła nie uzgadnia się z kohortami.")
 
     cohort_reference = {
         "przychod": lifecycle["ogolem"]["przychod"] / 12,
@@ -748,65 +791,41 @@ def oblicz_model_czasowy(
     nominal_maturity_month = _nominalny_miesiac_dojrzalosci(lifecycle, czas)
     target_monthly_revenue = lifecycle["ogolem"]["przychod"] / 12
     target_monthly_demand = lifecycle["bezposrednie_minuty_spraw"] / 12
-    current_staff_monthly_result = (
-        target_monthly_revenue - capacity["miesieczny_koszt_obsady"]
-        if capacity["status_pojemnosci"] != "Niewystarczająca"
-        and minimum_staff is not None
-        and parametry["liczba_pracownikow"] >= minimum_staff
-        else None
-    )
-    minimum_team_monthly_cost = (
-        minimum_staff
-        * GODZINY_ETATU_MIESIECZNIE
-        * capacity["koszt_zasobu_na_godzine"]
-        if minimum_staff is not None
-        else None
-    )
-    mature_result_at_minimum_staff = (
-        target_monthly_revenue - minimum_team_monthly_cost
-        if minimum_team_monthly_cost is not None
-        else None
-    )
     case_count = lifecycle["ogolem"]["liczba_spraw"]
-    unit_result = (
-        lifecycle["ogolem"]["wynik_przed_podatkiem"] / case_count
-        if case_count
-        else 0.0
-    )
-    contract_status = klasyfikuj_status_kontraktu(
-        liczba_spraw=case_count,
-        wynik_jednostkowy_przed_podatkiem=unit_result,
-        liczba_pracownikow=parametry["liczba_pracownikow"],
-        minimalna_stabilna_obsada=minimum_staff,
-        wynik_miesieczny_minimalnej_stabilnej_obsady=(
-            mature_result_at_minimum_staff
-        ),
-        wynik_miesieczny_biezacej_obsady=current_staff_monthly_result,
-        status_pojemnosci=capacity["status_pojemnosci"],
-    )
     last_twelve = rows[-12:] if len(rows) >= 12 else []
-    mature_revenue = (
-        sum(row["Przychód razem"] for row in last_twelve) / 12
-        if last_twelve else None
-    )
-    mature_demand = (
-        sum(row["Nowa praca (h)"] * 60 for row in last_twelve) / 12
-        if last_twelve else None
-    )
-    maturity_reached = (
+    mature_revenue = fsum(row["Przychód razem"] for row in last_twelve) / 12 if last_twelve else None
+    mature_demand = fsum(row["Nowa praca (h)"] * 60 for row in last_twelve) / 12 if last_twelve else None
+
+    def blisko(a, b):
+        return isclose(a, b, rel_tol=1e-9, abs_tol=1e-6)
+
+    expected_completions = {
+        "Ugody zakończone": monthly_inflow * lifecycle["udzialy_ugod"]["zakonczone_ugoda"] / 100,
+        "Zakończenia po II instancji": monthly_inflow * lifecycle["udzial_ii_instancji_w_portfelu"] / 100,
+    }
+    expected_completions["Zakończenia po I instancji"] = (monthly_inflow
+        - expected_completions["Ugody zakończone"] - expected_completions["Zakończenia po II instancji"])
+
+    # Pełne 12 miesięcy po najdłuższej aktywnej ścieżce i opóźnieniu płatności.
+    maturity_reached = bool(
         nominal_maturity_month is not None
-        and capacity["status_pojemnosci"] != "Niewystarczająca"
         and horizon >= nominal_maturity_month + 11
-        and mature_revenue is not None
-        and mature_demand is not None
-        and isclose(mature_revenue, target_monthly_revenue, rel_tol=1e-9, abs_tol=1e-6)
-        and isclose(mature_demand, target_monthly_demand, rel_tol=1e-9, abs_tol=1e-6)
+        and capacity["status_pojemnosci"] != "Niewystarczająca"
+        and last_twelve
+        and blisko(mature_demand, target_monthly_demand)
+        and all(blisko(row["Przychód razem"], target_monthly_revenue)
+                and all(blisko(row[key], expected) for key, expected in expected_completions.items())
+                and blisko(row["Aktywne sprawy"], last_twelve[0]["Aktywne sprawy"])
+                and blisko(row["Sprawy naliczające koszt w miesiącu"], last_twelve[0]["Sprawy naliczające koszt w miesiącu"])
+                and blisko(row["Łączny koszt miesięczny"], last_twelve[0]["Łączny koszt miesięczny"])
+                and all(blisko(row[f"Wykonana praca {role} (h)"] * 60, capacity["role"][role]["popyt_minuty"])
+                        and blisko(row[f"Backlog {role} (h)"], 0) for role in ROLE)
+                for row in last_twelve)
     )
-    steady_monthly_result = (
-        mature_revenue - capacity["miesieczny_koszt_obsady"]
-        if maturity_reached and mature_revenue is not None
-        else None
-    )
+    steady_monthly_result = (fsum(row["Wynik miesięczny przed podatkiem"] for row in last_twelve) / 12
+                             if maturity_reached else None)
+    current_staff_monthly_result = steady_monthly_result
+    contract_status = klasyfikuj_status_kontraktu(case_count, capacity["status_pojemnosci"], steady_monthly_result)
     gross_minutes = capacity["pojemnosc_brutto_minuty"]
     average_utilization = (
         sum(
@@ -831,11 +850,14 @@ def oblicz_model_czasowy(
         )
         else None
     )
-    backlog_months = (
-        backlog_end_minutes / capacity["pojemnosc_na_sprawy_minuty"]
-        if capacity["pojemnosc_na_sprawy_minuty"] > TOLERANCJA
-        else (0.0 if backlog_end_minutes <= TOLERANCJA else None)
-    )
+    role_backlog_months = {}
+    for role in ROLE:
+        backlog = rows[-1][f"Backlog {role} (h)"] * 60
+        available = capacity["role"][role]["netto_minuty"]
+        role_backlog_months[role] = (backlog / available if available > TOLERANCJA
+                                     else 0.0 if backlog <= TOLERANCJA else None)
+    backlog_months = (max(role_backlog_months.values())
+                      if all(v is not None for v in role_backlog_months.values()) else None)
     average_capacity_delay = (
         completed_delay_weight / completed_cases_for_delay
         if completed_cases_for_delay > TOLERANCJA
@@ -880,39 +902,18 @@ def oblicz_model_czasowy(
         current_staff_monthly_result is not None
         and current_staff_monthly_result < -TOLERANCJA
     )
-    current_capacity_delay = (
-        max(horizon - queue[0][0].due_month, 0) if queue else 0
+    current_capacity_delay = max(
+        (horizon - bucket[0].due_month for queue in queues.values() for bucket in queue), default=0
     )
-    lifecycle_resource_hours = lifecycle["laczne_godziny_zasobu_lifecycle"]
-    supplied_annual_hours = capacity["pojemnosc_brutto_minuty"] / 60 * 12
-    annual_capacity_balance = supplied_annual_hours - lifecycle_resource_hours
-    unused_capacity_cost_total = sum(
-        row["Koszt niewykorzystanej pojemności"] for row in rows
-    )
-    startup_deficit = any(
-        row["Wynik skumulowany przed podatkiem"] < -TOLERANCJA
-        for row in rows[: min(nominal_maturity_month or horizon, len(rows))]
-    )
-    lifecycle_total_cost = lifecycle["koszt_lifecycle_razem"]
-    temporal_annual_cost = capacity["miesieczny_koszt_obsady"] * 12
-    reconciliation_difference = temporal_annual_cost - lifecycle_total_cost
-    expected_reconciliation_difference = (
-        annual_capacity_balance * capacity["koszt_zasobu_na_godzine"]
-    )
-    if not isclose(
-        reconciliation_difference,
-        expected_reconciliation_difference,
-        rel_tol=1e-10,
-        abs_tol=1e-6,
-    ):
-        raise RuntimeError("Koszty lifecycle i czasowe nie uzgadniają się.")
+    startup_deficit = any(row["Wynik skumulowany przed podatkiem"] < -TOLERANCJA
+                          for row in rows[:min(nominal_maturity_month or horizon, len(rows))])
 
     return {
         "parametry_czasowe": czas,
+        "koszty_kontraktu": costs,
         "tabela_miesieczna": rows,
         "pojemnosc": {
             **capacity,
-            "minimalna_liczba_pracownikow_dla_stabilnosci": minimum_staff,
             "srednie_wykorzystanie_percent": average_utilization,
             "biezace_wykorzystanie_percent": current_utilization,
             "ostatnie_12_miesiecy_wykorzystanie_percent": recent_utilization,
@@ -921,9 +922,6 @@ def oblicz_model_czasowy(
             "status_kontraktu": contract_status["etykieta"],
             "status_kontraktu_skladniki": contract_status,
             "wynik_miesieczny_biezacej_obsady": current_staff_monthly_result,
-            "wynik_miesieczny_minimalnej_stabilnej_obsady": (
-                mature_result_at_minimum_staff
-            ),
             "break_even_skumulowany": trwaly_break_even["etykieta"],
             "break_even_status": trwaly_break_even["status"],
             "break_even_miesiac": trwaly_break_even["miesiac"],
@@ -958,6 +956,7 @@ def oblicz_model_czasowy(
                 row["Backlog na koniec (h)"] for row in rows
             ),
             "miesiace_backlogu": backlog_months,
+            "miesiace_backlogu_wedlug_roli": role_backlog_months,
             "srednie_opoznienie_pojemnosci_miesiace": average_capacity_delay,
             "maksymalne_opoznienie_pojemnosci_miesiace": maximum_capacity_delay,
             "biezace_opoznienie_pojemnosci_miesiace": current_capacity_delay,
@@ -969,28 +968,18 @@ def oblicz_model_czasowy(
         },
         "diagnoza": {
             "deficyt_rozruchowy": startup_deficit,
-            "koszt_niewykorzystanej_pojemnosci_horyzont": unused_capacity_cost_total,
             "strukturalny_niedobor_pojemnosci": (
                 capacity["status_pojemnosci"] == "Niewystarczająca"
             ),
-            "marza_lifecycle_przed_podatkiem": lifecycle["ogolem"][
-                "marza_przed_podatkiem"
-            ],
             "roczny_przychod_lifecycle": lifecycle["ogolem"]["przychod"],
-            "roczne_wymagane_godziny_zasobu": lifecycle_resource_hours,
-            "dostarczane_godziny_zespolu_rocznie": supplied_annual_hours,
-            "bilans_pojemnosci_rocznie_godziny": annual_capacity_balance,
-            "wynik_miesieczny_przy_minimalnej_obsadzie": (
-                mature_result_at_minimum_staff
-            ),
-            "koszt_lifecycle_roczny": lifecycle_total_cost,
-            "koszt_operacji_czasowy_roczny": temporal_annual_cost,
-            "roznica_kosztu_czasowy_minus_lifecycle": reconciliation_difference,
-            "koszt_niewykorzystanej_pojemnosci_rocznie": max(
-                expected_reconciliation_difference, 0.0
-            ),
+            "koszt_kontraktu_horyzont": fsum(row["Łączny koszt miesięczny"] for row in rows),
         },
         "walidacja": {
+            "role": {role: {
+                "nalezna_minuty": fsum(row[f"Nowa praca {role} (h)"] * 60 for row in rows),
+                "wykonana_minuty": fsum(row[f"Wykonana praca {role} (h)"] * 60 for row in rows),
+                "backlog_minuty": rows[-1][f"Backlog {role} (h)"] * 60,
+            } for role in ROLE},
             "kohorta_miesieczna": cohort_reference,
             "kohorta_zbudowana": cohort_validations[0] if cohort_validations else {},
             "roczny_przychod_lifecycle": lifecycle["ogolem"]["przychod"],
@@ -1002,6 +991,9 @@ def oblicz_model_czasowy(
                 mature_demand * 12 if maturity_reached and mature_demand is not None else None
             ),
             "praca_nalezna_do_horyzontu_minuty": total_due_minutes,
+            "praca_wszystkich_kohort_minuty": all_cohort_minutes,
+            "praca_przyszla_minuty": future_minutes,
+            "w_tym_ii_oczekujaca_na_i_minuty": blocked_ii_minutes,
             "praca_wykonana_minuty": total_executed_minutes,
             "backlog_minuty": backlog_end_minutes,
             "laczny_naplyw_spraw": cumulative_inflow,
@@ -1011,59 +1003,16 @@ def oblicz_model_czasowy(
     }
 
 
-def porownaj_obsade(
-    parametry: dict,
-    parametry_czasowe: dict | None = None,
-    maksymalna_liczba_pracownikow: int | None = None,
-) -> list[dict]:
-    """Porównuje warianty obsady bez automatycznego wyboru najlepszego."""
-    czas = _parametry_czasowe(parametry_czasowe)
-    lifecycle = oblicz_model(parametry)
-    minimum = minimalna_liczba_pracownikow_dla_stabilnosci(parametry, lifecycle)
-    if maksymalna_liczba_pracownikow is None:
-        maksymalna_liczba_pracownikow = max(
-            parametry["liczba_pracownikow"] + 3,
-            (minimum + 2) if minimum is not None else 5,
-            1,
-        )
-    maksymalna_liczba_pracownikow = min(max(maksymalna_liczba_pracownikow, 1), 20)
+def porownaj_obsade(parametry: dict, parametry_czasowe: dict | None = None,
+                     *, scenariusze: dict[str, list[dict]], koszty_kontraktu: dict | None = None) -> list[dict]:
+    """Porównuje wyłącznie jawnie podane składy, bez wymyślania etatów i stawek."""
     rows = []
-    for employees in range(1, maksymalna_liczba_pracownikow + 1):
-        scenario_parameters = {**parametry, "liczba_pracownikow": employees}
-        result = oblicz_model_czasowy(scenario_parameters, czas)
-        first_positive = result["kpi"]["pierwszy_dodatni_miesiac"]
-        rows.append(
-            {
-                "Liczba pracowników": employees,
-                "Pojemność brutto (h/mies.)": result["pojemnosc"][
-                    "pojemnosc_brutto_minuty"
-                ] / 60,
-                "Pojemność na sprawy (h/mies.)": result["pojemnosc"][
-                    "pojemnosc_na_sprawy_minuty"
-                ] / 60,
-                "Status pojemności": result["pojemnosc"]["status_pojemnosci"],
-                "Wykorzystanie": result["pojemnosc"][
-                    "ostatnie_12_miesiecy_wykorzystanie_percent"
-                ],
-                "Backlog (h)": result["podsumowanie"][
-                    "backlog_koniec_godziny"
-                ],
-                "Miesięczny narzut kosztów ogólnych": result["pojemnosc"][
-                    "miesieczny_narzut_kosztow_ogolnych"
-                ],
-                "Miesięczne wynagrodzenia": result["pojemnosc"][
-                    "miesieczny_koszt_wynagrodzen"
-                ],
-                "Miesięczny koszt obsady": result["pojemnosc"][
-                    "miesieczny_koszt_obsady"
-                ],
-                "Pierwszy dodatni miesiąc": (
-                    f"Miesiąc {first_positive}" if first_positive is not None else "Brak"
-                ),
-                "Break-even": result["kpi"]["break_even_skumulowany"],
-                "Dojrzały wynik miesięczny": result["kpi"][
-                    "wynik_miesieczny_w_stanie_stabilnym"
-                ],
-            }
-        )
+    for nazwa, pracownicy in scenariusze.items():
+        wynik = oblicz_model_czasowy(parametry, parametry_czasowe, pracownicy=pracownicy,
+                                    koszty_kontraktu=koszty_kontraktu)
+        rows.append({"Wariant": nazwa, "Liczba pracowników": len(pracownicy),
+                     "Status pojemności": wynik["pojemnosc"]["status_pojemnosci"],
+                     "Koszt wynagrodzeń": wynik["pojemnosc"]["miesieczny_koszt_wynagrodzen"],
+                     "Backlog (h)": wynik["podsumowanie"]["backlog_koniec_godziny"],
+                     "Dojrzały wynik miesięczny": wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"]})
     return rows
