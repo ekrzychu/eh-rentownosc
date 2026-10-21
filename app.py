@@ -97,14 +97,14 @@ with st.sidebar:
         koszt_staly = st.number_input(
             "Narzut kosztów ogólnych / h pracownika", min_value=0.0,
             value=domyslne["koszt_staly_na_godzine"], step=1.0,
-            help="Referencyjny narzut godzinowy wyłącznie w Ekonomice sprawy.",
+            help="Wspólna stawka od godzin pracy i czynności dziennych w obu panelach.",
         )
         koszt_sekretariatu = st.number_input(
             "Koszt sekretariatu / h", min_value=0.0,
             value=domyslne["koszt_sekretariatu_na_godzine"], step=1.0,
-            help="Stawka wyłącznie dla jednorazowych czynności sekretariatu w Ekonomice sprawy.",
+            help="Wspólna stawka jednorazowej obsługi sekretariatu w obu panelach.",
         )
-        st.caption("Narzut godzinowy i jednorazowy sekretariat dotyczą tylko Ekonomiki sprawy. Stawki prawników pochodzą ze wspólnej obsady.")
+        st.caption("Oba panele korzystają z tych samych kosztów ogólnych i sekretariatu. Stawki prawników pochodzą ze wspólnej obsady.")
 
     with st.expander("Obsada kontraktu"):
         liczba_pracownikow = int(st.number_input(

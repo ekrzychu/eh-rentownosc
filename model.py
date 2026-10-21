@@ -4,6 +4,7 @@ Pojemność, kolejka, opóźnienia przychodu i koszt utrzymywanej obsady należ�
 do timeline.py. Ten model wycenia wyłącznie zasób zużyty przez kohortę.
 """
 
+from costs import sprawdz_stare_koszty, wspolne_stawki
 from math import fsum, isfinite
 
 from config import parametry_modelu, wczytaj_defaults
@@ -33,6 +34,7 @@ def waliduj_parametry(parametry: dict) -> None:
     """Waliduje wspólne założenia przed uruchomieniem któregokolwiek modelu."""
     if "wynagrodzenie_pracownika_na_godzine" in parametry:
         raise ValueError("Stawki prawników należy podawać wyłącznie w obsadzie pracowników.")
+    sprawdz_stare_koszty(parametry.get("koszty_kontraktu"))
     calkowite = ("liczba_spraw",)
     for nazwa in calkowite:
         wartosc = parametry[nazwa]
@@ -411,7 +413,7 @@ def oblicz_grupe(grupa: dict, parametry: dict, minuty: dict, stawki: dict, dzien
     place = fsum(koszt["place"].values()) + place_dzienne
     narzut = koszt["narzut"] + narzut_dzienny
     bezposredni = fsum(minuty[r] / 60 * ((stawki[r] or 0) + parametry["koszt_staly_na_godzine"]) for r in ROLE)
-    sekretariat = parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"]
+    sekretariat = wspolne_stawki(parametry)["secretariat_cost_per_case"]
     razem = place + narzut + sekretariat
     liczba = grupa["liczba"]
     przychod = grupa["oczekiwane_wynagrodzenie"]
@@ -568,9 +570,12 @@ def oblicz_model(parametry: dict | None = None) -> dict:
         "role": role, "stawki_wedlug_roli": stawki,
         "narzut_kosztow_ogolnych_na_godzine": parametry["koszt_staly_na_godzine"],
         "koszt_narzutu_ogolnego_lifecycle": ogolem["koszt_narzutu_ogolnego"],
+        "sredni_narzut_ogolny_na_sprawe": ogolem["koszt_narzutu_ogolnego"] / liczba if liczba else 0.0,
+        "wynagrodzenia_bezposrednie": fsum(role[r]["bezposrednie_minuty"] / 60 * (stawki[r] or 0) for r in ROLE),
+        "wynagrodzenia_dzienne": role["EH"]["czynnosci_dzienne_lifecycle_godziny"] * (stawki["EH"] or 0),
         "koszt_wynagrodzen_lifecycle": ogolem["koszt_wynagrodzenia"],
         "koszt_sekretariatu_lifecycle": ogolem["koszt_sekretariatu"],
-        "koszt_sekretariatu_na_sprawe": parametry["sekretariat_minuty_na_sprawe"] / 60 * parametry["koszt_sekretariatu_na_godzine"],
+        "koszt_sekretariatu_na_sprawe": wspolne_stawki(parametry)["secretariat_cost_per_case"],
         "koszt_sekretariatu_na_godzine": parametry["koszt_sekretariatu_na_godzine"],
         "koszt_lifecycle_razem": ogolem["koszt_calkowity"], "czynnosci_dzienne_lifecycle_koszt": koszt_dzienny,
         "narzut_dzienny_na_sprawe": koszt_dzienny / liczba if liczba else 0.0,

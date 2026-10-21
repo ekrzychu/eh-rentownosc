@@ -1,3 +1,117 @@
+# Uzgodnienie wspólnych kosztów obu paneli — 21 października 2026
+
+Punkt wyjścia: `35188ab` na `feature/role-based-timeline-costs`.
+Bazowa walidacja: 236 testów zakończonych powodzeniem przed zmianami.
+Poniższy raport zastępuje wcześniejsze wnioski o niezależnych stawkach Panelu 2.
+Dalsza część pliku zachowuje historyczny audyt poprzedniego refaktoru.
+
+Wspólny narzut jest pobierany wyłącznie z `koszt_staly_na_godzine` (36 zł/h).
+Panel 1: `(roczne godziny bezpośrednie + roczne godziny dzienne) × stawka`.
+Panel 2: `(wykonane godziny spraw + wykonane godziny dzienne) × stawka`.
+To alokacja kosztów od pracy; nie jest stałym kalendarzowym budżetem kosztowym.
+Usunięto kontrolki i domyślne parametry niezależnych opłat za sprawomiesiąc.
+Stare niezerowe parametry są odrzucane jawnie, również w dołączonym słowniku
+parametrów i starej konfiguracji TOML. Zerowe słowniki pozostają bezkosztową
+warstwą zgodności dla istniejących wywołań API.
+
+Sekretariat: `minuty / 60 × stawka × waga sprawy`, raz przy inicjacji
+przyjęcia EH. `SEKRETARIAT_OBSLUZONY` zapisuje tożsamość, wagę, miesiąc i koszt.
+Nie nalicza się go przy samym napływie, ponownej pracy, II instancji, zamknięciu
+ani płatności. Zerominutowe przyjęcie z dostępną rolą inicjuje obsługę; bez
+wymaganej roli nie występuje zdarzenie. Sekretariat nie zajmuje minut prawników,
+nie dodaje pensji, nie zmienia ścieżek ani zegarów formalnych.
+
+Czynności dzienne nadal należą do jednej osoby EH, raz dla zespołu. 90 min
+przez 167/8 dni to 31,3125 h/mies. i 375,75 h/rok. Wynagrodzenie tych godzin
+jest już w finansowanym przydziale. Wykonane godziny mają narzut 1127,25 zł/mies.
+przy 36 zł/h; niewykonana część jest raportowana osobno i nie ma narzutu.
+Panel 1 alokuje roczną kwotę dzienną na roczny napływ.
+
+## Referencja 600 spraw i dokładnie dopasowane finansowane godziny
+
+Porównanie dotyczy wyłącznie miesięcy 109–120 kontraktu i rocznej kohorty.
+Domyślne ścieżki, WPS, P1/P2/P3, czasy i kalendarz pozostały zachowane.
+Każda osoba zarabia 59,88 zł/h. Przydziały: EH1/EH2 po 100%,
+EH3 `((4414.875/12 + 375.75/12 - 334)/167)*100`,
+UGODY `(341.25/12/167)*100`, bez zaokrągleń procentów.
+
+W obu panelach: przychód 451963,254 zł; płace 307296,675 zł;
+EH bezpośrednio 4414,875 h; UGODY 341,250 h; dzienne 375,750 h.
+Łącznie 5131,875 h/rok. Ukończenia: 600, backlog wykonalnej pracy 0 h,
+dojrzałość `True`. Wszystkie porównywane kwoty różnią się o mniej niż 0,01 zł.
+
+| Narzut zł/h | Koszty ogólne zł/rok | Sekretariat zł/rok | Koszt zł/rok | Wynik zł/rok |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0,000 | 0 | 307296,675 | 144666,579 |
+| 10 | 51318,750 | 0 | 358615,425 | 93347,829 |
+| 36 | 184747,500 | 0 | 492044,175 | −40080,921 |
+| 60 | 307912,500 | 0 | 615209,175 | −163245,921 |
+| 36 + sekretariat 30 min × 30 zł/h | 184747,500 | 9000 | 501044,175 | −49080,921 |
+
+Średni narzut na sprawę: 307,9125 zł. Jednorazowy sekretariat: 15 zł/sprawę.
+Te wskaźniki są tylko pochodną ekonomiczną; nie zastępują w kontrakcie
+rzeczywistego naliczania od wykonanych godzin i zdarzeń.
+Wyniki: [wspolne_koszty.json](audit_results/wspolne_koszty.json).
+
+## Zasadne różnice, diagnostyka i korekta numeryczna
+
+Panel 2 płaci niewykorzystany przydział. Panel 1 korzysta z arytmetycznej
+średniej stawek roli; różny rozkład wynagrodzeń względem przydziałów może
+powodować odmienną płacę efektywną. Diagnostyka `porownaj_panele` pokazuje
+oba efekty osobno oraz zmianę pracy w porównywanym okresie. Niedobór ról,
+backlog, oczekiwanie formalne, przyszła II instancja i płatności po okresie
+mogą uzasadniać różnice przychodu i wyniku. Wskaźniki nie korygują żadnego
+panelu w celu wymuszenia równości. Całego 120-miesięcznego wyniku nie
+porównuje się z jedną roczną kohortą.
+
+Wykryto błąd numeryczny w istniejącej inicjacji etapów: po odjęciu pojemności
+śladowa dodatnia reszta float mogła rozpocząć następną sprawę. Przy nowym
+sekretariacie tworzyłoby to przedwczesny koszt. Dodatnia praca inicjuje etap
+przy pojemności powyżej istniejącej tolerancji 1e-8 minuty. Zerominutowe
+etapy zachowują dotychczasowe reguły dostępności roli. Dodano regresję
+(1 h dostępności, dwie sprawy po 1 h przyjęcia); nie przebudowano silnika.
+
+## Walidacja bieżącej implementacji
+
+- Pełne `python -m unittest discover -v`: **249 testów, OK**, 67,225 s.
+  Obejmuje 15 Streamlit AppTests, 13 nowych regresji wspólnego kosztu i
+  zachowane regresje ścieżek, FIFO, pojemności, przychodów oraz minut.
+- `reconcile_shared_costs.py`: pięć wariantów uzgodnienia, OK, tolerancja 0,01 zł.
+- `diagnostic_costs.py --output-dir /tmp/eh-shared-audit`: 10 scenariuszy,
+  punkty 12/24/60 miesięcy, pełne bilanse zdarzeń, kosztów i pracy oraz
+  most do modelu historycznego, OK. Aktualny skrót:
+  [wspolne_scenariusze.csv](audit_results/wspolne_scenariusze.csv).
+- `audit_checks.py`: 40 losowych scenariuszy z dodatnim sekretariatem,
+  oddzielny audyt miesięcznych kosztów oraz zachowania spraw i minut, OK.
+- `reproduce_baseline.py`: 10 scenariuszy i 600 historycznych miesięcy
+  zgodnych z niezmienionym punktem odniesienia `99a2f1e`, OK.
+- Kompilacja wszystkich plików Python, importy modułów i `git diff --check`: OK.
+  Repozytorium nie ma dodatkowo skonfigurowanego lintera ani kontroli typów.
+- Pomiary 60/120/360 miesięcy: stabilny zespół 0,205/0,552/1,333 s;
+  przeciążenie EH 0,302/0,889/7,078 s; brak pracowników 0,333/0,944/8,271 s.
+  Pełne dane: [wydajnosc.json](audit_results/wydajnosc.json).
+
+AppTesty sprawdzają zmianę narzutu, czasu i stawki sekretariatu w obu
+widokach, zachowanie ustawień i brak dawnych kontrolek Panelu 2.
+Testy finansowe kontrolują miesięczne rozbicie narzutu, sekretariat z wagami,
+płace, koszty, wynik i kumulację, bez NaN/inf w liczbowych wynikach referencji.
+Koszty nie zmieniają ścieżek, pracy, pojemności, inicjacji etapów ani przychodu.
+
+Nieśledzony test wcześniejszej rozbieżności zachowano bez zmiany treści jako
+`audit_results/history/test_koszty_ogolne.py.txt`; SHA256:
+`337ca8d347150fc025ba90b030979d9ea10ebcfda8c8477007ee6554530906e3`.
+Nie jest aktywnym testem, ponieważ celowo dotyczy wycofanej księgowości.
+
+Ograniczenia pozostają jawne: model wartości oczekiwanych, stały przydział
+w symulacji, brak osobnego grafiku sekretariatu i brak stałego miesięcznego
+budżetu narzutów. Panel 2 prezentuje wynik przed podatkiem.
+Skrypty audytu stanowią niezależne sprawdzenie arytmetyki i zdarzeń,
+a nie drugi niezależny silnik harmonogramowania.
+
+---
+
+# Archiwum audytu poprzedniej implementacji
+
 # Audyt logiki spraw, harmonogramu FIFO i kosztów faktycznej pracy
 
 Data: 19 października 2026. Gałąź: `feature/role-based-timeline-costs`.

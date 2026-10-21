@@ -11,7 +11,8 @@ from heapq import heappush, heappop
 from dataclasses import dataclass, field
 from functools import lru_cache
 from workflow import Etap, etapy_sprawy
-from math import fsum, isclose, isfinite
+from math import fsum, isclose
+from costs import sprawdz_stare_koszty, wspolne_stawki
 
 from config import wczytaj_defaults
 from staff import GODZINY_ETATU_MIESIECZNIE, ROLE, pojemnosc_obsady
@@ -72,6 +73,7 @@ class Sprawa:
     starty: dict = field(default_factory=dict)
     konce_pracy: dict = field(default_factory=dict)
     termin: int | None = None
+    sekretariat_rozpoznany: bool = False
     plan: tuple = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -255,19 +257,6 @@ def oblicz_pojemnosc_miesieczna(
     }
 
 
-def _koszty_kontraktu(zmiany: dict | None) -> dict:
-    koszty = wczytaj_defaults()["koszty_kontraktu"]
-    if zmiany is not None:
-        if not isinstance(zmiany, dict) or set(zmiany) - set(koszty):
-            raise ValueError("Nieznane koszty kontraktu.")
-        koszty.update(zmiany)
-    for nazwa, wartosc in koszty.items():
-        if (isinstance(wartosc, bool) or not isinstance(wartosc, (int, float))
-                or not isfinite(wartosc) or wartosc < 0):
-            raise ValueError(f"Koszt {nazwa} musi być nieujemną skończoną kwotą.")
-    return koszty
-
-
 def _status_break_even(
     break_even: dict, capacity_status: str, steady_monthly_result: float | None
 ) -> str:
@@ -332,9 +321,11 @@ def _nominalny_miesiac_dojrzalosci(lifecycle: dict, czas: dict) -> int | None:
 
 def podsumuj_finanse_kontraktu(rows: list[dict]) -> dict:
     """Jawne uzgodnienie całego horyzontu; wszystkie składniki pochodzą z miesięcy."""
-    columns = ("Wynagrodzenia EH", "Wynagrodzenia ugód", "Koszty ogólne spraw, nad którymi pracowano",
-               "Koszt sekretariatu spraw, nad którymi pracowano", "Łączny koszt miesięczny", "Przychód razem",
+    columns = ("Wynagrodzenia EH", "Wynagrodzenia ugód", "Narzut kosztów ogólnych razem",
+               "Jednorazowe koszty sekretariatu", "Łączny koszt miesięczny", "Przychód razem",
                "Wynik miesięczny przed podatkiem", "Sprawy, nad którymi pracowano w miesiącu")
+    columns += ("Narzut od wykonanej pracy nad sprawami", "Narzut od wspólnych czynności dziennych",
+                "Sprawy z jednorazową obsługą sekretariatu")
     result = {column: fsum(row[column] for row in rows) for column in columns}
     components = fsum(result[column] for column in columns[:4])
     if not isclose(components, result["Łączny koszt miesięczny"], rel_tol=1e-10, abs_tol=1e-6):
@@ -363,7 +354,8 @@ def oblicz_model_czasowy(
     waliduj_parametry(parametry)
     lifecycle = _dane_przeplywu(parametry)
     capacity = oblicz_pojemnosc_miesieczna(parametry, lifecycle, pracownicy=pracownicy)
-    costs = _koszty_kontraktu(koszty_kontraktu)
+    sprawdz_stare_koszty(koszty_kontraktu)
+    costs = wspolne_stawki(parametry)
     horizon = czas["horyzont_miesiace"]
     monthly_inflow = miesieczny_naplyw(lifecycle["ogolem"]["liczba_spraw"])
     queues = {r: [] for r in ROLE}
@@ -411,11 +403,11 @@ def oblicz_model_czasowy(
         if not isclose(cohort_stats[built], cohort_reference[name], rel_tol=1e-10, abs_tol=1e-6):
             raise RuntimeError(f"Miesięczna kohorta nie uzgadnia pola {name}.")
 
-    def event(kind, c, minutes=0.0):
+    def event(kind, c, minutes=0.0, cost=0.0):
         if zapisz_zdarzenia:
             events.append({"miesiac": month, "rodzaj": kind, "sprawa": c.identyfikator,
                            "waga": c.waga, "sciezka": c.sciezka, "wynik": c.wynik,
-                           "etap": c.etap.nazwa, "rola": c.etap.rola, "minuty": minutes})
+                           "etap": c.etap.nazwa, "rola": c.etap.rola, "minuty": minutes, "koszt": cost})
 
     def enqueue(c, kontynuacja=False):
         c.dostepna_od = month
@@ -449,6 +441,7 @@ def oblicz_model_czasowy(
         cumulative_inflow += monthly_inflow
         available = {r: capacity["role"][r]["netto_minuty"] for r in ROLE}
         worked = set()
+        secretariat_weights = []
         stage_finished = defaultdict(float)
         while True:
             candidates = []
@@ -456,7 +449,9 @@ def oblicz_model_czasowy(
                 if not queues[r] or capacity["role"][r]["netto_minuty"] <= 0:
                     continue
                 c = active[queues[r][0][2]]
-                if c.pozostale == 0 or available[r] > 0:
+                # Reszta poniżej tolerancji po odejmowaniu pojemności nie
+                # może inicjować kolejnej sprawy i jej kosztu sekretariatu.
+                if c.pozostale == 0 or available[r] > TOLERANCJA:
                     candidates.append((queues[r][0], r))
             if not candidates:
                 break
@@ -469,6 +464,11 @@ def oblicz_model_czasowy(
                 if stage.zegar:
                     c.termin = month + lags[stage.zegar]
                 event("inicjacja", c)
+                if stage.nazwa == "przyjecie" and not c.sekretariat_rozpoznany:
+                    c.sekretariat_rozpoznany = True
+                    secretariat_weights.append(c.waga)
+                    event("SEKRETARIAT_OBSLUZONY", c,
+                          cost=costs["secretariat_cost_per_case"] * c.waga)
             executed = min(c.pozostale, available[r])
             if executed > 0:
                 event("praca", c, executed)
@@ -517,8 +517,13 @@ def oblicz_model_czasowy(
         settlement_revenue = payments[month]["ugoda"]
         judgment_revenue = payments[month]["wyrok"]
         revenue = settlement_revenue + judgment_revenue
-        overhead_cost = worked_count * costs["ogolne_na_aktywna_sprawe"]
-        secretariat_cost = worked_count * costs["sekretariat_na_aktywna_sprawe"]
+        direct_hours = fsum(w["executed"] for w in role_work.values()) / 60
+        daily_hours = capacity["czynnosci_dzienne_minuty"] / 60
+        direct_overhead = direct_hours * costs["general_overhead_per_hour"]
+        daily_overhead = daily_hours * costs["general_overhead_per_hour"]
+        overhead_cost = direct_overhead + daily_overhead
+        secretariat_count = fsum(secretariat_weights)
+        secretariat_cost = secretariat_count * costs["secretariat_cost_per_case"]
         wage_cost = capacity["miesieczny_koszt_wynagrodzen"]
         operation_cost = wage_cost + overhead_cost + secretariat_cost
         monthly_result = revenue - operation_cost
@@ -604,8 +609,11 @@ def oblicz_model_czasowy(
             "Niewykorzystana pojemność (h)": unused_minutes / 60,
             "Wynagrodzenia EH": capacity["role"]["EH"]["wynagrodzenia"],
             "Wynagrodzenia ugód": capacity["role"]["UGODY"]["wynagrodzenia"],
-            "Koszty ogólne spraw, nad którymi pracowano": overhead_cost,
-            "Koszt sekretariatu spraw, nad którymi pracowano": secretariat_cost,
+            "Narzut od wykonanej pracy nad sprawami": direct_overhead,
+            "Narzut od wspólnych czynności dziennych": daily_overhead,
+            "Narzut kosztów ogólnych razem": overhead_cost,
+            "Sprawy z jednorazową obsługą sekretariatu": secretariat_count,
+            "Jednorazowe koszty sekretariatu": secretariat_cost,
             "Miesięczny koszt wynagrodzeń": wage_cost, "Łączny koszt miesięczny": operation_cost,
             "Wynik miesięczny przed podatkiem": monthly_result,
             "Wynik skumulowany przed podatkiem": cumulative_result,

@@ -16,13 +16,13 @@ class TestGlowneWidoki(unittest.TestCase):
             self.ustaw(app, f"Wynagrodzenie pracownika {i} (zł/h)", 20.0)
         self.ustaw(app, "Udział spraw bez ugody w II instancji (%)", 0.0)
         app.segmented_control[0].set_value("Kontrakt w czasie").run()
-        self.ustaw(app, "Horyzont analizy (mies.)", 24).run()
+        self.ustaw(app, "Horyzont analizy (mies.)", 60).run()
         self.assertFalse(app.exception)
         metrics = {x.label: x.value for x in app.metric}
         self.assertEqual(metrics["Stan stabilny"], "Osiągnięty")
-        self.assertEqual(metrics["Break-even finansowy"], "Miesiąc 13")
+        self.assertEqual(metrics["Break-even finansowy"], "Miesiąc 27")
         self.assertTrue(any("Ocena trwałości: **Break-even trwały**" in x.value for x in app.markdown))
-        self.assertTrue(any("24 303,60 zł" in x.value for x in app.markdown))
+        self.assertTrue(any("11 152,35 zł" in x.value for x in app.markdown))
 
     def test_450_minut_dziennych_nie_przerywa_analiz(self):
         from model import domyslne_parametry
@@ -147,23 +147,39 @@ class TestIndywidualniPracownicy(unittest.TestCase):
         self.number("Liczba pracowników").set_value(2).run()
         self.assertEqual(self.number("Wynagrodzenie pracownika 2 (zł/h)").value, 91)
 
-    def test_zalozenia_kosztowe_przetrwaja_zmiane_widoku(self):
-        self.number("Koszt sekretariatu / h").set_value(50.0)
-        self.number("Czynności sekretariatu (min/sprawę)").set_value(10.0)
+    def test_wspolne_koszty_przetrwaja_zmiane_widoku_i_reaguja_na_edycje(self):
+        self.number("Koszt sekretariatu / h").set_value(30.0)
+        self.number("Czynności sekretariatu (min/sprawę)").set_value(30.0)
+        self.number("Narzut kosztów ogólnych / h pracownika").set_value(10.0)
         self.app.run()
         case_cost = next(x.value for x in self.app.metric if x.label == "Koszt / sprawę")
+        self.assertEqual(next(x.value for x in self.app.metric if x.label == "Jednorazowy koszt sekretariatu na sprawę"), "15,00 zł")
         self.app.segmented_control[0].set_value("Kontrakt w czasie").run()
-        self.number("Koszty ogólne / sprawę z wykonaną pracą / mies.").set_value(43.0)
-        self.number("Koszt sekretariatu / sprawę z wykonaną pracą / mies.").set_value(7.0)
         self.number("Opóźnienie płatności (mies.)").set_value(3).run()
-        df = next(x.value for x in self.app.dataframe if "Wynagrodzenia EH" in x.value.columns)
-        self.assertAlmostEqual(df.iloc[0]["Koszty ogólne spraw, nad którymi pracowano"], df.iloc[0]["Sprawy, nad którymi pracowano w miesiącu"] * 43)
-        self.assertAlmostEqual(df.iloc[0]["Koszt sekretariatu spraw, nad którymi pracowano"], df.iloc[0]["Sprawy, nad którymi pracowano w miesiącu"] * 7)
+        def table():
+            return next(x.value for x in self.app.dataframe if "Wynagrodzenia EH" in x.value.columns)
+        first = table().iloc[0]
+        self.assertAlmostEqual(first["Narzut od wykonanej pracy nad sprawami"],
+                               (first["Narzut kosztów ogólnych razem"] - first["Narzut od wspólnych czynności dziennych"]))
+        self.assertAlmostEqual(first["Narzut od wspólnych czynności dziennych"], 31.3125 * 10)
+        self.assertAlmostEqual(first["Jednorazowe koszty sekretariatu"], first["Sprawy z jednorazową obsługą sekretariatu"] * 15)
+        for label in ("Koszty ogólne / sprawę z wykonaną pracą / mies.", "Koszt sekretariatu / sprawę z wykonaną pracą / mies."):
+            self.assertNotIn(label, [x.label for x in self.app.number_input])
+        self.number("Narzut kosztów ogólnych / h pracownika").set_value(60.0).run()
+        high = table().iloc[0]
+        self.assertAlmostEqual(high["Narzut kosztów ogólnych razem"], first["Narzut kosztów ogólnych razem"] * 6)
+        self.number("Koszt sekretariatu / h").set_value(60.0).run()
+        self.assertAlmostEqual(table().iloc[0]["Jednorazowe koszty sekretariatu"], first["Jednorazowe koszty sekretariatu"] * 2)
+        self.number("Czynności sekretariatu (min/sprawę)").set_value(60.0).run()
+        self.assertAlmostEqual(table().iloc[0]["Jednorazowe koszty sekretariatu"], first["Jednorazowe koszty sekretariatu"] * 4)
         self.app.segmented_control[0].set_value("Ekonomika sprawy").run()
+        self.assertNotEqual(next(x.value for x in self.app.metric if x.label == "Koszt / sprawę"), case_cost)
+        self.assertEqual(next(x.value for x in self.app.metric if x.label == "Jednorazowy koszt sekretariatu na sprawę"), "60,00 zł")
+        self.number("Narzut kosztów ogólnych / h pracownika").set_value(10.0)
+        self.number("Koszt sekretariatu / h").set_value(30.0)
+        self.number("Czynności sekretariatu (min/sprawę)").set_value(30.0).run()
         self.assertEqual(next(x.value for x in self.app.metric if x.label == "Koszt / sprawę"), case_cost)
         self.app.segmented_control[0].set_value("Kontrakt w czasie").run()
-        self.assertEqual(self.number("Koszty ogólne / sprawę z wykonaną pracą / mies.").value, 43)
-        self.assertEqual(self.number("Koszt sekretariatu / sprawę z wykonaną pracą / mies.").value, 7)
         self.assertEqual(self.number("Opóźnienie płatności (mies.)").value, 3)
         self.assertFalse(self.app.exception)
 

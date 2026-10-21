@@ -2,7 +2,7 @@
   {
     "Wariant": "Przeciążenie EH",
     "Miesiące": 60,
-    "Sekundy": 0.10755291700024827,
+    "Sekundy": 0.30218470900013017,
     "Backlog (h)": 9429.159937499999,
     "Przyszła praca (h)": 5292.5728125000005,
     "Status": "Niewystarczająca pojemność według roli"
@@ -10,7 +10,7 @@
   {
     "Wariant": "Przeciążenie EH",
     "Miesiące": 120,
-    "Sekundy": 0.36271016699993197,
+    "Sekundy": 0.8890607690000252,
     "Backlog (h)": 19019.223255208333,
     "Przyszła praca (h)": 10428.370348958331,
     "Status": "Niewystarczająca pojemność według roli"
@@ -18,7 +18,7 @@
   {
     "Wariant": "Przeciążenie EH",
     "Miesiące": 360,
-    "Sekundy": 3.7787255000002915,
+    "Sekundy": 7.077594288,
     "Backlog (h)": 57349.022015625,
     "Przyszła praca (h)": 31010.416838541667,
     "Status": "Niewystarczająca pojemność według roli"
@@ -26,7 +26,7 @@
   {
     "Wariant": "Stabilny operacyjnie",
     "Miesiące": 60,
-    "Sekundy": 0.06983183400006965,
+    "Sekundy": 0.20501365599989185,
     "Backlog (h)": 0.0,
     "Przyszła praca (h)": 708.4895833333334,
     "Status": "Stabilny, ale nierentowny"
@@ -34,7 +34,7 @@
   {
     "Wariant": "Stabilny operacyjnie",
     "Miesiące": 120,
-    "Sekundy": 0.14244041700021626,
+    "Sekundy": 0.5520361540000067,
     "Backlog (h)": 0.0,
     "Przyszła praca (h)": 708.4895833333334,
     "Status": "Stabilny, ale nierentowny"
@@ -42,7 +42,7 @@
   {
     "Wariant": "Stabilny operacyjnie",
     "Miesiące": 360,
-    "Sekundy": 0.44293629200001305,
+    "Sekundy": 1.3332416149999062,
     "Backlog (h)": 0.0,
     "Przyszła praca (h)": 708.4895833333334,
     "Status": "Stabilny, ale nierentowny"
@@ -50,7 +50,7 @@
   {
     "Wariant": "Brak pracowników",
     "Miesiące": 60,
-    "Sekundy": 0.13661566599967045,
+    "Sekundy": 0.33339090100002977,
     "Backlog (h)": 14740.0,
     "Przyszła praca (h)": 9040.625,
     "Status": "Niewystarczająca pojemność według roli"
@@ -58,7 +58,7 @@
   {
     "Wariant": "Brak pracowników",
     "Miesiące": 120,
-    "Sekundy": 0.46322583300025144,
+    "Sekundy": 0.9443902619998426,
     "Backlog (h)": 29480.0,
     "Przyszła praca (h)": 18081.25,
     "Status": "Niewystarczająca pojemność według roli"
@@ -66,7 +66,7 @@
   {
     "Wariant": "Brak pracowników",
     "Miesiące": 360,
-    "Sekundy": 4.153484542000115,
+    "Sekundy": 8.270512664999842,
     "Backlog (h)": 88440.0,
     "Przyszła praca (h)": 54243.75,
     "Status": "Niewystarczająca pojemność według roli"

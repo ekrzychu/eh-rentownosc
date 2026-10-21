@@ -13,8 +13,8 @@ from analysis import (
 from model import KATEGORIE_SPRAW, oblicz_model
 
 
-def _kwota(wartosc: float) -> str:
-    return f"{wartosc:,.2f}".replace(",", " ").replace(".", ",") + " zł"
+def _kwota(wartosc: float, miejsca: int = 2) -> str:
+    return f"{wartosc:,.{miejsca}f}".replace(",", " ").replace(".", ",") + " zł"
 
 
 def _procent(wartosc: float) -> str:
@@ -96,14 +96,20 @@ def _renderuj_strukture(wyniki: dict) -> None:
                     "Łącznie": wyniki["koszt_narzutu_ogolnego_lifecycle"],
                     "Na sprawę": wyniki["koszt_narzutu_ogolnego_lifecycle"] / sprawy if sprawy else 0.0,
                 },
-                *[{
-                    "Składnik": f"Wynagrodzenia {etykieta}",
-                    "Stawka": wyniki["stawki_wedlug_roli"][rola],
-                    "Łącznie": wyniki["role"][rola]["laczne_godziny_zasobu_lifecycle"] * (wyniki["stawki_wedlug_roli"][rola] or 0),
-                    "Na sprawę": (wyniki["role"][rola]["laczne_godziny_zasobu_lifecycle"] * (wyniki["stawki_wedlug_roli"][rola] or 0) / sprawy if sprawy else 0.0),
-                } for rola, etykieta in (("EH", "EH"), ("UGODY", "ugód"))],
                 {
-                    "Składnik": "Sekretariat",
+                    "Składnik": "Wynagrodzenia bezpośrednie",
+                    "Stawka": None,
+                    "Łącznie": wyniki["wynagrodzenia_bezposrednie"],
+                    "Na sprawę": wyniki["wynagrodzenia_bezposrednie"] / sprawy if sprawy else 0.0,
+                },
+                {
+                    "Składnik": "Koszt wspólnych czynności dziennych (wynagrodzenia)",
+                    "Stawka": wyniki["stawki_wedlug_roli"]["EH"],
+                    "Łącznie": wyniki["wynagrodzenia_dzienne"],
+                    "Na sprawę": wyniki["wynagrodzenia_dzienne"] / sprawy if sprawy else 0.0,
+                },
+                {
+                    "Składnik": "Koszt sekretariatu",
                     "Stawka": wyniki["koszt_sekretariatu_na_godzine"],
                     "Łącznie": wyniki["koszt_sekretariatu_lifecycle"],
                     "Na sprawę": wyniki["koszt_sekretariatu_na_sprawe"],
@@ -130,6 +136,12 @@ def _renderuj_strukture(wyniki: dict) -> None:
             },
         )
 
+    derived = st.columns(2)
+    derived[0].metric("Średni narzut kosztów ogólnych na sprawę",
+                      _kwota(wyniki["sredni_narzut_ogolny_na_sprawe"], 4))
+    derived[1].metric("Jednorazowy koszt sekretariatu na sprawę",
+                      _kwota(wyniki["koszt_sekretariatu_na_sprawe"]))
+    st.caption("Wartości na sprawę są miarami ekonomicznymi. Kontrakt rozlicza narzut od wykonanych godzin.")
     st.caption(
         f"Roczna alokacja czynności dziennych: {_liczba(wyniki['ekwiwalent_osobodni_kohorty'], 3)} dni; "
         f"{_liczba(wyniki['czynnosci_dzienne_lifecycle_godziny'], 4)} h rocznie; "

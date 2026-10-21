@@ -356,9 +356,9 @@ class TestDojrzaloscAktywnychSciezek(unittest.TestCase):
                                      pracownicy=[osoba("EH", 20)] * 3 + [osoba("UGODY", 20)])
         self.assert_roczne_uzgodnienie(wynik, self.parametry)
         self.assertEqual(wynik["podsumowanie"]["nominalny_miesiac_dojrzalosci"], 11)
-        self.assertAlmostEqual(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 24303.6045)
+        self.assertAlmostEqual(wynik["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 16997.3545)
         self.assertEqual(wynik["kpi"]["break_even_status"], "osiagniety")
-        self.assertEqual(wynik["kpi"]["break_even_miesiac"], 13)
+        self.assertEqual(wynik["kpi"]["break_even_miesiac"], 18)
         self.assertEqual(wynik["kpi"]["status_break_even"], "Break-even trwały")
 
     def test_same_ii_respektuja_termin_ii_i_pelny_rok(self):
@@ -546,22 +546,27 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
     def setUp(self):
         self.p = domyslne_parametry()
         self.roster = [osoba("EH", 20)] * 3 + [osoba("UGODY", 30)]
-        self.costs = {"ogolne_na_aktywna_sprawe": 43.0, "sekretariat_na_aktywna_sprawe": 7.0}
+        self.p.update(sekretariat_minuty_na_sprawe=30., koszt_sekretariatu_na_godzine=30.)
+        self.costs = {}
 
     def licz(self, p=None, czas=None, roster=None, costs=None):
         return oblicz_model_czasowy(p or self.p, czas, pracownicy=self.roster if roster is None else roster,
                                     koszty_kontraktu=self.costs if costs is None else costs)
 
-    def test_A_godzinowy_narzut_nie_zmienia_kontraktu(self):
-        self.assertEqual(self.licz()["tabela_miesieczna"], self.licz({**self.p, "koszt_staly_na_godzine": 999.0})["tabela_miesieczna"])
+    def test_A_wspolny_narzut_zmienia_koszt_kontraktu(self):
+        a, b = self.licz(), self.licz({**self.p, "koszt_staly_na_godzine": 60.0})
+        self.assertEqual(a["pojemnosc"], b["pojemnosc"])
+        for x, y in zip(a["tabela_miesieczna"], b["tabela_miesieczna"]):
+            self.assertAlmostEqual(y["Łączny koszt miesięczny"] - x["Łączny koszt miesięczny"],
+                                   (x["Wykonana praca (h)"] + x["Czynności dzienne (h)"]) * 24)
 
-    def test_B_koszty_kontraktu_nie_zmieniaja_ekonomiki(self):
-        przed = oblicz_model(self.p)
-        self.licz(costs={"ogolne_na_aktywna_sprawe": 9999.0})
-        self.assertEqual(przed, oblicz_model(self.p))
-        # Panel 1 ignoruje również dołączone ustawienia kosztów i obsady.
-        self.assertEqual(przed, oblicz_model({**self.p, "koszty_kontraktu": self.costs,
-                                             "liczba_pracownikow": 0}))
+    def test_B_stare_niezerowe_koszty_sa_odrzucane(self):
+        for key in ("ogolne_na_aktywna_sprawe", "sekretariat_na_aktywna_sprawe"):
+            with self.assertRaisesRegex(ValueError, "Wycofany koszt"):
+                self.licz(costs={key: 1.0})
+            with self.assertRaisesRegex(ValueError, "Wycofany koszt"):
+                oblicz_model({**self.p, "koszty_kontraktu": {key: 1.0}})
+        self.assertEqual(self.licz(), self.licz(costs={"ogolne_na_aktywna_sprawe": 0.0}))
 
     def test_D_sekretariat_nie_zuzywa_pojemnosci(self):
         zmiana = {**self.p, "sekretariat_minuty_na_sprawe": 10000.0, "koszt_sekretariatu_na_godzine": 50.0}
@@ -570,13 +575,14 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
     def test_E_stawka_sekretariatu_jest_niezalezna(self):
         zmiana = {**self.p, "koszt_sekretariatu_na_godzine": 500.0, "sekretariat_minuty_na_sprawe": 10.0,
                   }
-        self.assertEqual(self.licz()["tabela_miesieczna"], self.licz(zmiana)["tabela_miesieczna"])
+        self.assertNotEqual(self.licz()["tabela_miesieczna"], self.licz(zmiana)["tabela_miesieczna"])
+        self.assertEqual(self.licz()["pojemnosc"], self.licz(zmiana)["pojemnosc"])
 
-    def test_F_50_razy_43(self):
+    def test_F_narzut_godzinowy_i_50_jednorazowych_obslug(self):
         pierwszy = self.licz()["tabela_miesieczna"][0]
         self.assertEqual(pierwszy["Sprawy, nad którymi pracowano w miesiącu"], 50)
-        self.assertEqual(pierwszy["Koszty ogólne spraw, nad którymi pracowano"], 2150)
-        self.assertEqual(pierwszy["Koszt sekretariatu spraw, nad którymi pracowano"], 350)
+        self.assertAlmostEqual(pierwszy["Narzut od wykonanej pracy nad sprawami"], pierwszy["Wykonana praca (h)"] * 36)
+        self.assertEqual(pierwszy["Jednorazowe koszty sekretariatu"], 750)
 
     def test_GHI_naliczanie_tylko_w_miesiacu_pracy(self):
         p = {**self.p, "liczba_spraw": 12, "kategoryczna_odmowa_percent": 0.0,
@@ -586,7 +592,8 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         self.assertEqual([r["Sprawy, nad którymi pracowano w miesiącu"] for r in rows], [1, 1, 1, 1, 1, 1])
         self.assertEqual([r["Sprawy otwarte"] for r in rows], [1, 2, 2, 2, 2, 2])
         # Miesiące oczekiwania i formalnego zakończenia nie dodają opłat.
-        self.assertEqual([r["Koszty ogólne spraw, nad którymi pracowano"] for r in rows], [43, 43, 43, 43, 43, 43])
+        for row in rows:
+            self.assertAlmostEqual(row["Narzut od wykonanej pracy nad sprawami"], (30 + 150.3 + 55) / 60 * 36)
 
     def test_GH_nawet_natychmiastowe_zakonczenie_kosztuje_jeden_miesiac(self):
         from test_workflow import proste
@@ -595,7 +602,7 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         for r in rows:
             self.assertAlmostEqual(r["Sprawy otwarte"], 0)
             self.assertAlmostEqual(r["Sprawy, nad którymi pracowano w miesiącu"], 50)
-            self.assertAlmostEqual(r["Koszty ogólne spraw, nad którymi pracowano"], 2150)
+            self.assertAlmostEqual(r["Narzut od wykonanej pracy nad sprawami"], 50 * 36)
 
     def test_IJ_opoznienie_platnosci_nie_przedluza_kosztu(self):
         a, b = self.licz(), self.licz(czas={"opoznienie_platnosci_miesiace": 8})
@@ -703,30 +710,31 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
         self.assertAlmostEqual(result["pojemnosc"]["role"]["UGODY"]["popyt_minuty"], ugody)
         # Bieżące przyjęcia + przekazany proces po nieudanej próbie + II instancja.
         active_billable = 50 + 50 * .2875 + 50 * .35625
-        expected_cost = 167 * (3 * 20 + 30) + active_billable * 50
+        expected_cost = 167 * (3 * 20 + 30) + (5131.875 / 12) * 36 + 50 * 15
         self.assertAlmostEqual(rows[-1]["Sprawy, nad którymi pracowano w miesiącu"], active_billable)
         self.assertAlmostEqual(rows[-1]["Łączny koszt miesięczny"], expected_cost)
         self.assertAlmostEqual(result["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], lifecycle["ogolem"]["przychod"] / 12 - expected_cost)
 
-    def test_W_ujemna_ekonomika_panelu_1_nie_wymusza_straty_kontraktu(self):
+    def test_W_wysokie_wspolne_koszty_obciazaja_obydwa_panele(self):
         p = {**self.p, "koszt_staly_na_godzine": 500.0, "koszt_sekretariatu_na_godzine": 500.0,
              "sekretariat_minuty_na_sprawe": 60.0}
         self.assertLess(oblicz_model(p)["ogolem"]["wynik_przed_podatkiem"], 0)
         result = self.licz(p, costs={"ogolne_na_aktywna_sprawe": 0.0, "sekretariat_na_aktywna_sprawe": 0.0})
-        self.assertEqual(result["kpi"]["status_kontraktu"], "Rentowny i stabilny")
-        self.assertGreater(result["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 0)
+        self.assertEqual(result["kpi"]["status_kontraktu"], "Stabilny, ale nierentowny")
+        self.assertLess(result["kpi"]["wynik_miesieczny_w_stanie_stabilnym"], 0)
 
     def test_dodatnia_ekonomika_panelu_1_i_strata_kontraktu(self):
-        p = {**self.p, "koszt_staly_na_godzine": 0.0, "pracownicy": [osoba("EH", 1), osoba("UGODY", 1)]}
+        roster = [osoba("EH", 1)] * 30 + [osoba("UGODY", 1)]
+        p = {**self.p, "liczba_spraw": 12, "codzienne_czynnosci": {}, "koszt_staly_na_godzine": 0.0, "pracownicy": roster}
         self.assertGreater(oblicz_model(p)["ogolem"]["wynik_przed_podatkiem"], 0)
-        result = self.licz(p, costs={"ogolne_na_aktywna_sprawe": 1000.0})
+        result = self.licz(p, roster=roster)
         self.assertEqual(result["kpi"]["status_kontraktu"], "Stabilny, ale nierentowny")
         self.assertEqual(result["kpi"]["break_even_status"], "brak_ekonomiczny")
         self.assertTrue(result["kpi"]["wynik_nadal_narasta"])
 
     def test_XY_dokladna_suma_bez_podwojnych_kosztow(self):
         for r in self.licz()["tabela_miesieczna"]:
-            total = r["Wynagrodzenia EH"] + r["Wynagrodzenia ugód"] + r["Koszty ogólne spraw, nad którymi pracowano"] + r["Koszt sekretariatu spraw, nad którymi pracowano"]
+            total = r["Wynagrodzenia EH"] + r["Wynagrodzenia ugód"] + r["Narzut kosztów ogólnych razem"] + r["Jednorazowe koszty sekretariatu"]
             self.assertEqual(r["Łączny koszt miesięczny"], total)
             self.assertEqual(r["Wynik miesięczny przed podatkiem"], r["Przychód razem"] - total)
 
@@ -748,9 +756,9 @@ class TestRoleIKosztyKontraktu(unittest.TestCase):
     def test_zero_spraw_zero_oplat_aktywnych_ale_pelna_placa(self):
         result = self.licz({**self.p, "liczba_spraw": 0})
         for r in result["tabela_miesieczna"]:
-            self.assertEqual(r["Koszty ogólne spraw, nad którymi pracowano"], 0)
-            self.assertEqual(r["Koszt sekretariatu spraw, nad którymi pracowano"], 0)
-            self.assertEqual(r["Łączny koszt miesięczny"], 167 * 90)
+            self.assertEqual(r["Narzut od wykonanej pracy nad sprawami"], 0)
+            self.assertEqual(r["Jednorazowe koszty sekretariatu"], 0)
+            self.assertEqual(r["Łączny koszt miesięczny"], 167 * 90 + 31.3125 * 36)
         self.assertFalse(result["podsumowanie"]["dojrzalosc_osiagnieta"])
 
     def test_placa_nie_zalezy_od_wykonanej_pracy(self):

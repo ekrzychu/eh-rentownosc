@@ -23,14 +23,15 @@ def main():
         daily = rng.choice([0, 90, 480])
         p['codzienne_czynnosci'] = {'Obsługa skrzynki ugody EH': daily}
         p = _skaluj_bezposrednie_czasy(p, rng.choice([0, .5, 1, 2]))
-        costs = {'ogolne_na_aktywna_sprawe': rng.randrange(0, 80),
-                 'sekretariat_na_aktywna_sprawe': rng.randrange(0, 40)}
+        p.update(koszt_staly_na_godzine=rng.randrange(0, 80),
+                 sekretariat_minuty_na_sprawe=rng.randrange(0, 90),
+                 koszt_sekretariatu_na_godzine=rng.randrange(0, 80))
         horizon = rng.randrange(12, 60)
         result = oblicz_model_czasowy(p, {'horyzont_miesiace': horizon,
             'miesiace_do_ugody': rng.randrange(0, 30), 'miesiace_do_wyroku_i': rng.randrange(0, 30),
             'miesiace_wyrok_i_do_ii': rng.randrange(0, 20), 'opoznienie_platnosci_miesiace': rng.randrange(0, 12)},
-            zapisz_zdarzenia=True, koszty_kontraktu=costs)
-        uzgodnij(p, costs, result)
+            zapisz_zdarzenia=True)
+        uzgodnij(p, result)
         w = result['walidacja']
         expected = sum(niezalezne_minuty_roczne(p).values()) * horizon / 12
         assert isclose(w['praca_wykonana_minuty'] + w['backlog_minuty'] + w['praca_przyszla_minuty'], expected, abs_tol=1e-5)

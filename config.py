@@ -1,5 +1,6 @@
 """Jawne mapowanie referencyjnych danych TOML; matematyka pozostaje w modelach."""
 
+from costs import sprawdz_stare_koszty
 from math import isfinite
 from pathlib import Path
 import tomllib
@@ -46,7 +47,6 @@ WYMAGANE = {
         "koszt_sekretariatu_na_godzine",
         "sekretariat_minuty_na_sprawe",
     ),
-    "koszty_kontraktu": ("ogolne_na_aktywna_sprawe", "sekretariat_na_aktywna_sprawe"),
     "organizacja": (
         "liczba_pracownikow",
         "godziny_etatu_miesiecznie",
@@ -123,6 +123,7 @@ def wczytaj_defaults() -> dict:
                     poprawna = poprawna and wartosc > 0
             if not poprawna:
                 raise ValueError(f"{DEFAULTS_PATH}: niepoprawna wartość {sekcja}.{klucz}.")
+    sprawdz_stare_koszty(dane.get("koszty_kontraktu"))
     obsada = dane.get("obsada", {})
     if not isinstance(obsada, dict):
         raise ValueError("Brak konfiguracji obsady.")

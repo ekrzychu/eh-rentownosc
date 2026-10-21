@@ -1,0 +1,135 @@
+"""Test 2: uzgodnienie dwóch modeli kosztów ogólnych w dojrzałym roku.
+
+Uruchom z katalogu głównego repozytorium:
+    python test_koszty_ogolne.py
+"""
+from math import isclose
+
+from model import domyslne_parametry, oblicz_model, oblicz_przeplyw
+from timeline import oblicz_model_czasowy
+
+
+TOL = 0.01
+
+
+def suma(rows, column):
+    return sum(row[column] for row in rows)
+
+
+def blisko(a, b, tol=TOL):
+    return isclose(a, b, rel_tol=0, abs_tol=tol)
+
+
+def zl(kwota):
+    return f"{kwota:,.2f} zl"
+
+
+p = domyslne_parametry()
+p["koszt_sekretariatu_na_godzine"] = 0.0
+p["sekretariat_minuty_na_sprawe"] = 0.0
+p["podatek_dochodowy_percent"] = 0.0
+
+# Dobieramy identyczna, w pelni wykorzystana obsade jak w tescie 1.
+przeplyw = oblicz_przeplyw(p)
+godziny_eh = przeplyw["roczne_minuty_wedlug_roli"]["EH"] / 60
+godziny_ugody = przeplyw["roczne_minuty_wedlug_roli"]["UGODY"] / 60
+godziny_dzienne = 12 * 167 / 8 * sum(p["codzienne_czynnosci"].values()) / 60
+stawka = 59.88
+
+procent_trzeciego_eh = 100 * ((godziny_eh + godziny_dzienne) / 12 - 2 * 167) / 167
+procent_ugody = 100 * (godziny_ugody / 12) / 167
+assert 0 <= procent_trzeciego_eh <= 100
+assert 0 <= procent_ugody <= 100
+
+p["pracownicy"] = [
+    {"rola": "EH", "stawka": stawka, "wykorzystanie_percent": 100.0},
+    {"rola": "EH", "stawka": stawka, "wykorzystanie_percent": 100.0},
+    {"rola": "EH", "stawka": stawka, "wykorzystanie_percent": procent_trzeciego_eh},
+    {"rola": "UGODY", "stawka": stawka, "wykorzystanie_percent": procent_ugody},
+]
+p["liczba_pracownikow"] = len(p["pracownicy"])
+
+# 2 warianty Panelu 1: 0 zl/h i 36 zl/h.
+p0 = {**p, "koszt_staly_na_godzine": 0.0}
+p36 = {**p, "koszt_staly_na_godzine": 36.0}
+e0 = oblicz_model(p0)["ogolem"]
+e36 = oblicz_model(p36)["ogolem"]
+
+# 2 warianty Panelu 2: 0 zl i 43 zl / sprawomiesiac rzeczywistej pracy.
+# W obu symulacjach ustawiony jest narzut Panelu 1 = 36 zl/h,
+# aby dodatkowo zweryfikowac niezaleznosc konfiguracji Panelu 2.
+czas = {"horyzont_miesiace": 120}
+k0 = oblicz_model_czasowy(
+    p36, czas,
+    koszty_kontraktu={"ogolne_na_aktywna_sprawe": 0.0,
+                      "sekretariat_na_aktywna_sprawe": 0.0},
+)
+k43 = oblicz_model_czasowy(
+    p36, czas,
+    koszty_kontraktu={"ogolne_na_aktywna_sprawe": 43.0,
+                      "sekretariat_na_aktywna_sprawe": 0.0},
+)
+r0 = k0["tabela_miesieczna"][-12:]
+r43 = k43["tabela_miesieczna"][-12:]
+
+p1_przychod = e36["przychod"]
+p1_place = e36["koszt_wynagrodzenia"]
+p1_narzut = e36["koszt_narzutu_ogolnego"]
+p1_wynik = e36["wynik_przed_podatkiem"]
+p2_przychod = suma(r43, "Przychód razem")
+p2_place = suma(r43, "Wynagrodzenia EH") + suma(r43, "Wynagrodzenia ugód")
+p2_narzut = suma(r43, "Koszty ogólne spraw, nad którymi pracowano")
+p2_wynik = suma(r43, "Wynik miesięczny przed podatkiem")
+pracowane_sprawomiesiace = suma(r43, "Sprawy, nad którymi pracowano w miesiącu")
+zakonczone = sum(
+    row["Ugody zakończone"] + row["Zakończenia po I instancji"]
+    + row["Zakończenia po II instancji"]
+    for row in r43
+)
+
+print("\nTEST 2: OSTATNIE 12 Z 120 MIESIECY")
+print(f"Przydzial trzeciego EH: {procent_trzeciego_eh:.8f}%")
+print(f"Przydzial UGODY:       {procent_ugody:.8f}%")
+print(f"Sprawy zakonczone:     {zakonczone:.6f}")
+print(f"Pracowane sprawomiesiace: {pracowane_sprawomiesiace:.6f}")
+print(f"Backlog na koniec:     {k43['podsumowanie']['backlog_koniec_godziny']:.6f} h")
+print(f"Stan ustabilizowany:   {k43['podsumowanie']['dojrzalosc_osiagnieta']}")
+
+print(f"\n{'Pozycja':28} {'Panel 1':>17} {'Panel 2':>17}")
+for title, left, right in (
+    ("Przychod", p1_przychod, p2_przychod),
+    ("Wynagrodzenia", p1_place, p2_place),
+    ("Koszty ogolne", p1_narzut, p2_narzut),
+    ("Koszt calkowity", e36["koszt_calkowity"], suma(r43, "Łączny koszt miesięczny")),
+    ("Wynik", p1_wynik, p2_wynik),
+):
+    print(f"{title:28} {zl(left):>17} {zl(right):>17}")
+
+roznica_wynikow = p2_wynik - p1_wynik
+roznica_narzutow = p1_narzut - p2_narzut
+stawka_rownorzedna = p1_narzut / pracowane_sprawomiesiace if pracowane_sprawomiesiace else float('nan')
+
+print(f"\nRoznica wynikow (Panel 2 - Panel 1): {zl(roznica_wynikow)}")
+print(f"Roznica narzutow (Panel 1 - Panel 2): {zl(roznica_narzutow)}")
+print(f"Rozbieznosc niewyjasniona:            {zl(roznica_wynikow - roznica_narzutow)}")
+print(f"Rownowazna stawka narzutu Panelu 2:  {zl(stawka_rownorzedna)} / pracowany sprawomiesiac")
+
+kontrole = {
+    "600 zakonczonych spraw": blisko(zakonczone, 600),
+    "Ten sam przychod": blisko(p1_przychod, p2_przychod),
+    "Ten sam koszt wynagrodzen": blisko(p1_place, p2_place),
+    "Brak backlogu": blisko(k43["podsumowanie"]["backlog_koniec_godziny"], 0, 1e-6),
+    "Stan ustabilizowany": k43["podsumowanie"]["dojrzalosc_osiagnieta"],
+    "Zerowe narzuty: zgodne koszty": blisko(e0["koszt_calkowity"], suma(r0, "Łączny koszt miesięczny")),
+    "Panel 1: narzut 36 zl/h": blisko(p1_narzut, 36 * (godziny_eh + godziny_ugody + godziny_dzienne)),
+    "Panel 2: narzut 43 zl/sprawomiesiac": blisko(p2_narzut, 43 * pracowane_sprawomiesiace),
+    "Narzuty nie zmieniaja przychodu": blisko(suma(r0, "Przychód razem"), p2_przychod),
+    "Narzuty nie zmieniaja obciazenia": blisko(suma(r0, "Sprawy, nad którymi pracowano w miesiącu"), pracowane_sprawomiesiace),
+    "Roznica zyskow = roznica narzutow": blisko(roznica_wynikow, roznica_narzutow),
+}
+print("\nKONTROLE:")
+for nazwa, ok in kontrole.items():
+    print(f"{'OK' if ok else 'BLAD'}: {nazwa}")
+
+assert all(kontrole.values()), "Nie wszystkie kontrole przeszly. Zachowaj raport do analizy."
+print("\nTEST 2: OK - roznice sa w pelni wyjasnione przez narzuty.")

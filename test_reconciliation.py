@@ -180,7 +180,7 @@ class TestNiezaleznaRekonsyliacja(unittest.TestCase):
             for row in w['punkty_kontrolne']:
                 self.assertAlmostEqual(row['Koszt całkowity'], row['Wynagrodzenia EH'] + row['Wynagrodzenia ugód'] + row['Koszty ogólne'] + row['Sekretariat'])
                 self.assertAlmostEqual(row['Wynik'], row['Przychód'] - row['Koszt całkowity'], places=6)
-                self.assertAlmostEqual(row['Koszty ogólne'], row['Sprawomiesiące faktycznej pracy'] * w['koszty']['ogolne_na_aktywna_sprawe'], places=6)
+                self.assertAlmostEqual(row['Koszty ogólne'], (row['Praca EH (h)'] + row['Praca ugód (h)'] + row['Czynności dzienne (h)']) * w['koszty']['general_overhead_per_hour'], places=6)
 
     def test_stabilny_przeplyw_i_krotszy_czas_nie_tworzy_pracy(self):
         for s in ('3', '4', '5', '6'):

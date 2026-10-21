@@ -40,9 +40,13 @@ def ugody(naplyw=12, praca=60, przyjecie=0, sukces=100.):
     return p
 
 
-def licz(p, miesiace=12, narzut=43, sekretariat=7, **czasy):
-    return oblicz_model_czasowy(p, {'horyzont_miesiace': miesiace, **czasy}, zapisz_zdarzenia=True,
-        koszty_kontraktu={'ogolne_na_aktywna_sprawe': narzut, 'sekretariat_na_aktywna_sprawe': sekretariat})
+def licz(p, miesiace=12, narzut=None, sekretariat=None, **czasy):
+    p = {**p}
+    if narzut is not None:
+        p["koszt_staly_na_godzine"] = narzut
+    if sekretariat is not None:
+        p.update(sekretariat_minuty_na_sprawe=60., koszt_sekretariatu_na_godzine=sekretariat)
+    return oblicz_model_czasowy(p, {'horyzont_miesiace': miesiace, **czasy}, zapisz_zdarzenia=True)
 
 
 def zdarzenia_spraw(w):
@@ -70,40 +74,40 @@ class TestFIFOIKoszty(unittest.TestCase):
         w = licz(p, 8)
         for row in w['tabela_miesieczna']:
             self.assertEqual(row['Sprawy, nad którymi pracowano w miesiącu'], 1)
-            self.assertEqual(row['Koszty ogólne spraw, nad którymi pracowano'], 43)
+            self.assertEqual(row['Narzut od wykonanej pracy nad sprawami'], 36)
         self.assertEqual(w['tabela_miesieczna'][-1]['Sprawy otwarte'], 8)
         self.assertEqual(w['tabela_miesieczna'][-1]['Sprawy oczekujące na formalne zakończenie'], 8)
         p['pracownicy'] = []
-        self.assertTrue(all(r['Koszty ogólne spraw, nad którymi pracowano'] == 0 for r in licz(p)['tabela_miesieczna']))
+        self.assertTrue(all(r['Narzut od wykonanej pracy nad sprawami'] == 0 for r in licz(p)['tabela_miesieczna']))
 
-    def test_D_praca_w_dwoch_miesiacach_szesc_oczekiwania_dwie_oplaty(self):
+    def test_D_praca_w_dwoch_miesiacach_narzut_od_sumy_godzin(self):
         p = proste(12, proces=334 * 60)
         w = licz(p, 8, miesiace_do_wyroku_i=7)
         first = zdarzenia_spraw(w)[0]
         months = {e['miesiac'] for e in first if e['rodzaj'] == 'praca'}
         self.assertEqual(months, {1, 2})
-        self.assertEqual(sum(43 for _ in months), 86)
+        self.assertEqual(sum(e['minuty'] for e in first if e['rodzaj'] == 'praca') / 60 * 36, 334 * 36)
         self.assertEqual([e['miesiac'] for e in first if e['rodzaj'] == 'zakonczenie'], [8])
 
-    def test_E_AF_EH_i_ugody_pracuja_w_jednym_miesiacu_jedna_oplata(self):
+    def test_E_AF_EH_i_ugody_narzut_od_obu_rol(self):
         w = licz(ugody(praca=1, przyjecie=1), 1)
         work = [e for e in w['zdarzenia'] if e['rodzaj'] == 'praca']
         self.assertEqual({e['rola'] for e in work}, {'EH', 'UGODY'})
         r = w['tabela_miesieczna'][0]
         self.assertEqual(r['Sprawy, nad którymi pracowano w miesiącu'], 1)
-        self.assertEqual(r['Koszty ogólne spraw, nad którymi pracowano'], 43)
-        self.assertEqual(r['Koszt sekretariatu spraw, nad którymi pracowano'], 7)
+        self.assertAlmostEqual(r['Narzut od wykonanej pracy nad sprawami'], 2 / 60 * 36)
+        self.assertEqual(r['Jednorazowe koszty sekretariatu'], 0)
 
-    def test_F_G_koszt_0_i_43_nie_zmienia_przeplywu(self):
+    def test_F_G_narzut_0_i_60_za_godzine_nie_zmienia_przeplywu(self):
         p = domyslne_parametry()
-        a, b = licz(p, 60, narzut=0), licz(p, 60, narzut=43)
+        a, b = licz(p, 60, narzut=0), licz(p, 60, narzut=60)
         self.assertEqual(a['zdarzenia'], b['zdarzenia'])
         for x, y in zip(a['tabela_miesieczna'], b['tabela_miesieczna']):
             for key in x:
-                if not any(k in key.lower() for k in ('koszt', 'wynik')):
+                if not any(k in key.lower() for k in ('koszt', 'wynik', 'narzut')):
                     self.assertEqual(x[key], y[key])
-        total = fsum(r['Sprawy, nad którymi pracowano w miesiącu'] for r in b['tabela_miesieczna'])
-        self.assertAlmostEqual(b['kpi']['wynik_skumulowany_na_koniec_horyzontu'] - a['kpi']['wynik_skumulowany_na_koniec_horyzontu'], -43 * total)
+        total = fsum(r['Wykonana praca (h)'] + r['Czynności dzienne (h)'] for r in b['tabela_miesieczna'])
+        self.assertAlmostEqual(b['kpi']['wynik_skumulowany_na_koniec_horyzontu'] - a['kpi']['wynik_skumulowany_na_koniec_horyzontu'], -60 * total)
 
     def test_czesciowa_sprawa_zachowuje_tozsamosc_i_minuty(self):
         p = proste(12, proces=100 * 60)
@@ -230,11 +234,11 @@ class TestZegary(unittest.TestCase):
 
 
 class TestZeroCzasu(unittest.TestCase):
-    def test_P_R_zero_minut_zero_oplat_ale_otwarte_sprawy(self):
+    def test_P_R_zero_minut_zero_narzutu_bezposredniego_ale_otwarte_sprawy(self):
         p = _skaluj_bezposrednie_czasy(domyslne_parametry(), 0)
         w = licz(p, 60)
         self.assertTrue(all(r['Wykonana praca (h)'] == r['Sprawy, nad którymi pracowano w miesiącu'] == 0 for r in w['tabela_miesieczna']))
-        self.assertTrue(all(r['Koszty ogólne spraw, nad którymi pracowano'] == r['Koszt sekretariatu spraw, nad którymi pracowano'] == 0 for r in w['tabela_miesieczna']))
+        self.assertTrue(all(r['Narzut od wykonanej pracy nad sprawami'] == r['Jednorazowe koszty sekretariatu'] == 0 for r in w['tabela_miesieczna']))
         self.assertEqual(w['walidacja']['praca_wszystkich_kohort_minuty'], 0)
         self.assertEqual(w['walidacja']['backlog_minuty'], 0)
         self.assertGreater(w['podsumowanie']['aktywne_sprawy'], 0)
@@ -300,7 +304,7 @@ class TestDzienneIKoszty(unittest.TestCase):
         b = licz(p, 1)['tabela_miesieczna'][0]
         self.assertEqual(a['Miesięczny koszt wynagrodzeń'], 167 * (10 + 15 + 20 + 30))
         self.assertEqual(a['Miesięczny koszt wynagrodzeń'], b['Miesięczny koszt wynagrodzeń'])
-        self.assertEqual(a['Łączny koszt miesięczny'], b['Łączny koszt miesięczny'])
+        self.assertAlmostEqual(b['Łączny koszt miesięczny'] - a['Łączny koszt miesięczny'], 31.3125 * 36)
 
     def test_X_Y_dzienne_480_zmniejszaja_pojemnosc_i_tworza_backlog(self):
         p = proste(600, proces=180)
@@ -338,7 +342,7 @@ class TestDzienneIKoszty(unittest.TestCase):
         self.assertEqual(r['Czynności dzienne (h)'], 0)
         self.assertEqual(r['Niewykonane czynności dzienne (h)'], 31.3125)
 
-    def test_AA_AB_AC_stawki_rol_i_koszty_paneli_niezalezne(self):
+    def test_AA_AB_AC_stawki_rol_i_wspolne_koszty_paneli(self):
         p = domyslne_parametry()
         for idx, col in ((0, 'Wynagrodzenia EH'), (1, 'Wynagrodzenia ugód')):
             q = deepcopy(p)
@@ -352,7 +356,8 @@ class TestDzienneIKoszty(unittest.TestCase):
             self.assertAlmostEqual(y['tabela_miesieczna'][0][col] - x['tabela_miesieczna'][0][col], 1670)
         p1 = deepcopy(p)
         p1.update(koszt_staly_na_godzine=999., koszt_sekretariatu_na_godzine=999., sekretariat_minuty_na_sprawe=999.)
-        self.assertEqual(licz(p, 1), licz(p1, 1))
+        self.assertNotEqual(licz(p, 1)["tabela_miesieczna"], licz(p1, 1)["tabela_miesieczna"])
+        self.assertEqual(licz(p, 1)["pojemnosc"], licz(p1, 1)["pojemnosc"])
 
     def test_kazde_wejscie_czasowe_ma_niezalezna_wycene_przypisanej_roli(self):
         p = domyslne_parametry()
@@ -399,7 +404,7 @@ class TestBilansIWydajnosc(unittest.TestCase):
         w = licz(domyslne_parametry(), 60)
         cumulative = inflow = completed = 0.
         for row in w['tabela_miesieczna']:
-            cost = row['Wynagrodzenia EH'] + row['Wynagrodzenia ugód'] + row['Koszty ogólne spraw, nad którymi pracowano'] + row['Koszt sekretariatu spraw, nad którymi pracowano']
+            cost = row['Wynagrodzenia EH'] + row['Wynagrodzenia ugód'] + row['Narzut kosztów ogólnych razem'] + row['Jednorazowe koszty sekretariatu']
             self.assertAlmostEqual(row['Łączny koszt miesięczny'], cost)
             cumulative += row['Przychód razem'] - cost
             self.assertAlmostEqual(row['Wynik skumulowany przed podatkiem'], cumulative)

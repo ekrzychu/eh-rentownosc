@@ -31,7 +31,10 @@ jest dzielony przez 12. Miks WPS, P1/P2/P3, udziały sześciu ścieżek i wzory
 przychodu są wspólne dla obu paneli. Stawki prawników pochodzą wyłącznie ze
 wspólnej obsady: rola, stawka godzinowa i procent przydziału. EH i UGODY mają
 rozłączne zasoby. Zmiany obsady oraz ustawień kontraktu przetrwają zmianę
-widoku w bieżącej sesji.
+widoku w bieżącej sesji. Koszty ustawia się raz we wspólnym pasku bocznym:
+`koszt_staly_na_godzine` (domyślnie 36 zł/h),
+`sekretariat_minuty_na_sprawe` i `koszt_sekretariatu_na_godzine`.
+Zmiana dowolnej z tych wartości automatycznie przelicza oba widoki.
 
 | Ścieżka | Referencyjny udział | Praca przed procesem |
 | --- | ---: | --- |
@@ -82,15 +85,33 @@ Brak EH oznacza niewykonane czynności dzienne. Nie powstaje dodatkowa pensja.
 
 ```text
 koszt miesiąca = pensje EH + pensje UGODY
-              + unikalne sprawy z dodatnią pracą × (narzut miesięczny + sekretariat miesięczny)
+              + wykonane godziny spraw × wspólny narzut godzinowy
+              + wykonane godziny czynności dziennych × wspólny narzut godzinowy
+              + wagi spraw rozpoczynających przyjęcie × jednorazowy sekretariat / sprawę
 wynik miesiąca = rzeczywiste płatności − koszt miesiąca
 wynik skumulowany = suma wyników miesięcznych
 ```
 
-Sprawy w kolejce i oczekujące na wyrok/ugodę nie naliczają kosztów spraw.
-Kilka etapów albo obu prawników pracujących nad tą samą sprawą w miesiącu
-powoduje jedną opłatę. Te koszty są niezależne od godzinowego narzutu i
-jednorazowego sekretariatu Panelu 1. Rachunków paneli nie należy sumować.
+Narzut = `(wykonane minuty EH + wykonane minuty UGODY + wykonane minuty dzienne) / 60 × koszt_staly_na_godzine`.
+Nie obejmuje kolejki, oczekiwania formalnego, przyszłej pracy ani płatnych
+niewykorzystanych godzin. Praca rozłożona na miesiące zachowuje ten sam narzut
+od sumy godzin. Czynności dzienne mają narzut 1127,25 zł/mies. przy 36 zł/h,
+wyłącznie w wykonanej części. Ich pensja mieści się już w płatnym przydziale.
+
+Sekretariat = `sekretariat_minuty_na_sprawe / 60 × koszt_sekretariatu_na_godzine`.
+Zdarzenie `SEKRETARIAT_OBSLUZONY` występuje raz przy pierwszej inicjacji
+`przyjecie`, ze stałą tożsamością sprawy, jej dokładną wagą i kwotą kosztu.
+Sam wpływ do kolejki nie wystarcza. Zerominutowe przyjęcie z dostępną rolą
+może wygenerować koszt sekretariatu, nawet bez pracy prawnika. Brak roli lub
+zerowy przydział blokuje inicjację. Odrzucenie ugody, przekazanie do procesu,
+II instancja, zamknięcie i płatność nie powtarzają kosztu. Przy zerowej stawce
+lub czasie zdarzenie ma koszt zero. Sekretariat nie zajmuje minut prawnika,
+nie dokłada pensji i nie zmienia zegarów formalnych ani ścieżek.
+
+To wspólna **stawka alokacji kosztu od pracy**, a nie stały wydatek
+kalendarzowy. Model nie zawiera dodatkowego budżetu kosztów stałych na miesiąc.
+Koszt godzinowy i wynagrodzenia są odrębnymi składnikami; żaden nie jest
+naliczany ponownie przy wykonaniu etapu lub zamknięciu sprawy.
 
 ### Harmonogram i granice miesięcy
 
@@ -140,12 +161,17 @@ inicjacji, z zachowaniem przekazań między miesiącami.
 Liczniki oczekiwania nie są rozłącznymi kategoriami: sprawa czekająca na
 wyrok I może mieć jeszcze przyszłą pracę II instancji. Przy zerowych minutach
 mogą pozostać formalnie otwarte sprawy i etapy zerowe czekające na miesiąc
-przekazania, choć backlog godzin i opłaty za pracę są zerowe.
+przekazania, choć backlog godzin i narzut bezpośredni są zerowe. Jednorazowy
+sekretariat i faktycznie wykonane czynności dzienne mogą nadal kosztować.
 
 Stabilność wymaga wystarczającej mocy każdej wymaganej roli i obsługi
 czynności dziennych przez jedną osobę. Dojrzały wynik jest potwierdzany po
 12 miesiącach zgodnej obsługi pełnego napływu, bez zaległej pracy. Sam
 płaski wynik przy rosnącej kolejce nie potwierdza stabilności.
+
+Historyczny, wcześniej nieśledzony test dwóch niezależnych stawek zachowano
+bez zmiany treści w [archiwum](audit_results/history/test_koszty_ogolne.py.txt).
+Jego założenie 43 zł/sprawomiesiąc zostało zastąpione; nie jest bieżącym testem.
 
 ## Testy i odtworzenie audytu
 
@@ -154,21 +180,63 @@ płaski wynik przy rosnącej kolejce nie potwierdza stabilności.
 .venv/bin/python reproduce_baseline.py
 .venv/bin/python diagnostic_costs.py --output-dir audit_results
 .venv/bin/python audit_checks.py
+.venv/bin/python reconcile_shared_costs.py --output audit_results/wspolne_koszty.json
+.venv/bin/python -m compileall -q *.py
 ```
 
 Na Windows użyj `.\.venv\Scripts\python.exe` zamiast `.venv/bin/python`.
 
-Raport: [AUDYT.md](AUDYT.md). Pełne dane 10 scenariuszy, bez zaokrąglania:
+Raport: [AUDYT.md](AUDYT.md). Archiwalne dane audytu z 19 października
+(przed wspólnym modelem kosztów; aktualne można odtworzyć powyższymi poleceniami):
 [JSON](audit_results/rekonsyliacja.json),
 [CSV dla 12/24/60 miesięcy](audit_results/rekonsyliacja.csv),
 [most starego i nowego wyniku](audit_results/porownanie_stary_nowy.json).
 Stary model pochodzi dokładnie z `99a2f1e`; skrypt odtwarza go z lokalnej
 historii Git bez zmiany gałęzi. Pomiary: [wydajność](audit_results/wydajnosc.json).
 
-Nazwy kluczy TOML `ogolne_na_aktywna_sprawe` i `sekretariat_na_aktywna_sprawe`
-zachowano dla zgodności konfiguracji. Oznaczają teraz stawki za sprawę z
-**wykonaną pracą**, co jednoznacznie opisuje interfejs. Ich wartości domyślne
-pozostały zerowe; 43 zł występuje w diagnostyce jako jawny przykład.
+Dawne klucze `ogolne_na_aktywna_sprawe` i `sekretariat_na_aktywna_sprawe`
+usunięto z TOML i interfejsu. API `koszty_kontraktu` akceptuje jeszcze pusty
+lub zerowy stary słownik dla zgodności; każda niezerowa wartość zgłasza
+`ValueError` z instrukcją migracji. Dotyczy to także słownika dołączonego
+do parametrów modelu i dawnej sekcji TOML. Nie można dodać drugiej opłaty.
+Słownik `koszty_kontraktu` w **wyniku** symulacji raportuje wyłącznie pochodne
+wspólnych ustawień: `general_overhead_per_hour` i `secretariat_cost_per_case`.
+
+## Uzgodnienie obu paneli
+
+`reconcile_shared_costs.py` sprawdza roczną kohortę 600 spraw z miesiącami
+109–120 symulacji. Dokładny przydział EH3 to
+`((4414.875 / 12 + 375.75 / 12 - 334) / 167) × 100`,
+a UGODY `341.25 / 12 / 167 × 100`. Stawki wszystkich osób: 59,88 zł/h.
+W obu panelach praca to 4756,125 h bezpośrednio + 375,750 h dziennie rocznie;
+pensje 307296,675 zł, przychód 451963,254 zł, ukończone sprawy 600,
+końcowy backlog 0 h i dojrzałość operacyjna `True`.
+
+| Narzut zł/h | Narzut roczny zł | Koszt roczny zł | Wynik roczny zł |
+| ---: | ---: | ---: | ---: |
+| 0 | 0,000 | 307296,675 | 144666,579 |
+| 10 | 51318,750 | 358615,425 | 93347,829 |
+| 36 | 184747,500 | 492044,175 | −40080,921 |
+| 60 | 307912,500 | 615209,175 | −163245,921 |
+
+Przy 36 zł/h średni narzut na sprawę wynosi 307,9125 zł. To wskaźnik
+pochodny Panelu 1, a nie opłata wejściowa w kontrakcie. Sekretariat 30 min
+po 30 zł/h to 15 zł/sprawę, 9000 zł/rok, 501044,175 zł kosztów i
+−49080,921 zł wyniku w obu panelach. Tolerancja uzgodnienia: 0,01 zł.
+Wyniki maszynowe: [wspolne_koszty.json](audit_results/wspolne_koszty.json).
+Kontrole 10 scenariuszy w miesiącach 12/24/60:
+[wspolne_scenariusze.csv](audit_results/wspolne_scenariusze.csv).
+
+`reconciliation.porownaj_panele` oraz rozwijana diagnostyka Panelu 2 zestawiają
+roczne tempo ostatnich maksymalnie 12 miesięcy z pełnym rokiem kohorty.
+Pokazują godziny, koszty, ukończenia, backlog i wynik oraz jawne granice okresu.
+Rozkładają różnicę płac na bezczynność, inne wykonanie pracy w okresie
+i indywidualne stawki względem arytmetycznych średnich ról.
+Nie uzgadniają sztucznie wyniku. Płatny zapas obsady zwiększa pensje Panelu 2;
+mała pojemność, przyszła II instancja i opóźnienia płatności mogą przesunąć
+pracę oraz przychód poza porównywany rok. Krótszy okres i niepotwierdzona
+dojrzałość są jawnie opisane. Brak stawki roli pozostawia niewycenialne pola
+Panelu 1 puste, zachowując diagnostykę przepływu Panelu 2.
 
 Model używa wartości oczekiwanych i stałych miesięcznych przydziałów. Nie
 modeluje sezonowości, urlopów, inflacji, zmiennej obsady w trakcie pojedynczego

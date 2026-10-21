@@ -76,10 +76,6 @@
 "opoznienie_platnosci_miesiace" = 0
 "horyzont_miesiace" = 60
 
-[koszty_kontraktu]
-"ogolne_na_aktywna_sprawe" = 0.0
-"sekretariat_na_aktywna_sprawe" = 0.0
-
 [obsada]
 "stawka_poczatkowa" = 59.88
 "role_poczatkowe" = ["EH", "UGODY"]

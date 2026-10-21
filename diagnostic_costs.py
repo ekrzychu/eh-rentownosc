@@ -1,7 +1,7 @@
 """Niezależny bilans dziesięciu scenariuszy i porównanie ze starym modelem.
 
 Nie wywołuje pomocników kosztów, pojemności, etapów ani kolejek modelu.
-Podstawę opłat odtwarza ze zbioru identyfikatorów dodatniej pracy w dzienniku.
+Narzut odtwarza z minut pracy, sekretariat z jednorazowych zdarzeń w dzienniku.
 To audyt arytmetyczny i zdarzeniowy, nie drugi symulator harmonogramu.
 """
 
@@ -43,7 +43,7 @@ def niezalezne_minuty_roczne(p):
     return {'EH': p['liczba_spraw'] * eh, 'UGODY': p['liczba_spraw'] * ug}
 
 
-def uzgodnij(p, koszty, wynik):
+def uzgodnij(p, wynik):
     osoby = p['pracownicy']
     pensje = {r: fsum(167 * o['wykorzystanie_percent'] / 100 * o['stawka']
                       for o in osoby if o['rola'] == r) for r in ('EH', 'UGODY')}
@@ -56,6 +56,18 @@ def uzgodnij(p, koszty, wynik):
     pojemnosc = {'EH': brutto['EH'] - dzienne, 'UGODY': brutto['UGODY']}
     praca_roczna = niezalezne_minuty_roczne(p)
     prace_miesiaca, minuty_miesiaca = {}, {}
+    obsluga_miesiaca, sekretariat_zdarzenia = {}, {}
+    przyjecia = {(e["sprawa"], e["miesiac"]) for e in wynik["zdarzenia"]
+                 if e["rodzaj"] == "inicjacja" and e["etap"] == "przyjecie"}
+    for e in wynik["zdarzenia"]:
+        if e["rodzaj"] == "SEKRETARIAT_OBSLUZONY":
+            if e["sprawa"] in sekretariat_zdarzenia or (e["sprawa"], e["miesiac"]) not in przyjecia:
+                raise AssertionError("Powtórzony lub przedwczesny sekretariat")
+            sekretariat_zdarzenia[e["sprawa"]] = e
+            sprawdz(e["koszt"], e["waga"] * p["sekretariat_minuty_na_sprawe"] / 60 * p["koszt_sekretariatu_na_godzine"], "Koszt zdarzenia sekretariatu")
+            obsluga_miesiaca.setdefault(e["miesiac"], []).append(e)
+    if {e[0] for e in przyjecia} != set(sekretariat_zdarzenia):
+        raise AssertionError("Brak zdarzenia sekretariatu dla rozpoczętego przyjęcia")
     for event in wynik['zdarzenia']:
         if event['rodzaj'] == 'praca':
             if event['minuty'] <= 0:
@@ -66,6 +78,7 @@ def uzgodnij(p, koszty, wynik):
     if not wynik['zdarzenia'] and any(r['Wykonana praca (h)'] > 0 for r in wynik['tabela_miesieczna']):
         raise AssertionError('Audyt wymaga zapisu zdarzeń')
     naplyw = zakonczone = sprawomiesiace = przychod = saldo = 0.0
+    narzut = sekretariat = 0.0
     praca = {'EH': 0.0, 'UGODY': 0.0}
     konce = {'ugoda': 0.0, 'i': 0.0, 'ii': 0.0}
     miesiace = []
@@ -79,12 +92,19 @@ def uzgodnij(p, koszty, wynik):
             konce[k] += row[col]
         zakonczone = fsum(konce.values())
         sprawdz(row['Sprawy otwarte'], naplyw - zakonczone, 'Stan zamknięcia')
-        narzut_m = podstawa * koszty['ogolne_na_aktywna_sprawe']
-        sekretariat_m = podstawa * koszty['sekretariat_na_aktywna_sprawe']
+        direct_hours = fsum(minuty_miesiaca.get((m, r), 0) for r in pensje) / 60
+        narzut_direct = direct_hours * p['koszt_staly_na_godzine']
+        narzut_daily = dzienne * p['koszt_staly_na_godzine']
+        narzut_m = narzut_direct + narzut_daily
+        obsluzone = fsum(e['waga'] for e in obsluga_miesiaca.get(m, []))
+        sekretariat_m = fsum(e['koszt'] for e in obsluga_miesiaca.get(m, []))
         koszt_m = pensje['EH'] + pensje['UGODY'] + narzut_m + sekretariat_m
         for key, val in (('Wynagrodzenia EH', pensje['EH']), ('Wynagrodzenia ugód', pensje['UGODY']),
-                         ('Koszty ogólne spraw, nad którymi pracowano', narzut_m),
-                         ('Koszt sekretariatu spraw, nad którymi pracowano', sekretariat_m), ('Łączny koszt miesięczny', koszt_m),
+                         ('Narzut od wykonanej pracy nad sprawami', narzut_direct),
+                         ('Narzut od wspólnych czynności dziennych', narzut_daily),
+                         ('Narzut kosztów ogólnych razem', narzut_m),
+                         ('Sprawy z jednorazową obsługą sekretariatu', obsluzone),
+                         ('Jednorazowe koszty sekretariatu', sekretariat_m), ('Łączny koszt miesięczny', koszt_m),
                          ('Czynności dzienne (h)', dzienne), ('Niewykonane czynności dzienne (h)', dzienne_wymagane - dzienne)):
             sprawdz(row[key], val, key)
         przychod += row['Przychód z ugód'] + row['Przychód z wyroków']
@@ -101,8 +121,8 @@ def uzgodnij(p, koszty, wynik):
             if przyszla[r] < -1e-6:
                 raise AssertionError(f'Utracona praca {r}')
         sprawdz(fsum(przyszla.values()), row['Praca przyszła i zablokowana (h)'], 'Przyszła praca')
-        narzut = sprawomiesiace * koszty['ogolne_na_aktywna_sprawe']
-        sekretariat = sprawomiesiace * koszty['sekretariat_na_aktywna_sprawe']
+        narzut += narzut_m
+        sekretariat += sekretariat_m
         koszt = m * fsum(pensje.values()) + narzut + sekretariat
         sprawdz(przychod - koszt, saldo, 'Przychód minus wszystkie składniki')
         miesiace.append({'Miesiąc': m, 'Nowe sprawy łącznie': naplyw, 'Zakończone sprawy': zakonczone,
@@ -131,12 +151,12 @@ def scenariusze():
             p['codzienne_czynnosci'] = {k: 0 for k in p['codzienne_czynnosci']}
         if s in (6, 9):
             p = _skaluj_bezposrednie_czasy(p, .5 if s == 6 else 0)
-        costs = {'ogolne_na_aktywna_sprawe': 0.0 if s == 1 else 43.0, 'sekretariat_na_aktywna_sprawe': 0.0}
+        p['koszt_staly_na_godzine'] = 0.0 if s == 1 else 36.0
         start = perf_counter()
-        wynik = oblicz_model_czasowy(p, zapisz_zdarzenia=True, koszty_kontraktu=costs)
+        wynik = oblicz_model_czasowy(p, zapisz_zdarzenia=True)
         elapsed = perf_counter() - start
-        miesiace = uzgodnij(p, costs, wynik)
-        warianty[str(s)] = {'parametry': p, 'koszty': costs, 'podsumowanie': miesiace[-1],
+        miesiace = uzgodnij(p, wynik)
+        warianty[str(s)] = {'parametry': p, 'koszty': wynik['koszty_kontraktu'], 'podsumowanie': miesiace[-1],
                           'punkty_kontrolne': [m for m in miesiace if m['Miesiąc'] in MIESIACE_KONTROLI],
                           'czas_obliczen_s': elapsed, 'status': wynik['kpi']['status_kontraktu'],
                           'miesiace': wynik['tabela_miesieczna']}
@@ -147,10 +167,10 @@ def sprawdz_niezaleznosc(warianty):
     a, b = warianty['2'], warianty['1']
     for x, y in zip(a['miesiace'], b['miesiace']):
         for key in x:
-            if not any(word in key for word in ('Koszt', 'koszt', 'Wynik')) and x[key] != y[key]:
+            if not any(word in key for word in ('Koszt', 'koszt', 'Wynik', 'Narzut')) and x[key] != y[key]:
                 raise AssertionError(f'Narzut zmienił przepływy: {key}')
     sprawdz(a['podsumowanie']['Wynik'] - b['podsumowanie']['Wynik'],
-            -43 * a['podsumowanie']['Sprawomiesiące faktycznej pracy'], 'Różnica wyniku równa opłacie')
+            -36 * (a['podsumowanie']['Praca EH (h)'] + a['podsumowanie']['Praca ugód (h)'] + a['podsumowanie']['Czynności dzienne (h)']), 'Różnica wyniku równa opłacie')
 
 
 def porownaj_stary_model(warianty):
@@ -171,13 +191,14 @@ def porownaj_stary_model(warianty):
             salary_delta = fsum(r['Miesięczny koszt wynagrodzeń'] for r in b) - fsum(r['Miesięczny koszt wynagrodzeń'] for r in a)
             revenue_delta = fsum(r['Przychód razem'] for r in b) - fsum(r['Przychód razem'] for r in a)
             timeline_charge_delta = -43 * (new_open_months - old_open_months)
-            rule_delta = 43 * (new_open_months - new_worked)
+            new_expenses = fsum(r["Narzut kosztów ogólnych razem"] + r["Jednorazowe koszty sekretariatu"] for r in b)
+            rule_delta = 43 * new_open_months - new_expenses
             sprawdz(new_result - old_result, -salary_delta + revenue_delta + timeline_charge_delta + rule_delta, 'Most starego i nowego wyniku')
             snapshots.append({'Miesiąc': m, 'Stary wynik': old_result, 'Nowy wynik': new_result,
                 'Różnica wyniku': new_result - old_result, 'Zmiana kosztu pensji': salary_delta,
                 'Zmiana przychodu przez harmonogram': revenue_delta,
                 'Zmiana opłat otwartych przez harmonogram': timeline_charge_delta,
-                'Zmiana reguły z otwartych na pracowane': rule_delta,
+                'Zmiana reguły z otwartych na godziny i jednorazowy sekretariat': rule_delta,
                 'Stare otwarte sprawomiesiące': old_open_months, 'Nowe otwarte sprawomiesiące': new_open_months,
                 'Nowe sprawomiesiące pracy': new_worked,
                 'Stare zakończenia': fsum(r['Ugody zakończone'] + r['Zakończenia po I instancji'] + r['Zakończenia po II instancji'] for r in a),

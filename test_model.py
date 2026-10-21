@@ -827,7 +827,7 @@ class TestSekretariatLifecycle(unittest.TestCase):
         a = oblicz_model(self.p)
         for liczba in (0, 1, 100):
             b = oblicz_model({**self.p, "liczba_pracownikow": liczba,
-                              "koszty_kontraktu": {"ogolne_na_aktywna_sprawe": 9999}})
+                              "koszty_kontraktu": {"ogolne_na_aktywna_sprawe": 0}})
             self.assertEqual(a, b)
 
     def test_walidacja_nowych_danych(self):

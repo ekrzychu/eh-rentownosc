@@ -4,11 +4,12 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from reconciliation import porownaj_panele
+
 from timeline import (
     GODZINY_ETATU_MIESIECZNIE,
     domyslne_parametry_czasowe,
     oblicz_model_czasowy,
-    _koszty_kontraktu,
 )
 
 
@@ -196,29 +197,20 @@ def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = N
     st.header("Kontrakt w czasie")
     st.caption(
         "Koszt kontraktu obejmuje indywidualne wynagrodzenia za przydzielone godziny "
-        "oraz koszty spraw z faktycznie wykonaną pracą w miesiącu. Oba panele korzystają z tej samej obsady; "
+        "oraz narzut od wykonanych godzin i jednorazową obsługę sekretariatu. Oba panele korzystają z tej samej obsady; "
         "kontrakt płaci indywidualne stawki za przydzielone godziny."
     )
     st.caption(
         "Przyjęcie EH poprzedza ugody lub proces. Po odrzuceniu ugody proces trafia do EH "
         "od kolejnego miesiąca; II instancja od miesiąca po wyroku I. "
         "Zegary formalne startują od pierwszej pracy odpowiedniego etapu. "
-        "Etap zerowy wymaga dostępnej roli i jest inicjowany bez opłaty za pracę."
+        "Etap zerowy wymaga dostępnej roli. Przyjęcie może naliczyć jednorazowy koszt sekretariatu."
     )
     st.subheader("Koszty kontraktu")
-    defaults_cost = _koszty_kontraktu(None)
-    cost_columns = st.columns(2)
-    with cost_columns[0]:
-        overhead = _ustawienie("ogolne_na_aktywna_sprawe",
-            "Koszty ogólne / sprawę z wykonaną pracą / mies.", defaults_cost["ogolne_na_aktywna_sprawe"],
-            min_value=0.0, step=1.0)
-    with cost_columns[1]:
-        secretariat = _ustawienie("sekretariat_na_aktywna_sprawe",
-            "Koszt sekretariatu / sprawę z wykonaną pracą / mies.", defaults_cost["sekretariat_na_aktywna_sprawe"],
-            min_value=0.0, step=1.0)
-    st.caption("Koszty naliczane są wyłącznie za miesiące, w których rzeczywiście wykonano pracę nad sprawą. "
-               "Kilka etapów lub obu prawników w jednym miesiącu oznacza jedną opłatę. "
-               "Kolejka, oczekiwanie formalne i opóźnienie płatności nie naliczają opłat.")
+    st.caption("Koszty ogólne naliczane są od rzeczywiście wykonanych godzin "
+               "pracy prawników i wspólnych czynności dziennych. Koszt "
+               "sekretariatu jest naliczany jednorazowo przy rozpoczęciu "
+               "obsługi sprawy.")
     time_parameters = {}
     with st.expander("Założenia czasowe"):
         labels = {
@@ -233,10 +225,8 @@ def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = N
             with columns[i % 3]:
                 time_parameters[key] = int(_ustawienie(key, labels[key], default,
                     min_value=12 if key == "horyzont_miesiace" else 0, max_value=360, step=1))
-    costs = {"ogolne_na_aktywna_sprawe": overhead, "sekretariat_na_aktywna_sprawe": secretariat}
     try:
-        result = oblicz_model_czasowy(parametry, time_parameters, pracownicy=pracownicy,
-                                      koszty_kontraktu=costs)
+        result = oblicz_model_czasowy(parametry, time_parameters, pracownicy=pracownicy)
     except ValueError as error:
         st.error(str(error))
         return
@@ -308,8 +298,9 @@ def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = N
         totals = result["podsumowanie_finansowe"]
         labels = {"Wynagrodzenia EH": "Łączne wynagrodzenia EH",
                   "Wynagrodzenia ugód": "Łączne wynagrodzenia ugód",
-                  "Koszty ogólne spraw, nad którymi pracowano": "Łączne koszty ogólne spraw z wykonaną pracą",
-                  "Koszt sekretariatu spraw, nad którymi pracowano": "Łączny koszt sekretariatu spraw z wykonaną pracą",
+                  "Narzut od wykonanej pracy nad sprawami": "Narzut od wykonanej pracy nad sprawami",
+                  "Narzut od wspólnych czynności dziennych": "Narzut od wspólnych czynności dziennych",
+                  "Jednorazowe koszty sekretariatu": "Jednorazowe koszty sekretariatu",
                   "Łączny koszt miesięczny": "Łączny koszt kontraktu",
                   "Przychód razem": "Łączny przychód kontraktu",
                   "Wynik miesięczny przed podatkiem": "Wynik kontraktu przed podatkiem"}
@@ -323,14 +314,20 @@ def renderuj_widok_czasowy(parametry: dict, *, pracownicy: list[dict] | None = N
                  "Praca przyszła i zablokowana (h)": result["walidacja"]["praca_przyszla_minuty"] / 60}
         st.dataframe(pd.DataFrame([{"Wielkość": key, "Wartość": value} for key, value in flows.items()]),
                      hide_index=True, width="stretch")
-        st.caption(f"Koszty ogólne: {_liczba(totals['Sprawy, nad którymi pracowano w miesiącu'], 6)} sprawomiesiąca × "
-                   f"{_kwota(overhead)} = {_kwota(totals['Koszty ogólne spraw, nad którymi pracowano'])}. "
-                   "Sprawy otwarte mogą oczekiwać na formalne zakończenie bez pracy i opłat. "
-                   "Dlatego ich liczba może przekraczać liczbę spraw, nad którymi pracowano.")
+        st.caption("Narzut = (wykonane godziny spraw + wykonane godziny czynności dziennych) "
+                   f"× {_kwota(parametry['koszt_staly_na_godzine'])}/h. "
+                   "Sprawomiesiące pracy służą wyłącznie diagnostyce operacyjnej.")
+    with st.expander("Porównanie paneli — ostatnie miesiące"):
+        diagnostic = porownaj_panele({**parametry, "pracownicy": capacity["pracownicy"]}, result)
+        st.caption(diagnostic["okres"])
+        st.dataframe(pd.DataFrame(diagnostic["pozycje"]), hide_index=True, width="stretch")
+        for explanation in diagnostic["wyjasnienia"]:
+            st.caption(explanation)
     with st.expander("Miesięczne szczegóły finansowe", expanded=False):
         financial_columns = ["Miesiąc", "Sprawy, nad którymi pracowano w miesiącu", "Przychód z ugód", "Przychód z wyroków", "Przychód razem",
-            "Wynagrodzenia EH", "Wynagrodzenia ugód", "Koszty ogólne spraw, nad którymi pracowano",
-            "Koszt sekretariatu spraw, nad którymi pracowano", "Łączny koszt miesięczny",
+            "Wynagrodzenia EH", "Wynagrodzenia ugód", "Narzut od wykonanej pracy nad sprawami",
+            "Narzut od wspólnych czynności dziennych", "Narzut kosztów ogólnych razem",
+            "Sprawy z jednorazową obsługą sekretariatu", "Jednorazowe koszty sekretariatu", "Łączny koszt miesięczny",
             "Wynik miesięczny przed podatkiem", "Wynik skumulowany przed podatkiem"]
         st.dataframe(table[financial_columns], hide_index=True, width="stretch")
     with st.expander("Miesięczne przepływy i pojemność"):
